@@ -1,0 +1,41 @@
+{
+  "actions" : [
+    {
+      "type" : "click",
+      "x" : 1000,
+      "y" : 650
+    },
+    {
+      "seconds" : 1.2,
+      "type" : "wait"
+    },
+    {
+      "actions" : [
+        {
+          "duration_ms" : 600,
+          "from" : {
+            "x" : 300,
+            "y" : 400
+          },
+          "leg_wait_sec" : 0.5,
+          "rounds" : 3,
+          "to" : {
+            "x" : 900,
+            "y" : 400
+          },
+          "type" : "patrol"
+        },
+        {
+          "jitter_seconds" : 0.20000000000000001,
+          "seconds" : 0.80000000000000004,
+          "type" : "wait"
+        }
+      ],
+      "count" : 1,
+      "type" : "loop"
+    }
+  ],
+  "device" : "127.0.0.1:5555",
+  "jitter_px" : 3,
+  "max_runtime_sec" : 0
+}

@@ -1,0 +1,13 @@
+{
+  "": {
+    "dependencies": "/Users/admins/Documents/Playground/bluestacks-automation-standalone/swiftui_manager/.build/arm64-apple-macosx/release/BSManagerApp.build/BSManagerApp.d",
+    "object": "/Users/admins/Documents/Playground/bluestacks-automation-standalone/swiftui_manager/.build/arm64-apple-macosx/release/BSManagerApp.build/BSManagerApp.o",
+    "swift-dependencies": "/Users/admins/Documents/Playground/bluestacks-automation-standalone/swiftui_manager/.build/arm64-apple-macosx/release/BSManagerApp.build/master.swiftdeps"
+  },
+  "/Users/admins/Documents/Playground/bluestacks-automation-standalone/swiftui_manager/Sources/BSManagerApp/main.swift": {
+    "object": "/Users/admins/Documents/Playground/bluestacks-automation-standalone/swiftui_manager/.build/arm64-apple-macosx/release/BSManagerApp.build/main.swift.o",
+    "swiftmodule": "/Users/admins/Documents/Playground/bluestacks-automation-standalone/swiftui_manager/.build/arm64-apple-macosx/release/BSManagerApp.build/main~partial.swiftmodule",
+    "swift-dependencies": "/Users/admins/Documents/Playground/bluestacks-automation-standalone/swiftui_manager/.build/arm64-apple-macosx/release/BSManagerApp.build/main.swiftdeps",
+    "diagnostics": "/Users/admins/Documents/Playground/bluestacks-automation-standalone/swiftui_manager/.build/arm64-apple-macosx/release/BSManagerApp.build/main.dia"
+  }
+}
