@@ -219,6 +219,7 @@ def build_actions_from_gestures(
     prev_end: Optional[float] = None
     tap_distance_px = 24.0
     tap_duration_sec = 0.45
+    min_swipe_duration_sec = 0.18
 
     for g in gestures:
         if not g.points:
@@ -243,7 +244,12 @@ def build_actions_from_gestures(
         duration = max(0.0, g.end_t - g.start_t)
 
         point_count = len(g.points)
-        if g.explicit_touch and point_count <= 12 and dist <= tap_distance_px and duration <= tap_duration_sec:
+        if (
+            point_count <= 12
+            and dist <= tap_distance_px
+            and duration <= tap_duration_sec
+            and not (point_count >= 2 and duration >= min_swipe_duration_sec)
+        ):
             actions.append({"type": "click", "x": x2, "y": y2})
         else:
             px_points: List[Dict] = []
@@ -256,16 +262,23 @@ def build_actions_from_gestures(
                 )
                 px, py = pxs, pys
                 if last_px is not None:
-                    if math.hypot(px - last_px[0], py - last_px[1]) < 4.0:
+                    if math.hypot(px - last_px[0], py - last_px[1]) < 2.0:
                         continue
                 last_px = (px, py)
                 px_points.append({"x": px, "y": py, "t_ms": int((p.t - start_t) * 1000)})
 
-            # Ensure last point exists, and cap count to avoid oversized plans.
-            if not px_points or (px_points[-1]["x"] != x2 or px_points[-1]["y"] != y2):
-                px_points.append({"x": x2, "y": y2, "t_ms": int(duration * 1000)})
-            if len(px_points) > 80:
-                step = max(1, len(px_points) // 80)
+            # Preserve hold-at-end: keep last move time, then append a same-position end point.
+            end_t_ms = int(duration * 1000)
+            if not px_points:
+                px_points.append({"x": x2, "y": y2, "t_ms": end_t_ms})
+            elif px_points[-1]["x"] != x2 or px_points[-1]["y"] != y2:
+                px_points.append({"x": x2, "y": y2, "t_ms": end_t_ms})
+            else:
+                last_t_ms = int(px_points[-1].get("t_ms", 0))
+                if end_t_ms > last_t_ms:
+                    px_points.append({"x": x2, "y": y2, "t_ms": end_t_ms})
+            if len(px_points) > 180:
+                step = max(1, len(px_points) // 180)
                 sampled = px_points[::step]
                 if sampled[-1] != px_points[-1]:
                     sampled.append(px_points[-1])
@@ -278,8 +291,9 @@ def build_actions_from_gestures(
                     {
                         "type": "trace",
                         "points": px_points,
-                        "min_segment_ms": 16,
-                        "max_segment_ms": 80,
+                        "mode": "motion",
+                        "min_segment_ms": 1,
+                        "max_segment_ms": 1000,
                     }
                 )
     return actions
@@ -408,6 +422,15 @@ def record_gestures(
     else:
         print("[Recorder] Listening on all input events. Touch BlueStacks to auto-detect touch device.")
         print("[Recorder] Press Ctrl+C to stop and save.")
+
+    def append_point_if_possible(ts: float) -> None:
+        nonlocal cur_points, x_raw, y_raw
+        if x_raw is None or y_raw is None:
+            return
+        if cur_points and cur_points[-1].x_raw == x_raw and cur_points[-1].y_raw == y_raw:
+            return
+        cur_points.append(Point(t=ts, x_raw=x_raw, y_raw=y_raw))
+
     try:
         for line in proc.stdout:
             line_s = line.strip()
@@ -482,6 +505,7 @@ def record_gestures(
                     saw_touch_flag = True
                     # ABS_MT_TRACKING_ID, 0xffffffff means up
                     if evalue_hex == "ffffffff":
+                        append_point_if_possible(t)
                         if touching and cur_points:
                             gestures.append(
                                 Gesture(
@@ -503,6 +527,8 @@ def record_gestures(
                         cur_start_t = t
                         cur_points = []
                         current_explicit_touch = True
+                        # Some devices emit coordinates before TRACKING_ID down.
+                        append_point_if_possible(t)
             # EV_KEY BTN_TOUCH
             elif etype == "0001" and ecode == "014a":
                 saw_touch_flag = True
@@ -511,7 +537,9 @@ def record_gestures(
                     cur_start_t = t
                     cur_points = []
                     current_explicit_touch = True
+                    append_point_if_possible(t)
                 elif evalue == 0:
+                    append_point_if_possible(t)
                     if touching and cur_points:
                         gestures.append(
                             Gesture(
@@ -725,6 +753,10 @@ def main() -> int:
         "jitter_px": int(args.jitter_px),
         "max_runtime_sec": 0,
         "actions": final_actions,
+        "screen_size": {
+            "width": int(screen_w),
+            "height": int(screen_h),
+        },
         "mapping_profile": {
             "invert_x": bool(args.invert_x),
             "invert_y": bool(args.invert_y),

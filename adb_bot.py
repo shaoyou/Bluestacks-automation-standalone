@@ -2,6 +2,7 @@
 import argparse
 import json
 import random
+import re
 import shlex
 import subprocess
 import sys
@@ -9,6 +10,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+WM_SIZE_RE = re.compile(r"(\d+)x(\d+)")
 
 
 class BotError(RuntimeError):
@@ -22,6 +25,11 @@ class RunContext:
     dry_run: bool
     jitter: int
     stop_at: Optional[float]
+    src_screen_w: int
+    src_screen_h: int
+    dst_screen_w: int
+    dst_screen_h: int
+    trace_time_scale: float
     motionevent_supported: Optional[bool] = None
 
 
@@ -47,6 +55,7 @@ def adb_shell(ctx: RunContext, shell_args: List[str]) -> None:
     if ctx.dry_run:
         log(f"[DRY-RUN] adb shell {pretty}")
         return
+    log(f"CMD adb shell {pretty}")
     cmd = build_adb_cmd(ctx, ["shell"] + shell_args)
     try:
         run_cmd(cmd)
@@ -106,7 +115,17 @@ def adb_shell_result(ctx: RunContext, shell_args: List[str]) -> subprocess.Compl
 
 
 def map_input_point(ctx: RunContext, x: int, y: int) -> Tuple[int, int]:
-    return x, y
+    if ctx.src_screen_w <= 0 or ctx.src_screen_h <= 0:
+        return x, y
+    if ctx.dst_screen_w <= 0 or ctx.dst_screen_h <= 0:
+        return x, y
+    sx = ctx.dst_screen_w / float(ctx.src_screen_w)
+    sy = ctx.dst_screen_h / float(ctx.src_screen_h)
+    mapped_x = int(round(x * sx))
+    mapped_y = int(round(y * sy))
+    mapped_x = max(0, min(ctx.dst_screen_w - 1, mapped_x))
+    mapped_y = max(0, min(ctx.dst_screen_h - 1, mapped_y))
+    return mapped_x, mapped_y
 
 
 def supports_motionevent(ctx: RunContext) -> bool:
@@ -176,9 +195,22 @@ def do_trace(ctx: RunContext, action: Dict[str, Any]) -> None:
     if not isinstance(points, list) or len(points) < 2:
         return
 
-    min_segment_ms = int(action.get("min_segment_ms", 16))
-    max_segment_ms = int(action.get("max_segment_ms", 80))
+    min_segment_ms = int(action.get("min_segment_ms", 1))
+    max_segment_ms = int(action.get("max_segment_ms", 1000))
     trace_mode = str(action.get("mode", "auto")).lower()
+    trace_time_scale = float(action.get("time_scale", ctx.trace_time_scale))
+    trace_jitter_px = int(action.get("trace_jitter_px", 0))
+    offset_x = 0 if trace_jitter_px <= 0 else random.randint(-trace_jitter_px, trace_jitter_px)
+    offset_y = 0 if trace_jitter_px <= 0 else random.randint(-trace_jitter_px, trace_jitter_px)
+
+    def map_trace_point(raw_x: int, raw_y: int) -> Tuple[int, int]:
+        x, y = map_input_point(ctx, raw_x, raw_y)
+        x += offset_x
+        y += offset_y
+        if ctx.dst_screen_w > 0 and ctx.dst_screen_h > 0:
+            x = max(0, min(ctx.dst_screen_w - 1, x))
+            y = max(0, min(ctx.dst_screen_h - 1, y))
+        return x, y
 
     if trace_mode == "motion":
         use_motion = supports_motionevent(ctx)
@@ -188,30 +220,31 @@ def do_trace(ctx: RunContext, action: Dict[str, Any]) -> None:
         use_motion = supports_motionevent(ctx)
     if use_motion:
         first = points[0]
-        x0, y0 = map_input_point(ctx, int(first["x"]), int(first["y"]))
-        x0 = apply_jitter(x0, ctx.jitter)
-        y0 = apply_jitter(y0, ctx.jitter)
+        replay_start = time.perf_counter()
+        x0, y0 = map_trace_point(int(first["x"]), int(first["y"]))
         adb_shell(ctx, ["input", "motionevent", "DOWN", str(x0), str(y0)])
-        prev_t = int(first.get("t_ms", 0))
+        first_t = int(first.get("t_ms", 0))
+        prev_t = first_t
         for i in range(1, len(points)):
             p = points[i]
             t_now = int(p.get("t_ms", prev_t))
             delta_raw = t_now - prev_t
-            if delta_raw <= 0:
-                delta = min_segment_ms
-            else:
-                delta = max(min_segment_ms, min(max_segment_ms, delta_raw))
-            if delta > 0:
-                time.sleep(delta / 1000.0)
-            x = apply_jitter(int(p["x"]), ctx.jitter)
-            y = apply_jitter(int(p["y"]), ctx.jitter)
-            x, y = map_input_point(ctx, x, y)
+            _delta = min_segment_ms if delta_raw <= 0 else max(min_segment_ms, min(max_segment_ms, delta_raw))
+            # Use absolute scheduling to compensate adb command overhead.
+            target_elapsed = max(0.0, (t_now - first_t) / 1000.0) * trace_time_scale
+            remain = target_elapsed - (time.perf_counter() - replay_start)
+            if remain > 0:
+                time.sleep(remain)
+            x, y = map_trace_point(int(p["x"]), int(p["y"]))
             adb_shell(ctx, ["input", "motionevent", "MOVE", str(x), str(y)])
             prev_t = t_now
+        last_t = int(points[-1].get("t_ms", prev_t))
+        final_elapsed = max(0.0, (last_t - first_t) / 1000.0) * trace_time_scale
+        final_remain = final_elapsed - (time.perf_counter() - replay_start)
+        if final_remain > 0:
+            time.sleep(final_remain)
         last = points[-1]
-        xl, yl = map_input_point(ctx, int(last["x"]), int(last["y"]))
-        xl = apply_jitter(xl, ctx.jitter)
-        yl = apply_jitter(yl, ctx.jitter)
+        xl, yl = map_trace_point(int(last["x"]), int(last["y"]))
         adb_shell(ctx, ["input", "motionevent", "UP", str(xl), str(yl)])
         log(f"Trace replayed continuously with {len(points)} points")
         return
@@ -220,12 +253,8 @@ def do_trace(ctx: RunContext, action: Dict[str, Any]) -> None:
     for i in range(len(points) - 1):
         p1 = points[i]
         p2 = points[i + 1]
-        x1, y1 = map_input_point(ctx, int(p1["x"]), int(p1["y"]))
-        x2, y2 = map_input_point(ctx, int(p2["x"]), int(p2["y"]))
-        x1 = apply_jitter(x1, ctx.jitter)
-        y1 = apply_jitter(y1, ctx.jitter)
-        x2 = apply_jitter(x2, ctx.jitter)
-        y2 = apply_jitter(y2, ctx.jitter)
+        x1, y1 = map_trace_point(int(p1["x"]), int(p1["y"]))
+        x2, y2 = map_trace_point(int(p2["x"]), int(p2["y"]))
         seg_ms = min_segment_ms
         if "t_ms" in p1 and "t_ms" in p2:
             try:
@@ -379,6 +408,19 @@ def load_plan(path: Path) -> Dict[str, Any]:
         raise BotError(f"Invalid JSON in plan file {path}: {exc}") from exc
 
 
+def get_device_screen_size(adb_path: str, device: Optional[str]) -> Tuple[int, int]:
+    cmd = [adb_path]
+    if device:
+        cmd += ["-s", device]
+    cmd += ["shell", "wm", "size"]
+    result = run_cmd(cmd, check=False)
+    text = f"{result.stdout}\n{result.stderr}"
+    match = WM_SIZE_RE.search(text)
+    if not match:
+        raise BotError(f"Cannot parse device screen size from adb output:\n{text.strip()}")
+    return int(match.group(1)), int(match.group(2))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="BlueStacks ADB automation bot")
     parser.add_argument("--plan", required=True, help="Path to plan JSON file")
@@ -394,11 +436,29 @@ def main() -> int:
     plan_device = default_device.strip() if isinstance(default_device, str) else default_device
     device = cli_device or plan_device or None
     jitter = int(plan.get("jitter_px", 0))
+    trace_time_scale = float(plan.get("trace_time_scale", 1.0))
     runtime_limit = args.max_runtime_sec or int(plan.get("max_runtime_sec", 0))
     stop_at = None if runtime_limit <= 0 else time.time() + runtime_limit
+    screen_cfg = plan.get("screen_size", {})
+    has_screen_cfg = isinstance(screen_cfg, dict) and "width" in screen_cfg and "height" in screen_cfg
+    if has_screen_cfg:
+        src_screen_w = int(screen_cfg.get("width", 1080))
+        src_screen_h = int(screen_cfg.get("height", 1920))
+    else:
+        # Backward-compatible behavior for old plans: no implicit scaling.
+        src_screen_w = -1
+        src_screen_h = -1
+    dst_screen_w = -1
+    dst_screen_h = -1
 
     if not args.dry_run:
         device = ensure_device_connected(args.adb, device)
+        dst_screen_w, dst_screen_h = get_device_screen_size(args.adb, device)
+        if not has_screen_cfg:
+            src_screen_w, src_screen_h = dst_screen_w, dst_screen_h
+    elif not has_screen_cfg:
+        src_screen_w, src_screen_h = 1080, 1920
+        dst_screen_w, dst_screen_h = 1080, 1920
 
     ctx = RunContext(
         adb_path=args.adb,
@@ -406,6 +466,11 @@ def main() -> int:
         dry_run=args.dry_run,
         jitter=jitter,
         stop_at=stop_at,
+        src_screen_w=src_screen_w,
+        src_screen_h=src_screen_h,
+        dst_screen_w=dst_screen_w,
+        dst_screen_h=dst_screen_h,
+        trace_time_scale=trace_time_scale,
     )
 
     actions = plan.get("actions")
@@ -414,6 +479,8 @@ def main() -> int:
 
     log("Bot start")
     log(f"Config jitter_px={ctx.jitter}")
+    log(f"Config trace_time_scale={ctx.trace_time_scale}")
+    log(f"Screen scale {ctx.src_screen_w}x{ctx.src_screen_h} -> {ctx.dst_screen_w}x{ctx.dst_screen_h}")
     try:
         execute_actions(ctx, actions)
     except KeyboardInterrupt:

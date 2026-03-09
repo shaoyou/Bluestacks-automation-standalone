@@ -6,6 +6,8 @@ SWIFT_DIR="$ROOT_DIR/swiftui_manager"
 DIST_DIR="$ROOT_DIR/dist"
 PACK_HOME="$ROOT_DIR/.pack_home"
 APP_NAME="BSManagerApp"
+APP_VERSION="1.1.0"
+APP_BUILD="2"
 APP_BUNDLE="$DIST_DIR/${APP_NAME}.app"
 APP_EXEC="$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 RELEASE_BIN="$SWIFT_DIR/.build/release/$APP_NAME"
@@ -38,7 +40,7 @@ echo "[3/4] Creating .app bundle..."
 cp "$RELEASE_BIN" "$APP_EXEC"
 chmod +x "$APP_EXEC"
 
-cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
+cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -50,9 +52,9 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIdentifier</key>
   <string>local.playground.bsmanager</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>${APP_BUILD}</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.0</string>
+  <string>${APP_VERSION}</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleExecutable</key>
