@@ -384,6 +384,68 @@ def clean_actions_noise(actions: List[Dict]) -> List[Dict]:
     return cleaned
 
 
+def merge_short_gap_traces(actions: List[Dict]) -> List[Dict]:
+    # Merge trace-wait-trace caused by transient touch split on some devices/emulators.
+    def is_trace(act: Dict) -> bool:
+        return act.get("type") == "trace" and isinstance(act.get("points"), list) and len(act.get("points")) >= 2
+
+    def is_wait(act: Dict) -> bool:
+        return act.get("type") == "wait"
+
+    merged: List[Dict] = []
+    i = 0
+    merge_count = 0
+    def trace_span(points: List[Dict]) -> float:
+        if len(points) < 2:
+            return 0.0
+        p0 = points[0]
+        p1 = points[-1]
+        return math.hypot(float(p1["x"]) - float(p0["x"]), float(p1["y"]) - float(p0["y"]))
+
+    while i < len(actions):
+        if i + 2 < len(actions) and is_trace(actions[i]) and is_wait(actions[i + 1]) and is_trace(actions[i + 2]):
+            left = actions[i]
+            wait = float(actions[i + 1].get("seconds", 0.0))
+            right = actions[i + 2]
+            left_pts = left["points"]
+            right_pts = right["points"]
+            lx, ly = int(left_pts[-1]["x"]), int(left_pts[-1]["y"])
+            rx, ry = int(right_pts[0]["x"]), int(right_pts[0]["y"])
+            dist = math.hypot(lx - rx, ly - ry)
+            right_span = trace_span(right_pts)
+            right_duration = int(right_pts[-1].get("t_ms", 0)) - int(right_pts[0].get("t_ms", 0))
+
+            # Standard merge: tiny gap and near-continuous endpoint.
+            standard_merge = wait <= 0.35 and dist <= 10.0
+            # Joystick-friendly merge: short continuation trace after longer event drop.
+            # Typical split pattern: endpoint close, then a tiny continuation trace.
+            continuation_merge = wait <= 1.2 and dist <= 12.0 and right_span <= 40.0 and right_duration <= 700
+
+            if standard_merge or continuation_merge:
+                base_t = int(left_pts[-1].get("t_ms", 0))
+                offset_t = base_t + int(round(wait * 1000))
+                new_points = [dict(p) for p in left_pts]
+                for j, p in enumerate(right_pts):
+                    if j == 0 and int(p.get("x", 0)) == lx and int(p.get("y", 0)) == ly:
+                        continue
+                    np = dict(p)
+                    np["t_ms"] = int(p.get("t_ms", 0)) + offset_t
+                    new_points.append(np)
+
+                merged_trace = dict(left)
+                merged_trace["points"] = new_points
+                merged.append(merged_trace)
+                i += 3
+                merge_count += 1
+                continue
+
+        merged.append(actions[i])
+        i += 1
+
+    print(f"[Recorder] Short-gap trace merges: {merge_count}")
+    return merged
+
+
 def record_gestures(
     adb: str,
     device: Optional[str],
@@ -741,6 +803,7 @@ def main() -> int:
     )
     if not args.no_clean_noise:
         actions = clean_actions_noise(actions)
+    actions = merge_short_gap_traces(actions)
     if not actions:
         raise RecorderError("No actions captured. Please record again.")
 

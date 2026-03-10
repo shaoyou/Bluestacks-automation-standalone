@@ -35,7 +35,7 @@ class RunContext:
 
 def log(message: str) -> None:
     now = time.strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{now}] {message}")
+    print(f"[{now}] {message}", flush=True)
 
 
 def run_cmd(cmd: List[str], check: bool = True) -> subprocess.CompletedProcess[str]:
