@@ -160,6 +160,24 @@ private func readScreenSize(adbPath: String, device: String) -> (Int, Int)? {
     }
 }
 
+private func isADBDeviceReachable(adbPath: String, device: String) -> Bool {
+    let trimmed = device.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return false }
+    let result = runADBCommand(adbPath: adbPath, args: ["-s", trimmed, "shell", "getprop", "ro.build.version.release"])
+    let text = result.text.lowercased()
+    if result.code != 0 {
+        return false
+    }
+    if text.contains("device offline")
+        || text.contains("device not found")
+        || text.contains("more than one device")
+        || text.contains("cannot connect")
+        || text.contains("error: closed") {
+        return false
+    }
+    return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+}
+
 private func openScriptsDirectoryInFinder() {
     NSWorkspace.shared.open(plansDir)
 }
@@ -199,6 +217,19 @@ struct ScriptFile: Identifiable, Hashable {
     let url: URL
 }
 
+struct PickedCoordinate: Identifiable, Equatable {
+    let id = UUID()
+    let x: Int
+    let y: Int
+    let device: String
+    let capturedAt: Date
+}
+
+struct EditorInsertionRequest: Identifiable, Equatable {
+    let id = UUID()
+    let text: String
+}
+
 final class RunnerModel: ObservableObject {
     private static let maxLogChars = 80_000
     private static let logFlushIntervalSec: Double = 0.12
@@ -210,6 +241,7 @@ final class RunnerModel: ObservableObject {
     @Published var isRunning: Bool = false
     @Published var cycleDurationSec: Double = 0
     @Published var cycleProgressSec: Double = 0
+    @Published var cycleCount: Int = 0
     @Published var showRealtimeCommandLogs: Bool = false
 
     private var process: Process?
@@ -270,6 +302,11 @@ final class RunnerModel: ObservableObject {
         return String(format: "%.1f / %.1fs", cycleProgressSec, cycleDurationSec)
     }
 
+    var cycleCountText: String {
+        guard cycleCount > 0 else { return "--" }
+        return "\(cycleCount)"
+    }
+
     private func estimateActionsDuration(_ actions: [Any]) -> Double {
         var total: Double = 0
         for item in actions {
@@ -326,6 +363,7 @@ final class RunnerModel: ObservableObject {
         progressStartAt = nil
         DispatchQueue.main.async {
             self.cycleProgressSec = 0
+            self.cycleCount = 0
         }
     }
 
@@ -335,6 +373,7 @@ final class RunnerModel: ObservableObject {
         DispatchQueue.main.async {
             self.cycleDurationSec = duration
             self.cycleProgressSec = 0
+            self.cycleCount = duration > 0 ? 1 : 0
         }
         guard duration > 0 else { return }
         progressStartAt = Date()
@@ -344,8 +383,10 @@ final class RunnerModel: ObservableObject {
             guard let self, let start = self.progressStartAt else { return }
             let elapsed = Date().timeIntervalSince(start)
             let cycle = duration > 0 ? elapsed.truncatingRemainder(dividingBy: duration) : 0
+            let count = duration > 0 ? Int(floor(elapsed / duration)) + 1 : 0
             DispatchQueue.main.async {
                 self.cycleProgressSec = cycle
+                self.cycleCount = max(1, count)
             }
         }
         progressTimer = timer
@@ -635,13 +676,32 @@ final class RecorderModel: ObservableObject {
 final class CalibrationModel: ObservableObject {
     private static let maxLogChars = 80_000
     private static let logFlushIntervalSec: Double = 0.12
+    private static let maxPickedCoordinates = 10
     @Published var device: String = ""
     @Published var adbPath: String = "adb"
     @Published var logs: String = ""
+    @Published var isPickingCoordinates: Bool = false
+    @Published var pickedCoordinates: [PickedCoordinate] = []
     private var isBusy = false
     private let logQueue = DispatchQueue(label: "bs.calibration.log.queue")
     private var pendingLogs: [String] = []
     private var logFlushScheduled = false
+    private var clickProcess: Process?
+    private var clickReadHandle: FileHandle?
+    private var clickExitObserver: NSObjectProtocol?
+    private var clickOutputBuffer = ""
+
+    private func pushPickedCoordinate(x: Int, y: Int, device: String) {
+        DispatchQueue.main.async {
+            let item = PickedCoordinate(x: x, y: y, device: device, capturedAt: Date())
+            var updated = self.pickedCoordinates
+            updated.insert(item, at: 0)
+            if updated.count > Self.maxPickedCoordinates {
+                updated = Array(updated.prefix(Self.maxPickedCoordinates))
+            }
+            self.pickedCoordinates = updated
+        }
+    }
 
     func appendLog(_ line: String) {
         logQueue.async {
@@ -683,6 +743,106 @@ final class CalibrationModel: ObservableObject {
         }
         DispatchQueue.main.async {
             self.logs = ""
+        }
+    }
+
+    func startCoordinatePicker(adbPath: String, device: String) {
+        guard !isPickingCoordinates else {
+            appendLog("[CAL] coordinate picker already running\n")
+            return
+        }
+        guard let resolvedADB = resolveADBExecutable(adbPath) else {
+            appendLog("[CAL] adb not found: \(adbPath)\n")
+            return
+        }
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        var args = ["-u", recorderScript.path, "--adb", resolvedADB, "--print-clicks-only", "--output", "/tmp/bs_click_probe.json"]
+        let dev = device.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !dev.isEmpty {
+            args += ["--device", dev]
+        }
+        proc.arguments = args
+        proc.environment = mergedEnvironment()
+
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = pipe
+        clickOutputBuffer = ""
+        clickReadHandle = pipe.fileHandleForReading
+        clickReadHandle?.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            if data.isEmpty { return }
+            guard let self, let text = String(data: data, encoding: .utf8) else { return }
+            self.clickOutputBuffer += text
+
+            let lines = self.clickOutputBuffer.components(separatedBy: "\n")
+            let completeLines = lines.dropLast()
+            self.clickOutputBuffer = lines.last ?? ""
+
+            if let regex = try? NSRegularExpression(pattern: #"\[Click\]\s+x=(\d+)\s+y=(\d+)"#) {
+                for line in completeLines {
+                    let nsLine = line as NSString
+                    let range = NSRange(location: 0, length: nsLine.length)
+                    guard let match = regex.firstMatch(in: line, options: [], range: range),
+                          let xRange = Range(match.range(at: 1), in: line),
+                          let yRange = Range(match.range(at: 2), in: line),
+                          let x = Int(line[xRange]),
+                          let y = Int(line[yRange]) else { continue }
+                    let currentDevice = device.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.pushPickedCoordinate(x: x, y: y, device: currentDevice)
+                }
+            }
+            self.appendLog("[CAL] \(text)")
+        }
+
+        appendLog("[CAL] start coordinate picker\n")
+        do {
+            try proc.run()
+            clickProcess = proc
+            isPickingCoordinates = true
+            clickExitObserver = NotificationCenter.default.addObserver(
+                forName: Process.didTerminateNotification,
+                object: proc,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                self.clickReadHandle?.readabilityHandler = nil
+                self.clickReadHandle = nil
+                self.clickProcess = nil
+                self.clickOutputBuffer = ""
+                self.isPickingCoordinates = false
+                self.appendLog("[CAL] coordinate picker exit: \(proc.terminationStatus)\n")
+            }
+        } catch {
+            appendLog("[CAL] coordinate picker failed: \(error)\n")
+            clickReadHandle?.readabilityHandler = nil
+            clickReadHandle = nil
+            clickProcess = nil
+            clickOutputBuffer = ""
+            isPickingCoordinates = false
+        }
+    }
+
+    func stopCoordinatePicker() {
+        guard let proc = clickProcess else {
+            appendLog("[CAL] coordinate picker not running\n")
+            return
+        }
+        appendLog("[CAL] stopping coordinate picker...\n")
+        proc.interrupt()
+        let procRef = proc
+        DispatchQueue.global().asyncAfter(deadline: .now() + 1.0) {
+            if procRef.isRunning {
+                procRef.terminate()
+            }
+        }
+    }
+
+    func clearPickedCoordinates() {
+        DispatchQueue.main.async {
+            self.pickedCoordinates = []
         }
     }
 
@@ -817,6 +977,16 @@ final class CalibrationModel: ObservableObject {
             title: "Swipe Up Test"
         )
     }
+
+    deinit {
+        clickReadHandle?.readabilityHandler = nil
+        if let observer = clickExitObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let proc = clickProcess, proc.isRunning {
+            proc.terminate()
+        }
+    }
 }
 
 private extension Process {
@@ -852,21 +1022,22 @@ final class AppModel: ObservableObject {
   "jitter_px": 3,
   "max_runtime_sec": 0,
   "actions": [
-    { "type": "click", "x": 1000, "y": 650 },
-    { "type": "wait", "seconds": 1.2 },
+    { "type": "click", "x": 1000, "y": 650, "remark": "点击(1000,650)" },
+    { "type": "wait", "seconds": 1.2, "remark": "等待1.2秒" },
     {
       "type": "loop",
       "count": -1,
       "actions": [
         {
           "type": "patrol",
+          "remark": "往返巡逻1轮",
           "from": { "x": 300, "y": 400 },
           "to": { "x": 900, "y": 400 },
           "duration_ms": 600,
           "leg_wait_sec": 0.5,
           "rounds": 1
         },
-        { "type": "wait", "seconds": 0.8, "jitter_seconds": 0.2 }
+        { "type": "wait", "seconds": 0.8, "jitter_seconds": 0.2, "remark": "等待0.8秒" }
       ]
     }
   ]
@@ -1042,6 +1213,62 @@ final class AppModel: ObservableObject {
         scripts.first(where: { $0.name == named })?.url
     }
 
+    func preferredEditorDebugDevice() -> String {
+        let candidates = [
+            runnerA.device,
+            recorder.device,
+            calibration.device,
+            runnerB.device,
+        ]
+        for item in candidates {
+            let preferred = preferredDevice(from: availableDevices, current: item)
+            let trimmed = preferred.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+        return preferredDevice(from: availableDevices, current: "")
+    }
+
+    func startEditorDebugRun(completion: @escaping (Bool) -> Void) {
+        let scriptName = selectedScriptName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !scriptName.isEmpty, let scriptURL = scriptURL(named: scriptName) else {
+            DispatchQueue.main.async {
+                self.statusMessage = "调试失败: 当前没有可运行脚本"
+                completion(false)
+            }
+            return
+        }
+        let adbInput = recorder.adbPath
+        let device = preferredEditorDebugDevice()
+        DispatchQueue.global().async {
+            guard let resolvedADB = resolveADBExecutable(adbInput) else {
+                DispatchQueue.main.async {
+                    self.statusMessage = "调试失败: 未找到 adb"
+                    completion(false)
+                }
+                return
+            }
+            guard !device.isEmpty, isADBDeviceReachable(adbPath: resolvedADB, device: device) else {
+                DispatchQueue.main.async {
+                    self.statusMessage = "调试失败: 没有可连接设备"
+                    completion(false)
+                }
+                return
+            }
+            DispatchQueue.main.async {
+                self.runnerA.adbPath = adbInput
+                self.runnerA.device = device
+                self.runnerA.selectedScript = scriptName
+                self.rememberLastDevice(device)
+                self.rememberRunnerScript(slot: "A", name: scriptName)
+                self.statusMessage = "调试运行: \(scriptName)"
+                self.runnerA.start(scriptURL: scriptURL)
+                completion(true)
+            }
+        }
+    }
+
     func loadSelectedScript() {
         guard let url = scriptURL(named: selectedScriptName) else { return }
         editorText = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
@@ -1166,6 +1393,9 @@ struct RunnerView: View {
             HStack {
                 Text(t(lang, "进度", "Progress"))
                 Text(runner.progressText)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Text("\(t(lang, "循环次数", "Loop Count")): \(runner.cycleCountText)")
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
@@ -1332,6 +1562,14 @@ struct CalibrationView: View {
                 Button(t(lang, "上滑测试", "Swipe Up Test")) {
                     calibration.swipeUpTest(adbPath: calibration.adbPath, device: calibration.device)
                 }
+                Button(t(lang, "开始取点", "Start Picking")) {
+                    calibration.startCoordinatePicker(adbPath: calibration.adbPath, device: calibration.device)
+                }
+                .disabled(calibration.isPickingCoordinates)
+                Button(t(lang, "停止取点", "Stop Picking")) {
+                    calibration.stopCoordinatePicker()
+                }
+                .disabled(!calibration.isPickingCoordinates)
                 Button(t(lang, "清空日志", "Clear Logs")) {
                     calibration.clearLogs()
                 }
@@ -1355,31 +1593,263 @@ struct CalibrationView: View {
 }
 
 enum MainSection: CaseIterable, Identifiable {
-    case record
     case run
-    case calibration
+    case record
+    case editor
+    case settings
 
     var id: String {
         switch self {
-        case .record: return "record"
         case .run: return "run"
-        case .calibration: return "calibration"
+        case .record: return "record"
+        case .editor: return "editor"
+        case .settings: return "settings"
         }
     }
 
     func title(_ lang: AppLanguage) -> String {
         switch self {
-        case .record: return t(lang, "录制", "Record")
         case .run: return t(lang, "运行", "Run")
-        case .calibration: return t(lang, "校准", "Calibration")
+        case .record: return t(lang, "录制", "Record")
+        case .editor: return t(lang, "编辑", "Editor")
+        case .settings: return t(lang, "设置", "Settings")
+        }
+    }
+}
+
+struct SettingsView: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            GroupBox(t(model.language, "界面设置", "Interface")) {
+                HStack {
+                    Text(t(model.language, "语言", "Language"))
+                    Picker("", selection: Binding(
+                        get: { model.language },
+                        set: { model.setLanguage($0) }
+                    )) {
+                        ForEach(AppLanguage.allCases) { lang in
+                            Text(lang.displayName).tag(lang)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 120)
+                    Spacer()
+                }
+                .padding(8)
+            }
+            GroupBox(t(model.language, "校准", "Calibration")) {
+                CalibrationView(
+                    calibration: model.calibration,
+                    lang: model.language,
+                    deviceOptions: model.availableDevices,
+                    refreshDevices: model.refreshADBAndDevices(adbInput:),
+                    forceRefreshDevices: model.forceRefreshADBAndDevices(adbInput:),
+                    onDeviceChanged: model.rememberLastDevice(_:)
+                )
+            }
+            Spacer()
         }
     }
 }
 
 struct ScriptEditorView: View {
     @ObservedObject var model: AppModel
+    @ObservedObject var calibration: CalibrationModel
+    @ObservedObject var debugRunner: RunnerModel
     @Binding var showNewScriptDialog: Bool
     @Binding var newScriptName: String
+    let onNavigateToRun: () -> Void
+    @State private var editorSelection = NSRange(location: 0, length: 0)
+    @State private var wheelCenterX = ""
+    @State private var wheelBottomInset = "200"
+    @State private var dragSeconds = "2"
+    @State private var dragDistance = "180"
+    @State private var dragAngle = "0"
+    @State private var quickClickX = ""
+    @State private var quickClickY = ""
+    @State private var quickWaitSeconds = "1"
+    @State private var didSeedWheelDefaults = false
+    @State private var showRunGuideAlert = false
+    @State private var pendingInsertion: EditorInsertionRequest?
+
+    private var latestPickedCoordinate: PickedCoordinate? {
+        calibration.pickedCoordinates.first
+    }
+
+    private var currentDebugDeviceLabel: String {
+        let device = model.preferredEditorDebugDevice().trimmingCharacters(in: .whitespacesAndNewlines)
+        if device.isEmpty {
+            return t(model.language, "未连接", "Not Connected")
+        }
+        return device
+    }
+
+    private var isDebugRunning: Bool {
+        debugRunner.isRunning
+    }
+
+    private func editorDevice() -> String {
+        let preferred = model.preferredDeviceForCurrentList(current: model.recorder.device)
+        if !preferred.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return preferred
+        }
+        let candidates = [model.recorder.device, model.runnerA.device, model.runnerB.device, calibration.device]
+        for item in candidates {
+            let trimmed = item.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+        return ""
+    }
+
+    private func currentScreenSize() -> (width: Int, height: Int) {
+        guard let adb = resolveADBExecutable(model.recorder.adbPath),
+              let size = readScreenSize(adbPath: adb, device: editorDevice()) else {
+            return (1080, 1920)
+        }
+        return size
+    }
+
+    private func seedWheelDefaultsIfNeeded() {
+        guard !didSeedWheelDefaults else { return }
+        applyDefaultWheelCenter()
+        didSeedWheelDefaults = true
+    }
+
+    private func applyDefaultWheelCenter() {
+        let size = currentScreenSize()
+        wheelCenterX = "\(size.width / 2)"
+    }
+
+    private func wheelCenterY() -> Int {
+        let size = currentScreenSize()
+        let inset = Int(wheelBottomInset.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 200
+        return max(0, size.height - inset)
+    }
+
+    private func insertTextAtCursor(_ insertion: String) {
+        pendingInsertion = EditorInsertionRequest(text: insertion)
+    }
+
+    private func copyToPasteboard(_ value: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(value, forType: .string)
+    }
+
+    private func currentLineIndent() -> String {
+        let nsText = model.editorText as NSString
+        let safeLocation = min(max(0, editorSelection.location), nsText.length)
+        let prefix = nsText.substring(to: safeLocation)
+        let line = prefix.components(separatedBy: "\n").last ?? ""
+        return String(line.prefix { $0 == " " || $0 == "\t" })
+    }
+
+    private func normalizedNumberText(_ value: Double) -> String {
+        let text = String(format: "%.3f", value).replacingOccurrences(of: #"0+$"#, with: "", options: .regularExpression)
+        let normalized = text.hasSuffix(".") ? String(text.dropLast()) : text
+        return normalized.isEmpty ? "0" : normalized
+    }
+
+    private func normalizedAngleText(_ value: Double) -> String {
+        let rounded = value.rounded()
+        if abs(value - rounded) < 0.0001 {
+            return String(Int(rounded))
+        }
+        return normalizedNumberText(value)
+    }
+
+    private func makeWheelRemark(angleDegrees: Double, seconds: Double, prefix: String? = nil) -> String {
+        let secondsText = normalizedNumberText(seconds)
+        if let prefix, !prefix.isEmpty {
+            return "\(prefix)\(secondsText)秒"
+        }
+        return "向\(normalizedAngleText(angleDegrees))度移动\(secondsText)秒"
+    }
+
+    private func makeWheelTraceSnippet(angleDegrees: Double, remark: String? = nil) -> String {
+        let centerX = Int(wheelCenterX.trimmingCharacters(in: .whitespacesAndNewlines)) ?? (currentScreenSize().width / 2)
+        let centerY = wheelCenterY()
+        let seconds = max(0.1, Double(dragSeconds.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 2.0)
+        let durationMs = Int(seconds * 1000.0)
+        let distance = max(1, Int(dragDistance.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 180)
+        let radians = angleDegrees * Double.pi / 180.0
+        let dx = cos(radians) * Double(distance)
+        let dy = -sin(radians) * Double(distance)
+        let targetX = centerX + Int(round(dx))
+        let targetY = centerY + Int(round(dy))
+        let indent = currentLineIndent()
+        let bodyIndent = indent + "  "
+        let remarkText = remark ?? makeWheelRemark(angleDegrees: angleDegrees, seconds: seconds)
+        return """
+\(indent){
+\(bodyIndent)"type": "trace",
+\(bodyIndent)"remark": "\(remarkText)",
+\(bodyIndent)"points": [
+\(bodyIndent)  {
+\(bodyIndent)    "x": \(centerX),
+\(bodyIndent)    "y": \(centerY),
+\(bodyIndent)    "t_ms": 0
+\(bodyIndent)  },
+\(bodyIndent)  {
+\(bodyIndent)    "x": \(targetX),
+\(bodyIndent)    "y": \(targetY),
+\(bodyIndent)    "t_ms": 100
+\(bodyIndent)  },
+\(bodyIndent)  {
+\(bodyIndent)    "x": \(targetX),
+\(bodyIndent)    "y": \(targetY),
+\(bodyIndent)    "t_ms": \(durationMs)
+\(bodyIndent)  }
+\(bodyIndent)],
+\(bodyIndent)"mode": "motion",
+\(bodyIndent)"min_segment_ms": 1,
+\(bodyIndent)"max_segment_ms": 1000
+\(indent)},
+
+"""
+    }
+
+    private func insertWheelTrace(angleDegrees: Double, remark: String? = nil) {
+        insertTextAtCursor(makeWheelTraceSnippet(angleDegrees: angleDegrees, remark: remark))
+    }
+
+    private func makeClickSnippet(x: Int, y: Int) -> String {
+        let indent = currentLineIndent()
+        return """
+\(indent){ "type": "click", "x": \(x), "y": \(y), "remark": "点击(\(x),\(y))" },
+
+"""
+    }
+
+    private func makeWaitSnippet(seconds: Double) -> String {
+        let indent = currentLineIndent()
+        let normalized = normalizedNumberText(seconds)
+        return """
+\(indent){ "type": "wait", "seconds": \(normalized), "remark": "等待\(normalized)秒" },
+
+"""
+    }
+
+    private func startEditorCoordinatePicker() {
+        let preferred = editorDevice()
+        calibration.adbPath = model.recorder.adbPath
+        calibration.device = preferred
+        calibration.startCoordinatePicker(adbPath: calibration.adbPath, device: preferred)
+    }
+
+    private func stopEditorCoordinatePicker() {
+        calibration.stopCoordinatePicker()
+    }
+
+    private func setWheelCenter(from picked: PickedCoordinate) {
+        wheelCenterX = "\(picked.x)"
+        let height = currentScreenSize().height
+        wheelBottomInset = "\(max(0, height - picked.y))"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1394,6 +1864,20 @@ struct ScriptEditorView: View {
                 Button(t(model.language, "保存", "Save")) {
                     model.saveCurrentScript()
                 }
+                Button(isDebugRunning ? t(model.language, "停止调试", "Stop Debug") : t(model.language, "调试运行", "Debug Run")) {
+                    if isDebugRunning {
+                        debugRunner.stop()
+                    } else {
+                        model.startEditorDebugRun { ok in
+                            if !ok {
+                                showRunGuideAlert = true
+                            }
+                        }
+                    }
+                }
+                Text("\(t(model.language, "当前设备", "Current Device")): \(currentDebugDeviceLabel)")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
             HStack {
                 Picker(t(model.language, "脚本", "Script"), selection: $model.selectedScriptName) {
@@ -1408,15 +1892,278 @@ struct ScriptEditorView: View {
             .onChange(of: model.selectedScriptName) { _ in
                 model.loadSelectedScript()
             }
+            GroupBox(t(model.language, "取坐标", "Coordinate Picker")) {
+        VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Button(t(model.language, "开始取点", "Start Picking")) {
+                            startEditorCoordinatePicker()
+                        }
+                        .disabled(calibration.isPickingCoordinates)
+                        Button(t(model.language, "停止取点", "Stop Picking")) {
+                            stopEditorCoordinatePicker()
+                        }
+                        .disabled(!calibration.isPickingCoordinates)
+                        Button(t(model.language, "清空坐标", "Clear Coordinates")) {
+                            calibration.clearPickedCoordinates()
+                        }
+                        let statusText = calibration.isPickingCoordinates
+                            ? t(model.language, "等待点击...", "Waiting for click...")
+                            : t(model.language, "未监听", "Idle")
+                        Text(statusText)
+                            .foregroundStyle(calibration.isPickingCoordinates ? .orange : .secondary)
+                    }
+                    if let latestPickedCoordinate {
+                        HStack {
+                            Text("\(t(model.language, "最新坐标", "Latest")): x=\(latestPickedCoordinate.x), y=\(latestPickedCoordinate.y)")
+                                .font(.system(size: 12, design: .monospaced))
+                            Text(latestPickedCoordinate.device)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    if !calibration.pickedCoordinates.isEmpty {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ForEach(calibration.pickedCoordinates) { picked in
+                                    HStack {
+                                        Text("x=\(picked.x), y=\(picked.y)")
+                                            .font(.system(size: 12, design: .monospaced))
+                                            .frame(width: 150, alignment: .leading)
+                                        Text(picked.device)
+                                            .font(.caption.monospaced())
+                                            .foregroundStyle(.secondary)
+                                            .frame(width: 120, alignment: .leading)
+                                        Button(t(model.language, "插入 click", "Insert Click")) {
+                                            insertTextAtCursor(makeClickSnippet(x: picked.x, y: picked.y))
+                                        }
+                                        Button(t(model.language, "插入坐标", "Insert Coordinates")) {
+                                            insertTextAtCursor("\(picked.x), \(picked.y)")
+                                        }
+                                        Button(t(model.language, "复制", "Copy")) {
+                                            copyToPasteboard("x=\(picked.x), y=\(picked.y)")
+                                        }
+                                        Button(t(model.language, "设为轮盘中心", "Set Wheel Center")) {
+                                            setWheelCenter(from: picked)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        .frame(height: 110)
+                    }
+                }
+                .padding(8)
+            }
+            GroupBox(t(model.language, "快捷插入", "Quick Insert")) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("X")
+                        TextField("540", text: $quickClickX)
+                            .frame(width: 80)
+                            .textFieldStyle(.roundedBorder)
+                        Text("Y")
+                        TextField("1680", text: $quickClickY)
+                            .frame(width: 80)
+                            .textFieldStyle(.roundedBorder)
+                        Button(t(model.language, "插入 click", "Insert Click")) {
+                            let x = Int(quickClickX.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+                            let y = Int(quickClickY.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+                            insertTextAtCursor(makeClickSnippet(x: x, y: y))
+                        }
+                        Spacer()
+                        Text(t(model.language, "秒", "Seconds"))
+                        TextField("1", text: $quickWaitSeconds)
+                            .frame(width: 70)
+                            .textFieldStyle(.roundedBorder)
+                        Button(t(model.language, "插入 wait", "Insert Wait")) {
+                            let seconds = Double(quickWaitSeconds.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 1
+                            insertTextAtCursor(makeWaitSnippet(seconds: max(0, seconds)))
+                        }
+                    }
+                    HStack {
+                        Text(t(model.language, "轮盘中心 X", "Wheel Center X"))
+                        TextField("540", text: $wheelCenterX)
+                            .frame(width: 80)
+                            .textFieldStyle(.roundedBorder)
+                        Text(t(model.language, "距离底部 Y", "Bottom Offset Y"))
+                        TextField("200", text: $wheelBottomInset)
+                            .frame(width: 80)
+                            .textFieldStyle(.roundedBorder)
+                        Button(t(model.language, "按分辨率默认", "Use Resolution Default")) {
+                            applyDefaultWheelCenter()
+                        }
+                    }
+                    HStack {
+                        Text(t(model.language, "拖动秒数", "Drag Seconds"))
+                        TextField("2", text: $dragSeconds)
+                            .frame(width: 70)
+                            .textFieldStyle(.roundedBorder)
+                        Text(t(model.language, "拖动距离", "Drag Distance"))
+                        TextField("180", text: $dragDistance)
+                            .frame(width: 70)
+                            .textFieldStyle(.roundedBorder)
+                        Text(t(model.language, "角度", "Angle"))
+                        TextField("0", text: $dragAngle)
+                            .frame(width: 70)
+                            .textFieldStyle(.roundedBorder)
+                        Button(t(model.language, "插入角度拖动", "Insert Angle Drag")) {
+                            let angle = Double(dragAngle.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+                            let seconds = max(0.1, Double(dragSeconds.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 2.0)
+                            insertWheelTrace(angleDegrees: angle, remark: makeWheelRemark(angleDegrees: angle, seconds: seconds))
+                        }
+                    }
+                    HStack {
+                        Button(t(model.language, "向左拖动", "Drag Left")) {
+                            let seconds = max(0.1, Double(dragSeconds.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 2.0)
+                            insertWheelTrace(angleDegrees: 180, remark: makeWheelRemark(angleDegrees: 180, seconds: seconds, prefix: "向左移动"))
+                        }
+                        Button(t(model.language, "向上拖动", "Drag Up")) {
+                            let seconds = max(0.1, Double(dragSeconds.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 2.0)
+                            insertWheelTrace(angleDegrees: 90, remark: makeWheelRemark(angleDegrees: 90, seconds: seconds, prefix: "向上移动"))
+                        }
+                        Button(t(model.language, "向下拖动", "Drag Down")) {
+                            let seconds = max(0.1, Double(dragSeconds.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 2.0)
+                            insertWheelTrace(angleDegrees: -90, remark: makeWheelRemark(angleDegrees: -90, seconds: seconds, prefix: "向下移动"))
+                        }
+                        Button(t(model.language, "向右拖动", "Drag Right")) {
+                            let seconds = max(0.1, Double(dragSeconds.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 2.0)
+                            insertWheelTrace(angleDegrees: 0, remark: makeWheelRemark(angleDegrees: 0, seconds: seconds, prefix: "向右移动"))
+                        }
+                    }
+                }
+                .padding(8)
+            }
 
-            TextEditor(text: $model.editorText)
-                .font(.system(size: 12, design: .monospaced))
+            CodeTextView(text: $model.editorText, selectedRange: $editorSelection, pendingInsertion: $pendingInsertion)
                 .border(Color.gray.opacity(0.4), width: 1)
+                .onAppear {
+                    seedWheelDefaultsIfNeeded()
+                }
 
             Text(model.statusMessage)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
+        .alert(t(model.language, "无法直接调试", "Unable to Debug Directly"), isPresented: $showRunGuideAlert) {
+            Button(t(model.language, "前往运行", "Go to Run")) {
+                onNavigateToRun()
+            }
+            Button(t(model.language, "取消", "Cancel"), role: .cancel) {}
+        } message: {
+            Text(t(model.language, "当前没有默认可连接设备。请先到运行模块确认设备，再执行调试运行。", "No default reachable device is available. Go to the Run section and confirm the device first."))
+        }
+    }
+}
+
+struct CodeTextView: NSViewRepresentable {
+    @Binding var text: String
+    @Binding var selectedRange: NSRange
+    @Binding var pendingInsertion: EditorInsertionRequest?
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: CodeTextView
+        var isSyncing = false
+        var lastAppliedInsertionID: EditorInsertionRequest.ID?
+
+        init(parent: CodeTextView) {
+            self.parent = parent
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard !isSyncing,
+                  let textView = notification.object as? NSTextView else { return }
+            parent.text = textView.string
+            parent.selectedRange = textView.selectedRange()
+        }
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard !isSyncing,
+                  let textView = notification.object as? NSTextView else { return }
+            parent.selectedRange = textView.selectedRange()
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.borderType = .noBorder
+
+        let textView = NSTextView()
+        textView.isRichText = false
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.isContinuousSpellCheckingEnabled = false
+        textView.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        textView.delegate = context.coordinator
+        textView.string = text
+        textView.allowsUndo = true
+        textView.isHorizontallyResizable = true
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+        textView.textContainerInset = NSSize(width: 6, height: 6)
+        textView.textContainer?.widthTracksTextView = false
+        textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+
+        scrollView.documentView = textView
+        return scrollView
+    }
+
+    private func applyInsertionIfNeeded(_ textView: NSTextView, context: Context) -> Bool {
+        guard let request = pendingInsertion else { return false }
+        if context.coordinator.lastAppliedInsertionID == request.id {
+            return false
+        }
+
+        context.coordinator.lastAppliedInsertionID = request.id
+        context.coordinator.isSyncing = true
+
+        let current = textView.selectedRange()
+        let safeLocation = min(max(0, current.location), (textView.string as NSString).length)
+        let safeLength = min(max(0, current.length), (textView.string as NSString).length - safeLocation)
+        let safeRange = NSRange(location: safeLocation, length: safeLength)
+
+        if textView.shouldChangeText(in: safeRange, replacementString: request.text) {
+            textView.textStorage?.replaceCharacters(in: safeRange, with: request.text)
+            textView.didChangeText()
+            let cursor = safeLocation + (request.text as NSString).length
+            let newRange = NSRange(location: cursor, length: 0)
+            textView.setSelectedRange(newRange)
+            textView.scrollRangeToVisible(newRange)
+            self.text = textView.string
+            self.selectedRange = newRange
+        }
+
+        context.coordinator.isSyncing = false
+        DispatchQueue.main.async {
+            if self.pendingInsertion?.id == request.id {
+                self.pendingInsertion = nil
+            }
+        }
+        return true
+    }
+
+    func updateNSView(_ nsView: NSScrollView, context: Context) {
+        guard let textView = nsView.documentView as? NSTextView else { return }
+        context.coordinator.parent = self
+        if applyInsertionIfNeeded(textView, context: context) {
+            return
+        }
+        context.coordinator.isSyncing = true
+        if textView.string != text {
+            textView.string = text
+        }
+        if textView.selectedRange() != selectedRange {
+            textView.setSelectedRange(selectedRange)
+            textView.scrollRangeToVisible(selectedRange)
+        }
+        context.coordinator.isSyncing = false
     }
 }
 
@@ -1678,7 +2425,7 @@ struct RunWindowView: View {
 struct ContentView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.openWindow) private var openWindow
-    @State private var selectedSection: MainSection? = .record
+    @State private var selectedSection: MainSection? = .run
     @State private var showNewScriptDialog = false
     @State private var newScriptName = ""
 
@@ -1694,33 +2441,16 @@ struct ContentView: View {
                 HStack {
                     Text("BSManager v\(appVersion)")
                         .font(.headline)
-                    Picker("", selection: Binding(
-                        get: { model.language },
-                        set: { model.setLanguage($0) }
-                    )) {
-                        ForEach(AppLanguage.allCases) { lang in
-                            Text(lang.displayName).tag(lang)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 100)
                     Spacer()
                     Text(model.adbStatusMessage)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
 
-                switch selectedSection ?? .record {
-                case .calibration:
-                    GroupBox(t(model.language, "校准", "Calibration")) {
-                        CalibrationView(
-                            calibration: model.calibration,
-                            lang: model.language,
-                            deviceOptions: model.availableDevices,
-                            refreshDevices: model.refreshADBAndDevices(adbInput:),
-                            forceRefreshDevices: model.forceRefreshADBAndDevices(adbInput:),
-                            onDeviceChanged: model.rememberLastDevice(_:)
-                        )
+                switch selectedSection ?? .run {
+                case .run:
+                    GroupBox(t(model.language, "运行管理", "Run Manager")) {
+                        RunHomeView()
                     }
                 case .record:
                     GroupBox(t(model.language, "录制", "Record")) {
@@ -1732,18 +2462,22 @@ struct ContentView: View {
                             onDeviceChanged: model.rememberLastDevice(_:)
                         )
                     }
+                case .editor:
                     GroupBox(t(model.language, "脚本编辑", "Script Editor")) {
                         ScriptEditorView(
                             model: model,
+                            calibration: model.calibration,
+                            debugRunner: model.runnerA,
                             showNewScriptDialog: $showNewScriptDialog,
-                            newScriptName: $newScriptName
+                            newScriptName: $newScriptName,
+                            onNavigateToRun: {
+                                selectedSection = .run
+                            }
                         )
                         .padding(8)
                     }
-                case .run:
-                    GroupBox(t(model.language, "运行管理", "Run Manager")) {
-                        RunHomeView()
-                    }
+                case .settings:
+                    SettingsView()
                 }
             }
             .padding(12)

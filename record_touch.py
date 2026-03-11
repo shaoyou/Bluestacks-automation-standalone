@@ -8,7 +8,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 
 class RecorderError(RuntimeError):
@@ -217,9 +217,6 @@ def build_actions_from_gestures(
 ) -> List[Dict]:
     actions: List[Dict] = []
     prev_end: Optional[float] = None
-    tap_distance_px = 24.0
-    tap_duration_sec = 0.45
-    min_swipe_duration_sec = 0.18
 
     for g in gestures:
         if not g.points:
@@ -238,19 +235,12 @@ def build_actions_from_gestures(
         x2s, y2s = map_raw_point_to_screen(
             last.x_raw, last.y_raw, x_raw_max, y_raw_max, screen_w, screen_h, invert_x, invert_y, swap_xy
         )
-        x1, y1 = x1s, y1s
+        click = gesture_to_click(x1s, y1s, x2s, y2s, g)
         x2, y2 = x2s, y2s
-        dist = math.hypot(x2 - x1, y2 - y1)
         duration = max(0.0, g.end_t - g.start_t)
 
-        point_count = len(g.points)
-        if (
-            point_count <= 12
-            and dist <= tap_distance_px
-            and duration <= tap_duration_sec
-            and not (point_count >= 2 and duration >= min_swipe_duration_sec)
-        ):
-            actions.append({"type": "click", "x": x2, "y": y2})
+        if click is not None:
+            actions.append(click)
         else:
             px_points: List[Dict] = []
             last_px: Optional[Tuple[int, int]] = None
@@ -297,6 +287,23 @@ def build_actions_from_gestures(
                     }
                 )
     return actions
+
+
+def gesture_to_click(x1: int, y1: int, x2: int, y2: int, gesture: Gesture) -> Optional[Dict]:
+    tap_distance_px = 24.0
+    tap_duration_sec = 0.45
+    min_swipe_duration_sec = 0.18
+    dist = math.hypot(x2 - x1, y2 - y1)
+    duration = max(0.0, gesture.end_t - gesture.start_t)
+    point_count = len(gesture.points)
+    if (
+        point_count <= 12
+        and dist <= tap_distance_px
+        and duration <= tap_duration_sec
+        and not (point_count >= 2 and duration >= min_swipe_duration_sec)
+    ):
+        return {"type": "click", "x": x2, "y": y2}
+    return None
 
 
 def _point_distance(a: Dict, b: Dict) -> float:
@@ -453,6 +460,7 @@ def record_gestures(
     min_points: int,
     forced_event_dev: Optional[str],
     stop_after_gestures: Optional[int] = None,
+    on_gesture_captured: Optional[Callable[[Gesture, str], None]] = None,
 ) -> Tuple[List[Gesture], str]:
     cmd = adb_cmd(adb, device, ["shell", "getevent", "-lt"])
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
@@ -577,6 +585,8 @@ def record_gestures(
                                     explicit_touch=current_explicit_touch,
                                 )
                             )
+                            if on_gesture_captured is not None and selected_dev is not None:
+                                on_gesture_captured(gestures[-1], selected_dev)
                             print(f"[Recorder] Gesture captured: {len(cur_points)} points")
                             if stop_after_gestures and len(gestures) >= stop_after_gestures:
                                 break
@@ -611,6 +621,8 @@ def record_gestures(
                                 explicit_touch=current_explicit_touch,
                             )
                         )
+                        if on_gesture_captured is not None and selected_dev is not None:
+                            on_gesture_captured(gestures[-1], selected_dev)
                         print(f"[Recorder] Gesture captured: {len(cur_points)} points")
                         if stop_after_gestures and len(gestures) >= stop_after_gestures:
                             break
@@ -631,6 +643,8 @@ def record_gestures(
                                 explicit_touch=False,
                             )
                         )
+                        if on_gesture_captured is not None and selected_dev is not None:
+                            on_gesture_captured(gestures[-1], selected_dev)
                         print(f"[Recorder] Gesture captured (idle split): {len(cur_points)} points")
                         if stop_after_gestures and len(gestures) >= stop_after_gestures:
                             break
@@ -680,6 +694,47 @@ def record_gestures(
     if selected_dev is None:
         raise RecorderError("No active touch device detected during recording.")
     return filtered, selected_dev
+
+
+def listen_click_coordinates(
+    adb: str,
+    device: Optional[str],
+    touch_caps: Dict[str, Tuple[int, int]],
+    screen_w: int,
+    screen_h: int,
+    forced_event_dev: Optional[str],
+    invert_x: bool,
+    invert_y: bool,
+    swap_xy: bool,
+) -> str:
+    selected_dev_holder: List[str] = []
+
+    def report_click(gesture: Gesture, selected_dev: str) -> None:
+        if not selected_dev_holder:
+            selected_dev_holder.append(selected_dev)
+        x_max, y_max = touch_caps[selected_dev]
+        first = gesture.points[0]
+        last = gesture.points[-1]
+        x1, y1 = map_raw_point_to_screen(
+            first.x_raw, first.y_raw, x_max, y_max, screen_w, screen_h, invert_x, invert_y, swap_xy
+        )
+        x2, y2 = map_raw_point_to_screen(
+            last.x_raw, last.y_raw, x_max, y_max, screen_w, screen_h, invert_x, invert_y, swap_xy
+        )
+        click = gesture_to_click(x1, y1, x2, y2, gesture)
+        if click is not None:
+            print(f"[Click] x={click['x']} y={click['y']}", flush=True)
+
+    _, selected_dev = record_gestures(
+        adb,
+        device,
+        touch_caps,
+        min_points=1,
+        forced_event_dev=forced_event_dev,
+        stop_after_gestures=None,
+        on_gesture_captured=report_click,
+    )
+    return selected_dev
 
 
 def recommend_mapping(
@@ -741,6 +796,7 @@ def main() -> int:
     parser.add_argument("--swap-xy", action="store_true", help="Swap raw X/Y mapping before inversion")
     parser.add_argument("--mapping-lock", action="store_true", help="Write mapping_locked=true in output plan")
     parser.add_argument("--calibrate-mapping", action="store_true", help="Record one stroke and print best mapping")
+    parser.add_argument("--print-clicks-only", action="store_true", help="Listen to touches and print click coordinates only")
     args = parser.parse_args()
 
     retried = False
@@ -765,6 +821,22 @@ def main() -> int:
     print("[Recorder] Touch candidates:")
     for dev, (x_max, y_max) in sorted(touch_caps.items()):
         print(f"  - {dev} (x_max={x_max}, y_max={y_max})")
+
+    if args.print_clicks_only:
+        selected_dev = listen_click_coordinates(
+            args.adb,
+            effective_device,
+            touch_caps,
+            screen_w,
+            screen_h,
+            args.event_dev,
+            bool(args.invert_x),
+            bool(args.invert_y),
+            bool(args.swap_xy),
+        )
+        x_max, y_max = touch_caps[selected_dev]
+        print(f"[Recorder] Using touch device: {selected_dev}, raw max: x={x_max}, y={y_max}")
+        return 0
 
     gestures, selected_dev = record_gestures(
         args.adb,
