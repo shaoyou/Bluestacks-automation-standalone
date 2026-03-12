@@ -242,6 +242,7 @@ final class RunnerModel: ObservableObject {
     @Published var cycleDurationSec: Double = 0
     @Published var cycleProgressSec: Double = 0
     @Published var cycleCount: Int = 0
+    @Published var profitPerCycle: String = "0"
     @Published var showRealtimeCommandLogs: Bool = false
 
     private var process: Process?
@@ -305,6 +306,20 @@ final class RunnerModel: ObservableObject {
     var cycleCountText: String {
         guard cycleCount > 0 else { return "--" }
         return "\(cycleCount)"
+    }
+
+    var expectedProfitText: String {
+        let profit = (Double(profitPerCycle.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0) * Double(max(0, cycleCount))
+        return Self.formatDisplayNumber(profit)
+    }
+
+    private static func formatDisplayNumber(_ value: Double) -> String {
+        guard value.isFinite else { return "0" }
+        if value.rounded() == value {
+            return String(Int(value))
+        }
+        return String(format: "%.2f", value)
+            .replacingOccurrences(of: #"\\.?0+$"#, with: "", options: .regularExpression)
     }
 
     private func estimateActionsDuration(_ actions: [Any]) -> Double {
@@ -1396,6 +1411,15 @@ struct RunnerView: View {
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(.secondary)
                 Text("\(t(lang, "循环次数", "Loop Count")): \(runner.cycleCountText)")
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
+                Text(t(lang, "单次循环收益", "Profit Per Cycle"))
+                TextField("0", text: $runner.profitPerCycle)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 120)
+                Text("\(t(lang, "预期收益", "Expected Profit")): \(runner.expectedProfitText)")
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
