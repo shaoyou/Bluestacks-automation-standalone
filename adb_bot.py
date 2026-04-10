@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
 import argparse
+import csv
+import io
 import json
+import os
 import random
 import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from PIL import Image
+
 WM_SIZE_RE = re.compile(r"(\d+)x(\d+)")
+ENV_REF_RE = re.compile(r"\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 
 
 class BotError(RuntimeError):
@@ -36,6 +43,52 @@ class RunContext:
 def log(message: str) -> None:
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{now}] {message}", flush=True)
+
+
+def _env_name(match: re.Match[str]) -> str:
+    return match.group(1) or match.group(2) or ""
+
+
+def _parse_env_literal(raw_value: str) -> Any:
+    text = raw_value.strip()
+    if not text:
+        return raw_value
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return raw_value
+
+
+def resolve_plan_env_string(text: str, path: str) -> Any:
+    matches = list(ENV_REF_RE.finditer(text))
+    if not matches:
+        return text
+
+    if len(matches) == 1 and matches[0].span() == (0, len(text)):
+        name = _env_name(matches[0])
+        raw_value = os.environ.get(name)
+        if raw_value is None:
+            raise BotError(f"Missing environment variable '{name}' for plan value at {path}")
+        return _parse_env_literal(raw_value)
+
+    def replace(match: re.Match[str]) -> str:
+        name = _env_name(match)
+        raw_value = os.environ.get(name)
+        if raw_value is None:
+            raise BotError(f"Missing environment variable '{name}' for plan value at {path}")
+        return raw_value
+
+    return ENV_REF_RE.sub(replace, text)
+
+
+def resolve_plan_env_value(value: Any, path: str = "plan") -> Any:
+    if isinstance(value, dict):
+        return {key: resolve_plan_env_value(item, f"{path}.{key}") for key, item in value.items()}
+    if isinstance(value, list):
+        return [resolve_plan_env_value(item, f"{path}[{index}]") for index, item in enumerate(value)]
+    if isinstance(value, str):
+        return resolve_plan_env_string(value, path)
+    return value
 
 
 def run_cmd(cmd: List[str], check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -114,6 +167,13 @@ def adb_shell_result(ctx: RunContext, shell_args: List[str]) -> subprocess.Compl
     return run_cmd(cmd, check=False)
 
 
+def adb_exec_out_result(ctx: RunContext, extra: List[str]) -> subprocess.CompletedProcess[bytes]:
+    if ctx.dry_run:
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"", stderr=b"")
+    cmd = build_adb_cmd(ctx, ["exec-out"] + extra)
+    return subprocess.run(cmd, capture_output=True, check=False)
+
+
 def map_input_point(ctx: RunContext, x: int, y: int) -> Tuple[int, int]:
     if ctx.src_screen_w <= 0 or ctx.src_screen_h <= 0:
         return x, y
@@ -176,6 +236,162 @@ def do_click(ctx: RunContext, action: Dict[str, Any]) -> None:
     y = apply_jitter(y, ctx.jitter)
     adb_shell(ctx, ["input", "tap", str(x), str(y)])
     log(f"Click ({x}, {y})")
+
+
+def do_click_absolute(ctx: RunContext, x: int, y: int) -> None:
+    if ctx.dst_screen_w > 0 and ctx.dst_screen_h > 0:
+        x = max(0, min(ctx.dst_screen_w - 1, x))
+        y = max(0, min(ctx.dst_screen_h - 1, y))
+    x = apply_jitter(x, ctx.jitter)
+    y = apply_jitter(y, ctx.jitter)
+    adb_shell(ctx, ["input", "tap", str(x), str(y)])
+    log(f"Click OCR target ({x}, {y})")
+
+
+def capture_device_screenshot(ctx: RunContext) -> Image.Image:
+    result = adb_exec_out_result(ctx, ["screencap", "-p"])
+    if result.returncode != 0:
+        text = (result.stderr or b"").decode("utf-8", errors="ignore").strip()
+        raise BotError(f"ADB screencap failed:\n{text or 'unknown error'}")
+    image_bytes = result.stdout
+    if not image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise BotError("ADB screencap did not return a PNG image.")
+    try:
+        image = Image.open(io.BytesIO(image_bytes))
+        image.load()
+        return image.convert("RGB")
+    except Exception as exc:
+        raise BotError(f"Failed to decode screencap PNG: {exc}") from exc
+
+
+def normalize_ocr_text(text: str) -> str:
+    return "".join(text.split()).lower()
+
+
+def run_tesseract_tsv(image: Image.Image, lang: str, psm: int) -> List[Dict[str, str]]:
+    with tempfile.NamedTemporaryFile(suffix=".png") as tmp:
+        image.save(tmp.name, format="PNG")
+        cmd = [
+            "tesseract",
+            tmp.name,
+            "stdout",
+            "-l",
+            lang,
+            "--psm",
+            str(psm),
+            "tsv",
+        ]
+        result = run_cmd(cmd, check=False)
+        if result.returncode != 0:
+            details = (result.stderr or result.stdout or "").strip()
+            raise BotError(f"Tesseract OCR failed:\n{details}")
+        reader = csv.DictReader(io.StringIO(result.stdout), delimiter="\t")
+        return [row for row in reader]
+
+
+def find_text_region(
+    rows: List[Dict[str, str]],
+    target_text: str,
+    match_mode: str,
+    index: int,
+) -> Optional[Tuple[int, int, int, int, str]]:
+    normalized_target = normalize_ocr_text(target_text)
+    if not normalized_target:
+        return None
+
+    line_groups: Dict[Tuple[str, str, str, str], List[Dict[str, str]]] = {}
+    for row in rows:
+        text = (row.get("text") or "").strip()
+        if not text:
+            continue
+        key = (
+            row.get("block_num", ""),
+            row.get("par_num", ""),
+            row.get("line_num", ""),
+            row.get("page_num", ""),
+        )
+        line_groups.setdefault(key, []).append(row)
+
+    matches: List[Tuple[int, int, int, int, str]] = []
+    for key in sorted(line_groups.keys()):
+        group = line_groups[key]
+        parts = [(row.get("text") or "").strip() for row in group]
+        combined = normalize_ocr_text("".join(parts))
+        if not combined:
+            continue
+        matched = combined == normalized_target if match_mode == "exact" else normalized_target in combined
+        if not matched:
+            continue
+        xs = [int(row["left"]) for row in group]
+        ys = [int(row["top"]) for row in group]
+        rights = [int(row["left"]) + int(row["width"]) for row in group]
+        bottoms = [int(row["top"]) + int(row["height"]) for row in group]
+        matches.append((min(xs), min(ys), max(rights), max(bottoms), "".join(parts)))
+
+    if matches:
+        return matches[index] if 0 <= index < len(matches) else None
+
+    for row in rows:
+        text = (row.get("text") or "").strip()
+        if not text:
+            continue
+        normalized = normalize_ocr_text(text)
+        matched = normalized == normalized_target if match_mode == "exact" else normalized_target in normalized
+        if not matched:
+            continue
+        left = int(row["left"])
+        top = int(row["top"])
+        right = left + int(row["width"])
+        bottom = top + int(row["height"])
+        matches.append((left, top, right, bottom, text))
+    return matches[index] if 0 <= index < len(matches) else None
+
+
+def do_find_text_click(ctx: RunContext, action: Dict[str, Any]) -> None:
+    target_text = str(action.get("text", "")).strip()
+    if not target_text:
+        raise BotError("find_text_click requires non-empty 'text'")
+    timeout_sec = float(action.get("timeout_sec", 8.0))
+    interval_sec = float(action.get("interval_sec", 0.8))
+    match_mode = str(action.get("match", "contains")).strip().lower()
+    if match_mode not in {"contains", "exact"}:
+        raise BotError("find_text_click 'match' must be 'contains' or 'exact'")
+    lang = str(action.get("lang", "eng")).strip() or "eng"
+    psm = int(action.get("psm", 6))
+    index = int(action.get("index", 0))
+    offset_x = int(action.get("offset_x", 0))
+    offset_y = int(action.get("offset_y", 0))
+    if ctx.dry_run:
+        log(
+            f"[DRY-RUN] find_text_click text='{target_text}' "
+            f"lang={lang} match={match_mode} timeout={timeout_sec}s"
+        )
+        return
+
+    deadline = time.time() + max(0.0, timeout_sec)
+    attempt = 0
+    while True:
+        check_stop(ctx)
+        attempt += 1
+        image = capture_device_screenshot(ctx)
+        rows = run_tesseract_tsv(image, lang=lang, psm=psm)
+        region = find_text_region(rows, target_text=target_text, match_mode=match_mode, index=index)
+        if region is not None:
+            left, top, right, bottom, matched_text = region
+            center_x = int(round((left + right) / 2.0)) + offset_x
+            center_y = int(round((top + bottom) / 2.0)) + offset_y
+            log(
+                f"OCR matched text '{matched_text}' for target '{target_text}' "
+                f"at box=({left},{top})-({right},{bottom}) on attempt {attempt}"
+            )
+            do_click_absolute(ctx, center_x, center_y)
+            return
+        if time.time() >= deadline:
+            raise BotError(
+                f"find_text_click timed out after {timeout_sec:.1f}s: "
+                f"text '{target_text}' not found (lang={lang}, match={match_mode})"
+            )
+        time.sleep(max(0.1, interval_sec))
 
 
 def do_swipe(ctx: RunContext, action: Dict[str, Any]) -> None:
@@ -317,6 +533,8 @@ def execute_action(ctx: RunContext, action: Dict[str, Any]) -> None:
     action_type = action.get("type")
     if action_type == "click":
         do_click(ctx, action)
+    elif action_type == "find_text_click":
+        do_find_text_click(ctx, action)
     elif action_type == "swipe":
         do_swipe(ctx, action)
     elif action_type == "trace":
@@ -401,11 +619,15 @@ def ensure_device_connected(adb_path: str, device: Optional[str]) -> Optional[st
 
 def load_plan(path: Path) -> Dict[str, Any]:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        raw_plan = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
         raise BotError(f"Plan file not found: {path}") from exc
     except json.JSONDecodeError as exc:
         raise BotError(f"Invalid JSON in plan file {path}: {exc}") from exc
+    resolved = resolve_plan_env_value(raw_plan, path="plan")
+    if not isinstance(resolved, dict):
+        raise BotError(f"Plan root must be a JSON object: {path}")
+    return resolved
 
 
 def get_device_screen_size(adb_path: str, device: Optional[str]) -> Tuple[int, int]:

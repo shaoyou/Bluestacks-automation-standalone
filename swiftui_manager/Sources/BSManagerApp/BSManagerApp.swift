@@ -4,12 +4,151 @@ import AppKit
 
 private let appRoot = URL(fileURLWithPath: "/Users/admins/Documents/Playground/Bluestacks-automation-standalone", isDirectory: true)
 private let plansDir = appRoot.appendingPathComponent("plans", isDirectory: true)
+private let recordingProfilesDir = appRoot.appendingPathComponent("recording_profiles", isDirectory: true)
+private let diagnosticsDir = appRoot.appendingPathComponent("diagnostics", isDirectory: true)
 private let botScript = appRoot.appendingPathComponent("adb_bot.py")
 private let recorderScript = appRoot.appendingPathComponent("record_touch.py")
 private let appVersion = "1.1.0"
+private let mainWindowSceneID = "main-window"
+private let mainWindowIdentifier = NSUserInterfaceItemIdentifier(mainWindowSceneID)
+private let scriptEnvironmentVariablesKey = "bs.scriptEnvironmentVariables"
+private let scriptEnvironmentReferenceRegex = try! NSRegularExpression(pattern: #"\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)"#)
+
+struct ScriptEnvironmentVariable: Identifiable, Codable, Equatable {
+    var id: UUID = UUID()
+    var name: String
+    var value: String
+    var note: String
+}
+
+private func loadScriptEnvironmentVariables() -> [ScriptEnvironmentVariable] {
+    guard let data = UserDefaults.standard.data(forKey: scriptEnvironmentVariablesKey),
+          let variables = try? JSONDecoder().decode([ScriptEnvironmentVariable].self, from: data) else {
+        return []
+    }
+    return variables
+}
+
+private func saveScriptEnvironmentVariables(_ variables: [ScriptEnvironmentVariable]) {
+    guard let data = try? JSONEncoder().encode(variables) else { return }
+    UserDefaults.standard.set(data, forKey: scriptEnvironmentVariablesKey)
+}
+
+private func scriptEnvironmentDictionary(from variables: [ScriptEnvironmentVariable]) -> [String: String] {
+    var resolved: [String: String] = [:]
+    for item in variables {
+        let name = item.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { continue }
+        resolved[name] = item.value
+    }
+    return resolved
+}
+
+private func currentScriptEnvironmentDictionary() -> [String: String] {
+    scriptEnvironmentDictionary(from: loadScriptEnvironmentVariables())
+}
+
+private func scriptEnvironmentName(in text: String, match: NSTextCheckingResult) -> String? {
+    if let range = Range(match.range(at: 1), in: text) {
+        return String(text[range])
+    }
+    if let range = Range(match.range(at: 2), in: text) {
+        return String(text[range])
+    }
+    return nil
+}
+
+private func parseScriptEnvironmentLiteral(_ rawValue: String) -> Any {
+    let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else {
+        return rawValue
+    }
+    if let parsed = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) {
+        return parsed
+    }
+    return rawValue
+}
+
+private func resolveScriptEnvironmentString(_ text: String, variables: [String: String], strict: Bool = false) -> Any {
+    let fullRange = NSRange(text.startIndex..<text.endIndex, in: text)
+    let matches = scriptEnvironmentReferenceRegex.matches(in: text, options: [], range: fullRange)
+    guard !matches.isEmpty else { return text }
+
+    if matches.count == 1,
+       matches[0].range.location == 0,
+       matches[0].range.length == fullRange.length,
+       let name = scriptEnvironmentName(in: text, match: matches[0]) {
+        guard let rawValue = variables[name] else {
+            return strict ? text : text
+        }
+        return parseScriptEnvironmentLiteral(rawValue)
+    }
+
+    let mutable = NSMutableString(string: text)
+    for match in matches.reversed() {
+        guard let name = scriptEnvironmentName(in: text, match: match) else { continue }
+        guard let rawValue = variables[name] else { continue }
+        mutable.replaceCharacters(in: match.range, with: rawValue)
+    }
+    return String(mutable)
+}
+
+private func resolveScriptEnvironmentValue(_ value: Any, variables: [String: String], strict: Bool = false) -> Any {
+    switch value {
+    case let dict as [String: Any]:
+        var resolved: [String: Any] = [:]
+        for (key, item) in dict {
+            resolved[key] = resolveScriptEnvironmentValue(item, variables: variables, strict: strict)
+        }
+        return resolved
+    case let list as [Any]:
+        return list.map { resolveScriptEnvironmentValue($0, variables: variables, strict: strict) }
+    case let text as String:
+        return resolveScriptEnvironmentString(text, variables: variables, strict: strict)
+    default:
+        return value
+    }
+}
+
+private func doubleValue(from rawValue: Any?, default defaultValue: Double = 0) -> Double {
+    switch rawValue {
+    case let value as Double:
+        return value
+    case let value as Float:
+        return Double(value)
+    case let value as Int:
+        return Double(value)
+    case let value as NSNumber:
+        return value.doubleValue
+    case let value as String:
+        return Double(value.trimmingCharacters(in: .whitespacesAndNewlines)) ?? defaultValue
+    default:
+        return defaultValue
+    }
+}
+
+private func intValue(from rawValue: Any?, default defaultValue: Int = 0) -> Int {
+    switch rawValue {
+    case let value as Int:
+        return value
+    case let value as Double:
+        return Int(value)
+    case let value as Float:
+        return Int(value)
+    case let value as NSNumber:
+        return value.intValue
+    case let value as String:
+        return Int(value.trimmingCharacters(in: .whitespacesAndNewlines)) ?? defaultValue
+    default:
+        return defaultValue
+    }
+}
 
 private func mergedEnvironment() -> [String: String] {
     var env = ProcessInfo.processInfo.environment
+    for (name, value) in currentScriptEnvironmentDictionary() {
+        env[name] = value
+    }
     let sdkADB = (NSHomeDirectory() as NSString).appendingPathComponent("Library/Android/sdk/platform-tools")
     let extra = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin", sdkADB]
     let current = env["PATH"] ?? ""
@@ -105,6 +244,45 @@ private func listConnectedDevices(adbPath: String) -> [String] {
     return parseDeviceList(first.text)
 }
 
+private func adbOutputNeedsRecovery(code: Int32, text: String) -> Bool {
+    let lowered = text.lowercased()
+    if code != 0 {
+        return true
+    }
+    return lowered.contains("device offline")
+        || lowered.contains("device not found")
+        || lowered.contains("more than one device")
+        || lowered.contains("cannot connect")
+        || lowered.contains("error: closed")
+        || lowered.contains("failed to check server version")
+        || lowered.contains("adb server didn't ack")
+}
+
+private func recoverADBServer(adbPath: String) {
+    _ = runADBCommand(adbPath: adbPath, args: ["kill-server"])
+    _ = runADBCommand(adbPath: adbPath, args: ["start-server"])
+}
+
+private func runADBShellCommandWithRecovery(adbPath: String, device: String, shellArgs: [String]) -> (code: Int32, text: String, recovered: Bool) {
+    let trimmed = device.trimmingCharacters(in: .whitespacesAndNewlines)
+    var args: [String] = []
+    if !trimmed.isEmpty {
+        args += ["-s", trimmed]
+    }
+    args += ["shell"] + shellArgs
+    let first = runADBCommand(adbPath: adbPath, args: args)
+    if !adbOutputNeedsRecovery(code: first.code, text: first.text) {
+        return (first.code, first.text, false)
+    }
+
+    if !trimmed.isEmpty {
+        _ = runADBCommand(adbPath: adbPath, args: ["connect", trimmed])
+    }
+    recoverADBServer(adbPath: adbPath)
+    let second = runADBCommand(adbPath: adbPath, args: args)
+    return (second.code, second.text, true)
+}
+
 private func listConnectedDevicesWithRecovery(adbPath: String) -> (devices: [String], recovered: Bool) {
     let first = runADBCommand(adbPath: adbPath, args: ["devices"])
     let firstDevices = parseDeviceList(first.text)
@@ -163,23 +341,54 @@ private func readScreenSize(adbPath: String, device: String) -> (Int, Int)? {
 private func isADBDeviceReachable(adbPath: String, device: String) -> Bool {
     let trimmed = device.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return false }
-    let result = runADBCommand(adbPath: adbPath, args: ["-s", trimmed, "shell", "getprop", "ro.build.version.release"])
+    let result = runADBShellCommandWithRecovery(
+        adbPath: adbPath,
+        device: trimmed,
+        shellArgs: ["getprop", "ro.build.version.release"]
+    )
     let text = result.text.lowercased()
-    if result.code != 0 {
-        return false
-    }
-    if text.contains("device offline")
-        || text.contains("device not found")
-        || text.contains("more than one device")
-        || text.contains("cannot connect")
-        || text.contains("error: closed") {
+    if adbOutputNeedsRecovery(code: result.code, text: text) {
         return false
     }
     return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 }
 
+private func splitDevicesByReachability(adbPath: String, devices: [String]) -> (healthy: [String], unhealthy: [String]) {
+    var healthy: [String] = []
+    var unhealthy: [String] = []
+    for device in devices {
+        if isADBDeviceReachable(adbPath: adbPath, device: device) {
+            healthy.append(device)
+        } else {
+            unhealthy.append(device)
+        }
+    }
+    return (healthy, unhealthy)
+}
+
 private func openScriptsDirectoryInFinder() {
     NSWorkspace.shared.open(plansDir)
+}
+
+private func sanitizedDeviceFileName(_ device: String) -> String {
+    let trimmed = device.trimmingCharacters(in: .whitespacesAndNewlines)
+    let base = trimmed.isEmpty ? "default" : trimmed
+    let safeScalars = base.unicodeScalars.map { scalar -> Character in
+        if CharacterSet.alphanumerics.contains(scalar) || scalar == "-" || scalar == "_" {
+            return Character(scalar)
+        }
+        return "_"
+    }
+    let safe = String(safeScalars)
+    return safe.isEmpty ? "default" : safe
+}
+
+private func recordingProfileURL(for device: String) -> URL {
+    recordingProfilesDir.appendingPathComponent("\(sanitizedDeviceFileName(device)).json")
+}
+
+private func diagnosticReportURL(for device: String) -> URL {
+    diagnosticsDir.appendingPathComponent("\(sanitizedDeviceFileName(device))_diagnostic.json")
 }
 
 private let runWindowScriptSeparator = ":::script:::"
@@ -233,6 +442,7 @@ struct EditorInsertionRequest: Identifiable, Equatable {
 final class RunnerModel: ObservableObject {
     private static let maxLogChars = 80_000
     private static let logFlushIntervalSec: Double = 0.12
+    private static let maxBufferedOutputChars = 20_000
     let slotName: String
     @Published var selectedScript: String = ""
     @Published var device: String = ""
@@ -253,6 +463,7 @@ final class RunnerModel: ObservableObject {
     private let logQueue = DispatchQueue(label: "bs.runner.log.queue")
     private var pendingLogs: [String] = []
     private var logFlushScheduled = false
+    private var bufferedProcessOutput = ""
 
     init(slotName: String) {
         self.slotName = slotName
@@ -292,9 +503,27 @@ final class RunnerModel: ObservableObject {
         logQueue.async {
             self.pendingLogs.removeAll(keepingCapacity: false)
             self.logFlushScheduled = false
+            self.bufferedProcessOutput = ""
         }
         DispatchQueue.main.async {
             self.logs = ""
+        }
+    }
+
+    private func appendBufferedProcessOutput(_ text: String) {
+        logQueue.async {
+            self.bufferedProcessOutput += text
+            if self.bufferedProcessOutput.count > Self.maxBufferedOutputChars {
+                self.bufferedProcessOutput = String(self.bufferedProcessOutput.suffix(Self.maxBufferedOutputChars))
+            }
+        }
+    }
+
+    private func takeBufferedProcessOutput() -> String {
+        logQueue.sync {
+            let text = bufferedProcessOutput
+            bufferedProcessOutput = ""
+            return text
         }
     }
 
@@ -328,15 +557,16 @@ final class RunnerModel: ObservableObject {
             guard let action = item as? [String: Any], let type = action["type"] as? String else { continue }
             switch type {
             case "wait":
-                total += Double(action["seconds"] as? Double ?? 0)
+                total += doubleValue(from: action["seconds"])
             case "swipe":
-                total += Double(action["duration_ms"] as? Int ?? 0) / 1000.0
+                total += Double(intValue(from: action["duration_ms"])) / 1000.0
             case "trace":
                 if let points = action["points"] as? [[String: Any]],
                    let first = points.first,
-                   let last = points.last,
-                   let t0 = first["t_ms"] as? Int,
-                   let t1 = last["t_ms"] as? Int {
+                   let last = points.last {
+                    let t0 = intValue(from: first["t_ms"], default: -1)
+                    let t1 = intValue(from: last["t_ms"], default: -1)
+                    guard t0 >= 0, t1 >= 0 else { break }
                     total += max(0, Double(t1 - t0) / 1000.0)
                 }
             case "sequence":
@@ -346,13 +576,13 @@ final class RunnerModel: ObservableObject {
             case "loop":
                 if let nested = action["actions"] as? [Any] {
                     let cycle = estimateActionsDuration(nested)
-                    let count = action["count"] as? Int ?? 1
+                    let count = intValue(from: action["count"], default: 1)
                     total += count <= 0 ? cycle : cycle * Double(count)
                 }
             case "patrol":
-                let durationMs = action["duration_ms"] as? Int ?? 500
-                let legWait = action["leg_wait_sec"] as? Double ?? 0.4
-                let rounds = action["rounds"] as? Int ?? 1
+                let durationMs = intValue(from: action["duration_ms"], default: 500)
+                let legWait = doubleValue(from: action["leg_wait_sec"], default: 0.4)
+                let rounds = intValue(from: action["rounds"], default: 1)
                 let r = rounds <= 0 ? 1 : rounds
                 total += Double(r) * (Double(durationMs) / 1000.0 * 2.0 + legWait * 2.0)
             default:
@@ -364,7 +594,11 @@ final class RunnerModel: ObservableObject {
 
     private func estimateCycleDuration(scriptURL: URL) -> Double {
         guard let data = try? Data(contentsOf: scriptURL),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return 0
+        }
+        let obj = resolveScriptEnvironmentValue(raw, variables: currentScriptEnvironmentDictionary()) as? [String: Any]
+        guard let obj,
               let actions = obj["actions"] as? [Any] else {
             return 0
         }
@@ -439,13 +673,20 @@ final class RunnerModel: ObservableObject {
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = pipe
+        logQueue.async {
+            self.bufferedProcessOutput = ""
+        }
 
         readHandle = pipe.fileHandleForReading
         readHandle?.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             if data.isEmpty { return }
-            if let text = String(data: data, encoding: .utf8), let self, self.showRealtimeCommandLogs {
-                self.appendLog("[\(self.slotName)] \(text)")
+            if let text = String(data: data, encoding: .utf8), let self {
+                if self.showRealtimeCommandLogs {
+                    self.appendLog("[\(self.slotName)] \(text)")
+                } else {
+                    self.appendBufferedProcessOutput(text)
+                }
             }
         }
 
@@ -464,6 +705,12 @@ final class RunnerModel: ObservableObject {
                 self.readHandle?.readabilityHandler = nil
                 self.readHandle = nil
                 let code = proc.terminationStatus
+                if code != 0 && !self.showRealtimeCommandLogs {
+                    let buffered = self.takeBufferedProcessOutput()
+                    if !buffered.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        self.appendLog("[\(self.slotName)] process output:\n\(buffered)\n")
+                    }
+                }
                 self.appendLog("[\(self.slotName)] exit code: \(code)\n")
                 self.isRunning = false
                 self.process = nil
@@ -621,7 +868,9 @@ final class RecorderModel: ObservableObject {
             args += ["--swap-xy"]
         }
         if !device.trimmingCharacters(in: .whitespaces).isEmpty {
-            args += ["--device", device.trimmingCharacters(in: .whitespaces)]
+            let selectedDevice = device.trimmingCharacters(in: .whitespaces)
+            args += ["--device", selectedDevice]
+            args += ["--profile", recordingProfileURL(for: selectedDevice).path]
         }
         proc.arguments = args
         proc.environment = mergedEnvironment()
@@ -778,6 +1027,7 @@ final class CalibrationModel: ObservableObject {
         if !dev.isEmpty {
             args += ["--device", dev]
         }
+        args += ["--profile", recordingProfileURL(for: device).path]
         proc.arguments = args
         proc.environment = mergedEnvironment()
 
@@ -874,32 +1124,21 @@ final class CalibrationModel: ObservableObject {
         isBusy = true
         appendLog("[CAL] \(title)\n")
         DispatchQueue.global().async {
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: resolvedADB)
-            var args: [String] = []
             let dev = device.trimmingCharacters(in: .whitespacesAndNewlines)
+            let result = runADBShellCommandWithRecovery(adbPath: resolvedADB, device: dev, shellArgs: shellArgs)
+            var args: [String] = []
             if !dev.isEmpty {
                 args += ["-s", dev]
             }
             args += ["shell"] + shellArgs
-            proc.arguments = args
-            proc.environment = mergedEnvironment()
-            let pipe = Pipe()
-            proc.standardOutput = pipe
-            proc.standardError = pipe
-            do {
-                try proc.run()
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let text = String(data: data, encoding: .utf8) ?? ""
-                let code = proc.waitUntilExitOrReturn()
-                self.appendLog("[CAL] cmd: \(args.joined(separator: " "))\n")
-                if !text.isEmpty {
-                    self.appendLog("[CAL] \(text)\n")
-                }
-                self.appendLog("[CAL] exit: \(code)\n")
-            } catch {
-                self.appendLog("[CAL] failed: \(error)\n")
+            self.appendLog("[CAL] cmd: \(args.joined(separator: " "))\n")
+            if result.recovered {
+                self.appendLog("[CAL] adb recovered and retried once\n")
             }
+            if !result.text.isEmpty {
+                self.appendLog("[CAL] \(result.text)\n")
+            }
+            self.appendLog("[CAL] exit: \(result.code)\n")
             DispatchQueue.main.async {
                 self.isBusy = false
             }
@@ -1004,6 +1243,165 @@ final class CalibrationModel: ObservableObject {
     }
 }
 
+final class RecordingDiagnosticModel: ObservableObject {
+    private static let maxLogChars = 80_000
+    private static let logFlushIntervalSec: Double = 0.12
+    @Published var device: String = ""
+    @Published var adbPath: String = "adb"
+    @Published var logs: String = ""
+    @Published var isRunning: Bool = false
+    @Published var lastApplied: String = ""
+    @Published var lastReportPath: String = ""
+
+    private var process: Process?
+    private var readHandle: FileHandle?
+    private var exitObserver: NSObjectProtocol?
+    private let logQueue = DispatchQueue(label: "bs.diagnostic.log.queue")
+    private var pendingLogs: [String] = []
+    private var logFlushScheduled = false
+
+    func appendLog(_ line: String) {
+        logQueue.async {
+            self.pendingLogs.append(line)
+            guard !self.logFlushScheduled else { return }
+            self.logFlushScheduled = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.logFlushIntervalSec) { [weak self] in
+                self?.flushPendingLogs()
+            }
+        }
+    }
+
+    private func flushPendingLogs() {
+        let batch: [String] = logQueue.sync {
+            let data = pendingLogs
+            pendingLogs.removeAll(keepingCapacity: true)
+            logFlushScheduled = false
+            return data
+        }
+        guard !batch.isEmpty else { return }
+        let merged = batch.reversed().joined() + logs
+        if merged.count > Self.maxLogChars {
+            logs = String(merged.prefix(Self.maxLogChars))
+        } else {
+            logs = merged
+        }
+    }
+
+    func clearLogs() {
+        logQueue.async {
+            self.pendingLogs.removeAll(keepingCapacity: false)
+            self.logFlushScheduled = false
+        }
+        DispatchQueue.main.async {
+            self.logs = ""
+        }
+    }
+
+    func start() {
+        guard !isRunning else {
+            appendLog("[DIA] already running\n")
+            return
+        }
+        guard let resolvedADB = resolveADBExecutable(adbPath) else {
+            appendLog("[DIA] adb not found: \(adbPath)\n")
+            return
+        }
+
+        let reportURL = diagnosticReportURL(for: device)
+        let profileURL = recordingProfileURL(for: device)
+        try? FileManager.default.createDirectory(at: diagnosticsDir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: recordingProfilesDir, withIntermediateDirectories: true)
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        var args = [
+            "-u",
+            recorderScript.path,
+            "--output", reportURL.path,
+            "--adb", resolvedADB,
+            "--diagnose-self-heal",
+            "--profile", profileURL.path,
+        ]
+        let dev = device.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !dev.isEmpty {
+            args += ["--device", dev]
+        }
+        proc.arguments = args
+        proc.environment = mergedEnvironment()
+
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = pipe
+
+        readHandle = pipe.fileHandleForReading
+        readHandle?.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            if data.isEmpty { return }
+            if let text = String(data: data, encoding: .utf8), let self {
+                self.appendLog("[DIA] \(text)")
+            }
+        }
+
+        appendLog("[DIA] start: /usr/bin/python3 \(args.joined(separator: " "))\n")
+        do {
+            try proc.run()
+            process = proc
+            isRunning = true
+            lastApplied = ""
+            lastReportPath = reportURL.path
+            exitObserver = NotificationCenter.default.addObserver(
+                forName: Process.didTerminateNotification,
+                object: proc,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                self.readHandle?.readabilityHandler = nil
+                self.readHandle = nil
+                self.isRunning = false
+                self.process = nil
+                let code = proc.terminationStatus
+                self.appendLog("[DIA] exit code: \(code)\n")
+                if code == 0 {
+                    self.lastApplied = "profile: \(profileURL.lastPathComponent)"
+                    self.appendLog("[DIA] profile path: \(profileURL.path)\n")
+                    self.appendLog("[DIA] report path: \(reportURL.path)\n")
+                }
+            }
+        } catch {
+            appendLog("[DIA] failed to start: \(error)\n")
+            readHandle?.readabilityHandler = nil
+            readHandle = nil
+            process = nil
+            isRunning = false
+        }
+    }
+
+    func stop() {
+        guard let proc = process else {
+            appendLog("[DIA] not running\n")
+            return
+        }
+        appendLog("[DIA] stopping...\n")
+        proc.interrupt()
+        let procRef = proc
+        DispatchQueue.global().asyncAfter(deadline: .now() + 1.0) {
+            if procRef.isRunning {
+                procRef.terminate()
+            }
+        }
+    }
+
+    deinit {
+        readHandle?.readabilityHandler = nil
+        if let observer = exitObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let proc = process, proc.isRunning {
+            proc.terminate()
+        }
+    }
+}
+
 private extension Process {
     func waitUntilExitOrReturn() -> Int32 {
         self.waitUntilExit()
@@ -1021,11 +1419,17 @@ final class AppModel: ObservableObject {
     @Published var showRunAfterRecordPrompt: Bool = false
     @Published var lastRecordedScriptToRun: String = ""
     @Published var language: AppLanguage = .zh
+    @Published var scriptEnvironmentVariables: [ScriptEnvironmentVariable] = loadScriptEnvironmentVariables() {
+        didSet {
+            saveScriptEnvironmentVariables(scriptEnvironmentVariables)
+        }
+    }
 
     @Published var runnerA = RunnerModel(slotName: "A")
     @Published var runnerB = RunnerModel(slotName: "B")
     @Published var recorder: RecorderModel!
     @Published var calibration = CalibrationModel()
+    @Published var diagnostic = RecordingDiagnosticModel()
     private let runnerALastScriptKey = "bs.runnerA.lastScript"
     private let runnerBLastScriptKey = "bs.runnerB.lastScript"
     private let lastDeviceKey = "bs.lastDevice"
@@ -1079,12 +1483,26 @@ final class AppModel: ObservableObject {
         ensurePlansDir()
         refreshScripts()
         calibration.adbPath = recorder.adbPath
+        diagnostic.adbPath = recorder.adbPath
         refreshADBAndDevices(adbInput: recorder.adbPath)
     }
 
     func setLanguage(_ lang: AppLanguage) {
         language = lang
         UserDefaults.standard.set(lang.rawValue, forKey: languageKey)
+    }
+
+    func addScriptEnvironmentVariable() {
+        scriptEnvironmentVariables.append(ScriptEnvironmentVariable(name: "", value: "", note: ""))
+    }
+
+    func removeScriptEnvironmentVariable(id: UUID) {
+        scriptEnvironmentVariables.removeAll { $0.id == id }
+    }
+
+    func updateScriptEnvironmentVariable(id: UUID, keyPath: WritableKeyPath<ScriptEnvironmentVariable, String>, value: String) {
+        guard let index = scriptEnvironmentVariables.firstIndex(where: { $0.id == id }) else { return }
+        scriptEnvironmentVariables[index][keyPath: keyPath] = value
     }
 
     func rememberLastDevice(_ device: String) {
@@ -1121,7 +1539,8 @@ final class AppModel: ObservableObject {
                 return
             }
             let refreshResult = listConnectedDevicesWithRecovery(adbPath: resolvedADB)
-            let devices = refreshResult.devices
+            let reachability = splitDevicesByReachability(adbPath: resolvedADB, devices: refreshResult.devices)
+            let devices = reachability.healthy + reachability.unhealthy
             DispatchQueue.main.async {
                 self.availableDevices = devices
                 if devices.isEmpty {
@@ -1131,15 +1550,18 @@ final class AppModel: ObservableObject {
                         self.adbStatusMessage = "ADB 正常 (\(resolvedADB))，但当前无在线 device"
                     }
                 } else {
+                    let healthyCount = reachability.healthy.count
+                    let unhealthyCount = reachability.unhealthy.count
                     if refreshResult.recovered {
-                        self.adbStatusMessage = "ADB 已自动重启 (\(resolvedADB))，在线设备: \(devices.count)"
+                        self.adbStatusMessage = "ADB 已自动重启 (\(resolvedADB))，在线设备: \(devices.count)，可联通: \(healthyCount)，异常: \(unhealthyCount)"
                     } else {
-                        self.adbStatusMessage = "ADB 正常 (\(resolvedADB))，在线设备: \(devices.count)"
+                        self.adbStatusMessage = "ADB 正常 (\(resolvedADB))，在线设备: \(devices.count)，可联通: \(healthyCount)，异常: \(unhealthyCount)"
                     }
                     self.recorder.device = self.preferredDevice(from: devices, current: self.recorder.device)
                     self.runnerA.device = self.preferredDevice(from: devices, current: self.runnerA.device)
                     self.runnerB.device = self.preferredDevice(from: devices, current: self.runnerB.device)
                     self.calibration.device = self.preferredDevice(from: devices, current: self.calibration.device)
+                    self.diagnostic.device = self.preferredDevice(from: devices, current: self.diagnostic.device)
                     self.rememberLastDevice(self.recorder.device)
                 }
             }
@@ -1158,17 +1580,20 @@ final class AppModel: ObservableObject {
             }
             _ = runADBCommand(adbPath: resolvedADB, args: ["kill-server"])
             _ = runADBCommand(adbPath: resolvedADB, args: ["start-server"])
-            let devices = listConnectedDevices(adbPath: resolvedADB)
+            let listed = listConnectedDevices(adbPath: resolvedADB)
+            let reachability = splitDevicesByReachability(adbPath: resolvedADB, devices: listed)
+            let devices = reachability.healthy + reachability.unhealthy
             DispatchQueue.main.async {
                 self.availableDevices = devices
                 if devices.isEmpty {
                     self.adbStatusMessage = "ADB 强制重启完成 (\(resolvedADB))，但当前无在线 device"
                 } else {
-                    self.adbStatusMessage = "ADB 强制重启完成 (\(resolvedADB))，在线设备: \(devices.count)"
+                    self.adbStatusMessage = "ADB 强制重启完成 (\(resolvedADB))，在线设备: \(devices.count)，可联通: \(reachability.healthy.count)，异常: \(reachability.unhealthy.count)"
                     self.recorder.device = self.preferredDevice(from: devices, current: self.recorder.device)
                     self.runnerA.device = self.preferredDevice(from: devices, current: self.runnerA.device)
                     self.runnerB.device = self.preferredDevice(from: devices, current: self.runnerB.device)
                     self.calibration.device = self.preferredDevice(from: devices, current: self.calibration.device)
+                    self.diagnostic.device = self.preferredDevice(from: devices, current: self.diagnostic.device)
                     self.rememberLastDevice(self.recorder.device)
                 }
             }
@@ -1188,6 +1613,12 @@ final class AppModel: ObservableObject {
     func ensurePlansDir() {
         if !FileManager.default.fileExists(atPath: plansDir.path) {
             try? FileManager.default.createDirectory(at: plansDir, withIntermediateDirectories: true)
+        }
+        if !FileManager.default.fileExists(atPath: recordingProfilesDir.path) {
+            try? FileManager.default.createDirectory(at: recordingProfilesDir, withIntermediateDirectories: true)
+        }
+        if !FileManager.default.fileExists(atPath: diagnosticsDir.path) {
+            try? FileManager.default.createDirectory(at: diagnosticsDir, withIntermediateDirectories: true)
         }
     }
 
@@ -1663,6 +2094,9 @@ struct SettingsView: View {
                 }
                 .padding(8)
             }
+            GroupBox(t(model.language, "环境变量", "Environment Variables")) {
+                ScriptEnvironmentSettingsView()
+            }
             GroupBox(t(model.language, "校准", "Calibration")) {
                 CalibrationView(
                     calibration: model.calibration,
@@ -1673,8 +2107,163 @@ struct SettingsView: View {
                     onDeviceChanged: model.rememberLastDevice(_:)
                 )
             }
+            GroupBox(t(model.language, "录制诊断/自动修复", "Recording Diagnosis / Auto Fix")) {
+                RecordingDiagnosticView(
+                    diagnostic: model.diagnostic,
+                    lang: model.language,
+                    deviceOptions: model.availableDevices,
+                    onDeviceChanged: model.rememberLastDevice(_:)
+                )
+            }
             Spacer()
         }
+    }
+}
+
+struct ScriptEnvironmentSettingsView: View {
+    @EnvironmentObject private var model: AppModel
+
+    private func binding(for id: UUID, _ keyPath: WritableKeyPath<ScriptEnvironmentVariable, String>) -> Binding<String> {
+        Binding(
+            get: {
+                model.scriptEnvironmentVariables.first(where: { $0.id == id })?[keyPath: keyPath] ?? ""
+            },
+            set: { newValue in
+                model.updateScriptEnvironmentVariable(id: id, keyPath: keyPath, value: newValue)
+            }
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(
+                t(
+                    model.language,
+                    "脚本里可以写 \"seconds\": \"${WAIT_SHORT}\" 或 \"remark\": \"等待${WAIT_SHORT}秒\"。如果整值就是变量，占位后会自动按数字/布尔/JSON 解析。",
+                    "Use placeholders like \"seconds\": \"${WAIT_SHORT}\" or \"remark\": \"Wait ${WAIT_SHORT}s\". When the whole value is a variable, it is auto-parsed as number, bool, or JSON."
+                )
+            )
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .textSelection(.enabled)
+
+            HStack(spacing: 8) {
+                Text(t(model.language, "变量名", "Name"))
+                    .frame(width: 160, alignment: .leading)
+                Text(t(model.language, "值", "Value"))
+                    .frame(minWidth: 180, alignment: .leading)
+                Text(t(model.language, "备注", "Note"))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("")
+                    .frame(width: 60)
+            }
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+
+            if model.scriptEnvironmentVariables.isEmpty {
+                Text(t(model.language, "暂无环境变量，点击下方按钮新增。", "No environment variables yet. Add one below."))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 4)
+            }
+
+            ForEach(model.scriptEnvironmentVariables) { item in
+                HStack(alignment: .top, spacing: 8) {
+                    TextField("WAIT_SHORT", text: binding(for: item.id, \.name))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 160)
+                    TextField("0.5", text: binding(for: item.id, \.value))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(minWidth: 180)
+                    TextField(t(model.language, "例如：短等待秒数", "Example: short wait duration"), text: binding(for: item.id, \.note))
+                        .textFieldStyle(.roundedBorder)
+                    Button(t(model.language, "删除", "Delete")) {
+                        model.removeScriptEnvironmentVariable(id: item.id)
+                    }
+                    .frame(width: 60)
+                }
+            }
+
+            HStack {
+                Button(t(model.language, "新增变量", "Add Variable")) {
+                    model.addScriptEnvironmentVariable()
+                }
+                Spacer()
+            }
+        }
+        .padding(8)
+    }
+}
+
+struct RecordingDiagnosticView: View {
+    @ObservedObject var diagnostic: RecordingDiagnosticModel
+    let lang: AppLanguage
+    let deviceOptions: [String]
+    let onDeviceChanged: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(t(lang, "设备", "Device"))
+                TextField("127.0.0.1:5555", text: $diagnostic.device)
+                    .textFieldStyle(.roundedBorder)
+                    .onChange(of: diagnostic.device) { newValue in
+                        onDeviceChanged(newValue)
+                    }
+                Menu(t(lang, "选择", "Select")) {
+                    Button(t(lang, "清空", "Clear")) { diagnostic.device = "" }
+                    ForEach(deviceOptions, id: \.self) { serial in
+                        Button(serial) {
+                            diagnostic.device = serial
+                            onDeviceChanged(serial)
+                        }
+                    }
+                }
+            }
+            HStack {
+                Text(t(lang, "ADB", "ADB"))
+                TextField("adb", text: $diagnostic.adbPath)
+                    .textFieldStyle(.roundedBorder)
+            }
+            HStack {
+                Button(diagnostic.isRunning ? t(lang, "诊断中...", "Diagnosing...") : t(lang, "开始诊断并自修复", "Run Diagnosis and Auto Fix")) {
+                    diagnostic.start()
+                }
+                .disabled(diagnostic.isRunning)
+                Button(t(lang, "停止诊断", "Stop Diagnosis")) {
+                    diagnostic.stop()
+                }
+                .disabled(!diagnostic.isRunning)
+                Button(t(lang, "清空日志", "Clear Logs")) {
+                    diagnostic.clearLogs()
+                }
+            }
+            if !diagnostic.lastApplied.isEmpty {
+                Text("\(t(lang, "最近应用", "Last Applied")): \(diagnostic.lastApplied)")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            if !diagnostic.lastReportPath.isEmpty {
+                Text("\(t(lang, "报告路径", "Report Path")): \(diagnostic.lastReportPath)")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            ScrollView {
+                Text(diagnostic.logs.isEmpty ? t(lang, "暂无日志", "No logs") : diagnostic.logs)
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(6)
+                    .textSelection(.enabled)
+            }
+            .frame(height: 160)
+            .background(Color(nsColor: .textBackgroundColor))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.gray.opacity(0.4), lineWidth: 1)
+            )
+        }
+        .padding(8)
     }
 }
 
@@ -1694,6 +2283,9 @@ struct ScriptEditorView: View {
     @State private var quickClickX = ""
     @State private var quickClickY = ""
     @State private var quickWaitSeconds = "1"
+    @State private var quickFindText = "START"
+    @State private var quickFindLang = "eng"
+    @State private var quickFindTimeout = "8"
     @State private var didSeedWheelDefaults = false
     @State private var showRunGuideAlert = false
     @State private var pendingInsertion: EditorInsertionRequest?
@@ -1786,6 +2378,12 @@ struct ScriptEditorView: View {
         return normalizedNumberText(value)
     }
 
+    private func jsonEscaped(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
     private func makeWheelRemark(angleDegrees: Double, seconds: Double, prefix: String? = nil) -> String {
         let secondsText = normalizedNumberText(seconds)
         if let prefix, !prefix.isEmpty {
@@ -1854,6 +2452,17 @@ struct ScriptEditorView: View {
         let normalized = normalizedNumberText(seconds)
         return """
 \(indent){ "type": "wait", "seconds": \(normalized), "remark": "等待\(normalized)秒" },
+
+"""
+    }
+
+    private func makeFindTextClickSnippet(text: String, lang: String, timeoutSeconds: Double) -> String {
+        let indent = currentLineIndent()
+        let normalizedTimeout = normalizedNumberText(timeoutSeconds)
+        let safeText = jsonEscaped(text)
+        let safeLang = jsonEscaped(lang)
+        return """
+\(indent){ "type": "find_text_click", "text": "\(safeText)", "match": "contains", "lang": "\(safeLang)", "timeout_sec": \(normalizedTimeout), "interval_sec": 0.8, "remark": "识别文字\(safeText)并点击" },
 
 """
     }
@@ -2002,6 +2611,34 @@ struct ScriptEditorView: View {
                         Button(t(model.language, "插入 wait", "Insert Wait")) {
                             let seconds = Double(quickWaitSeconds.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 1
                             insertTextAtCursor(makeWaitSnippet(seconds: max(0, seconds)))
+                        }
+                    }
+                    HStack {
+                        Text(t(model.language, "文字", "Text"))
+                        TextField("START", text: $quickFindText)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(minWidth: 180)
+                        Text(t(model.language, "语言", "Lang"))
+                        TextField("eng", text: $quickFindLang)
+                            .frame(width: 80)
+                            .textFieldStyle(.roundedBorder)
+                        Text(t(model.language, "超时秒数", "Timeout"))
+                        TextField("8", text: $quickFindTimeout)
+                            .frame(width: 70)
+                            .textFieldStyle(.roundedBorder)
+                        Button(t(model.language, "插入 find_text_click", "Insert Find Text Click")) {
+                            let targetText = quickFindText.trimmingCharacters(in: .whitespacesAndNewlines)
+                            let lang = quickFindLang.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                ? "eng"
+                                : quickFindLang.trimmingCharacters(in: .whitespacesAndNewlines)
+                            let timeout = Double(quickFindTimeout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 8
+                            insertTextAtCursor(
+                                makeFindTextClickSnippet(
+                                    text: targetText.isEmpty ? "START" : targetText,
+                                    lang: lang,
+                                    timeoutSeconds: max(0.1, timeout)
+                                )
+                            )
                         }
                     }
                     HStack {
@@ -2379,6 +3016,95 @@ struct WindowTitleGuard: NSViewRepresentable {
     }
 }
 
+final class MainWindowCoordinator {
+    static let shared = MainWindowCoordinator()
+
+    private var reopenAction: (() -> Void)?
+
+    private init() {}
+
+    func registerReopenAction(_ action: @escaping () -> Void) {
+        reopenAction = action
+    }
+
+    var mainWindow: NSWindow? {
+        NSApp.windows.first(where: { $0.identifier == mainWindowIdentifier })
+    }
+
+    var isMainWindowVisible: Bool {
+        guard let window = mainWindow else { return false }
+        return window.isVisible && !window.isMiniaturized
+    }
+
+    func ensureMainWindowIsVisible() {
+        if let window = mainWindow {
+            if window.isMiniaturized {
+                window.deminiaturize(nil)
+            }
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            reopenAction?()
+            DispatchQueue.main.async {
+                if let window = self.mainWindow {
+                    if window.isMiniaturized {
+                        window.deminiaturize(nil)
+                    }
+                    window.makeKeyAndOrderFront(nil)
+                }
+            }
+        }
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+struct MainWindowOpenActionBinder: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onAppear {
+                MainWindowCoordinator.shared.registerReopenAction {
+                    openWindow(id: mainWindowSceneID)
+                }
+            }
+    }
+}
+
+struct WindowIdentifierGuard: NSViewRepresentable {
+    let identifier: NSUserInterfaceItemIdentifier
+
+    final class Coordinator {
+        weak var window: NSWindow?
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            attachIdentifier(view: view, context: context)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            attachIdentifier(view: nsView, context: context)
+        }
+    }
+
+    private func attachIdentifier(view: NSView, context: Context) {
+        guard let window = view.window else { return }
+        context.coordinator.window = window
+        if window.identifier != identifier {
+            window.identifier = identifier
+        }
+    }
+}
+
 struct RunWindowView: View {
     let windowID: String
     let initialScript: String?
@@ -2507,8 +3233,12 @@ struct ContentView: View {
             .padding(12)
         }
         .background(
-            WindowAspectRatioGuard(ratio: CGSize(width: 1160, height: 780))
-                .frame(width: 0, height: 0)
+            ZStack {
+                WindowAspectRatioGuard(ratio: CGSize(width: 1160, height: 780))
+                WindowIdentifierGuard(identifier: mainWindowIdentifier)
+                MainWindowOpenActionBinder()
+            }
+            .frame(width: 0, height: 0)
         )
         .onAppear {
             model.setup()
@@ -2554,7 +3284,7 @@ struct BSManagerApp: App {
     @StateObject private var model = AppModel()
 
     var body: some Scene {
-        WindowGroup("BSManager") {
+        Window("BSManager", id: mainWindowSceneID) {
             ContentView()
                 .environmentObject(model)
                 .frame(minWidth: 1160, minHeight: 780)
@@ -2577,5 +3307,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !MainWindowCoordinator.shared.isMainWindowVisible {
+            MainWindowCoordinator.shared.ensureMainWindowIsVisible()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        return true
     }
 }

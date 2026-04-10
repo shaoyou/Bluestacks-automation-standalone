@@ -5,6 +5,7 @@ import math
 import re
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,9 +63,61 @@ ECODE_MAP = {
     "BTN_TOUCH": "014a",
 }
 
+DEFAULT_RECORDING_PROFILE: Dict[str, float] = {
+    "tap_distance_px": 24.0,
+    "tap_duration_sec": 0.45,
+    "min_swipe_duration_sec": 0.18,
+    "merge_gap_sec": 0.35,
+    "merge_distance_px": 10.0,
+    "continuation_gap_sec": 1.2,
+    "continuation_distance_px": 12.0,
+    "continuation_span_px": 40.0,
+    "continuation_duration_ms": 700.0,
+}
+
+SPARSE_ABS_IDLE_SPLIT_SEC = 0.55
+
 
 def run_cmd(cmd: List[str], check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, text=True, capture_output=True, check=check)
+
+
+def normalize_profile(raw: Optional[Dict[str, object]]) -> Dict[str, float]:
+    profile = dict(DEFAULT_RECORDING_PROFILE)
+    if isinstance(raw, dict):
+        for key, default in DEFAULT_RECORDING_PROFILE.items():
+            value = raw.get(key)
+            if isinstance(value, (int, float)):
+                profile[key] = float(value)
+    profile["tap_distance_px"] = max(4.0, profile["tap_distance_px"])
+    profile["tap_duration_sec"] = max(0.05, profile["tap_duration_sec"])
+    profile["min_swipe_duration_sec"] = max(0.05, profile["min_swipe_duration_sec"])
+    profile["merge_gap_sec"] = max(0.0, profile["merge_gap_sec"])
+    profile["merge_distance_px"] = max(0.0, profile["merge_distance_px"])
+    profile["continuation_gap_sec"] = max(profile["merge_gap_sec"], profile["continuation_gap_sec"])
+    profile["continuation_distance_px"] = max(profile["merge_distance_px"], profile["continuation_distance_px"])
+    profile["continuation_span_px"] = max(1.0, profile["continuation_span_px"])
+    profile["continuation_duration_ms"] = max(1.0, profile["continuation_duration_ms"])
+    return profile
+
+
+def load_recording_profile(path: Optional[str]) -> Dict[str, float]:
+    if not path:
+        return normalize_profile(None)
+    profile_path = Path(path)
+    if not profile_path.exists():
+        return normalize_profile(None)
+    try:
+        raw = json.loads(profile_path.read_text(encoding="utf-8"))
+    except Exception:
+        return normalize_profile(None)
+    return normalize_profile(raw)
+
+
+def save_recording_profile(path: str, profile: Dict[str, float]) -> None:
+    profile_path = Path(path)
+    profile_path.parent.mkdir(parents=True, exist_ok=True)
+    profile_path.write_text(json.dumps(normalize_profile(profile), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def adb_cmd(adb: str, device: Optional[str], extra: List[str]) -> List[str]:
@@ -185,6 +238,15 @@ def raw_to_px(raw: int, raw_max: int, px_max: int, invert: bool = False) -> int:
     return int(round(ratio * px_max))
 
 
+def px_to_raw(px: int, px_max: int, raw_max: int, invert: bool = False) -> int:
+    if px_max <= 0 or raw_max <= 0:
+        return 0
+    ratio = max(0.0, min(1.0, px / float(px_max)))
+    if invert:
+        ratio = 1.0 - ratio
+    return int(round(ratio * raw_max))
+
+
 def map_raw_point_to_screen(
     raw_x: int,
     raw_y: int,
@@ -205,6 +267,28 @@ def map_raw_point_to_screen(
     return mapped_x, mapped_y
 
 
+def map_screen_point_to_raw(
+    px: int,
+    py: int,
+    x_raw_max: int,
+    y_raw_max: int,
+    screen_w: int,
+    screen_h: int,
+    invert_x: bool,
+    invert_y: bool,
+    swap_xy: bool,
+) -> Tuple[int, int]:
+    px_max_x = max(1, screen_w - 1)
+    px_max_y = max(1, screen_h - 1)
+    if swap_xy:
+        raw_y = px_to_raw(px, px_max_x, y_raw_max, invert=invert_x)
+        raw_x = px_to_raw(py, px_max_y, x_raw_max, invert=invert_y)
+    else:
+        raw_x = px_to_raw(px, px_max_x, x_raw_max, invert=invert_x)
+        raw_y = px_to_raw(py, px_max_y, y_raw_max, invert=invert_y)
+    return raw_x, raw_y
+
+
 def build_actions_from_gestures(
     gestures: List[Gesture],
     x_raw_max: int,
@@ -214,9 +298,11 @@ def build_actions_from_gestures(
     invert_x: bool = False,
     invert_y: bool = False,
     swap_xy: bool = False,
+    profile: Optional[Dict[str, float]] = None,
 ) -> List[Dict]:
     actions: List[Dict] = []
     prev_end: Optional[float] = None
+    resolved_profile = normalize_profile(profile)
 
     for g in gestures:
         if not g.points:
@@ -235,7 +321,7 @@ def build_actions_from_gestures(
         x2s, y2s = map_raw_point_to_screen(
             last.x_raw, last.y_raw, x_raw_max, y_raw_max, screen_w, screen_h, invert_x, invert_y, swap_xy
         )
-        click = gesture_to_click(x1s, y1s, x2s, y2s, g)
+        click = gesture_to_click(x1s, y1s, x2s, y2s, g, resolved_profile)
         x2, y2 = x2s, y2s
         duration = max(0.0, g.end_t - g.start_t)
 
@@ -289,13 +375,20 @@ def build_actions_from_gestures(
     return actions
 
 
-def gesture_to_click(x1: int, y1: int, x2: int, y2: int, gesture: Gesture) -> Optional[Dict]:
-    tap_distance_px = 24.0
-    tap_duration_sec = 0.45
-    min_swipe_duration_sec = 0.18
+def gesture_to_click(
+    x1: int, y1: int, x2: int, y2: int, gesture: Gesture, profile: Optional[Dict[str, float]] = None
+) -> Optional[Dict]:
+    resolved_profile = normalize_profile(profile)
+    tap_distance_px = resolved_profile["tap_distance_px"]
+    tap_duration_sec = resolved_profile["tap_duration_sec"]
+    min_swipe_duration_sec = resolved_profile["min_swipe_duration_sec"]
     dist = math.hypot(x2 - x1, y2 - y1)
     duration = max(0.0, gesture.end_t - gesture.start_t)
     point_count = len(gesture.points)
+    # BlueStacks virtual touch can emit sparse ABS samples without BTN_TOUCH/TRACKING_ID.
+    # In that mode, a multi-point window is more likely a drag than a tap.
+    if not gesture.explicit_touch and point_count >= 2 and (duration >= 0.20 or dist >= tap_distance_px * 0.5):
+        return None
     if (
         point_count <= 12
         and dist <= tap_distance_px
@@ -391,8 +484,9 @@ def clean_actions_noise(actions: List[Dict]) -> List[Dict]:
     return cleaned
 
 
-def merge_short_gap_traces(actions: List[Dict]) -> List[Dict]:
+def merge_short_gap_traces(actions: List[Dict], profile: Optional[Dict[str, float]] = None) -> List[Dict]:
     # Merge trace-wait-trace caused by transient touch split on some devices/emulators.
+    resolved_profile = normalize_profile(profile)
     def is_trace(act: Dict) -> bool:
         return act.get("type") == "trace" and isinstance(act.get("points"), list) and len(act.get("points")) >= 2
 
@@ -423,10 +517,15 @@ def merge_short_gap_traces(actions: List[Dict]) -> List[Dict]:
             right_duration = int(right_pts[-1].get("t_ms", 0)) - int(right_pts[0].get("t_ms", 0))
 
             # Standard merge: tiny gap and near-continuous endpoint.
-            standard_merge = wait <= 0.35 and dist <= 10.0
+            standard_merge = wait <= resolved_profile["merge_gap_sec"] and dist <= resolved_profile["merge_distance_px"]
             # Joystick-friendly merge: short continuation trace after longer event drop.
             # Typical split pattern: endpoint close, then a tiny continuation trace.
-            continuation_merge = wait <= 1.2 and dist <= 12.0 and right_span <= 40.0 and right_duration <= 700
+            continuation_merge = (
+                wait <= resolved_profile["continuation_gap_sec"]
+                and dist <= resolved_profile["continuation_distance_px"]
+                and right_span <= resolved_profile["continuation_span_px"]
+                and right_duration <= resolved_profile["continuation_duration_ms"]
+            )
 
             if standard_merge or continuation_merge:
                 base_t = int(left_pts[-1].get("t_ms", 0))
@@ -453,6 +552,14 @@ def merge_short_gap_traces(actions: List[Dict]) -> List[Dict]:
     return merged
 
 
+def build_raw_excerpt(lines: List[str], limit: int = 40) -> List[str]:
+    if len(lines) <= limit:
+        return lines
+    head = max(1, limit // 2)
+    tail = max(1, limit - head - 1)
+    return lines[:head] + ["..."] + lines[-tail:]
+
+
 def record_gestures(
     adb: str,
     device: Optional[str],
@@ -461,6 +568,7 @@ def record_gestures(
     forced_event_dev: Optional[str],
     stop_after_gestures: Optional[int] = None,
     on_gesture_captured: Optional[Callable[[Gesture, str], None]] = None,
+    on_gesture_raw_captured: Optional[Callable[[Gesture, str, List[str]], None]] = None,
 ) -> Tuple[List[Gesture], str]:
     cmd = adb_cmd(adb, device, ["shell", "getevent", "-lt"])
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
@@ -482,10 +590,13 @@ def record_gestures(
     x_raw: Optional[int] = None
     y_raw: Optional[int] = None
     saw_touch_flag = False
+    using_sparse_abs_mode = False
     last_point_t: Optional[float] = None
     idle_split_sec = 0.25
     seen_event_lines = 0
     unmatched_samples: List[str] = []
+    cur_raw_lines: List[str] = []
+    last_gesture_signature: Optional[Tuple[float, float, int]] = None
 
     if selected_dev:
         print(f"[Recorder] Listening on forced device {selected_dev}. Press Ctrl+C to stop and save.")
@@ -500,6 +611,13 @@ def record_gestures(
         if cur_points and cur_points[-1].x_raw == x_raw and cur_points[-1].y_raw == y_raw:
             return
         cur_points.append(Point(t=ts, x_raw=x_raw, y_raw=y_raw))
+
+    def mark_latest_gesture() -> None:
+        nonlocal last_gesture_signature
+        if not gestures:
+            return
+        latest = gestures[-1]
+        last_gesture_signature = (round(latest.start_t, 6), round(latest.end_t, 6), len(latest.points))
 
     try:
         for line in proc.stdout:
@@ -565,6 +683,9 @@ def record_gestures(
             if selected_dev is None or dev != selected_dev:
                 continue
 
+            if len(cur_raw_lines) < 200:
+                cur_raw_lines.append(line_s)
+
             # EV_ABS
             if etype == "0003":
                 if ecode in {"0035", "0000"}:
@@ -587,17 +708,27 @@ def record_gestures(
                             )
                             if on_gesture_captured is not None and selected_dev is not None:
                                 on_gesture_captured(gestures[-1], selected_dev)
+                            if on_gesture_raw_captured is not None and selected_dev is not None:
+                                on_gesture_raw_captured(gestures[-1], selected_dev, cur_raw_lines[:])
+                            mark_latest_gesture()
                             print(f"[Recorder] Gesture captured: {len(cur_points)} points")
                             if stop_after_gestures and len(gestures) >= stop_after_gestures:
+                                touching = False
+                                cur_points = []
+                                cur_raw_lines = []
+                                cur_start_t = None
+                                current_explicit_touch = False
                                 break
                         touching = False
                         cur_points = []
+                        cur_raw_lines = []
                         cur_start_t = None
                         current_explicit_touch = False
                     else:
                         touching = True
                         cur_start_t = t
                         cur_points = []
+                        cur_raw_lines = [line_s]
                         current_explicit_touch = True
                         # Some devices emit coordinates before TRACKING_ID down.
                         append_point_if_possible(t)
@@ -623,17 +754,27 @@ def record_gestures(
                         )
                         if on_gesture_captured is not None and selected_dev is not None:
                             on_gesture_captured(gestures[-1], selected_dev)
+                        if on_gesture_raw_captured is not None and selected_dev is not None:
+                            on_gesture_raw_captured(gestures[-1], selected_dev, cur_raw_lines[:])
+                        mark_latest_gesture()
                         print(f"[Recorder] Gesture captured: {len(cur_points)} points")
                         if stop_after_gestures and len(gestures) >= stop_after_gestures:
+                            touching = False
+                            cur_points = []
+                            cur_raw_lines = []
+                            cur_start_t = None
+                            current_explicit_touch = False
                             break
                     touching = False
                     cur_points = []
+                    cur_raw_lines = []
                     cur_start_t = None
                     current_explicit_touch = False
             # EV_SYN SYN_REPORT
             elif etype == "0000" and ecode == "0000":
                 # Fallback split: some devices don't emit BTN_TOUCH/TRACKING_ID.
-                if not saw_touch_flag and last_point_t is not None and touching and (t - last_point_t) > idle_split_sec:
+                effective_idle_split = SPARSE_ABS_IDLE_SPLIT_SEC if using_sparse_abs_mode else idle_split_sec
+                if not saw_touch_flag and last_point_t is not None and touching and (t - last_point_t) > effective_idle_split:
                     if cur_points:
                         gestures.append(
                             Gesture(
@@ -645,11 +786,20 @@ def record_gestures(
                         )
                         if on_gesture_captured is not None and selected_dev is not None:
                             on_gesture_captured(gestures[-1], selected_dev)
+                        if on_gesture_raw_captured is not None and selected_dev is not None:
+                            on_gesture_raw_captured(gestures[-1], selected_dev, cur_raw_lines[:])
+                        mark_latest_gesture()
                         print(f"[Recorder] Gesture captured (idle split): {len(cur_points)} points")
                         if stop_after_gestures and len(gestures) >= stop_after_gestures:
+                            touching = False
+                            cur_points = []
+                            cur_raw_lines = []
+                            cur_start_t = None
+                            current_explicit_touch = False
                             break
                     touching = False
                     cur_points = []
+                    cur_raw_lines = []
                     cur_start_t = None
                     current_explicit_touch = False
                 if touching and x_raw is not None and y_raw is not None:
@@ -658,6 +808,9 @@ def record_gestures(
                     last_point_t = t
                 elif not saw_touch_flag and x_raw is not None and y_raw is not None:
                     # Start pseudo-touch if only ABS coordinates are reported.
+                    if not using_sparse_abs_mode:
+                        using_sparse_abs_mode = True
+                        print(f"[Recorder] Sparse ABS mode enabled for {selected_dev}")
                     touching = True
                     if cur_start_t is None:
                         cur_start_t = t
@@ -676,14 +829,19 @@ def record_gestures(
 
     # Capture trailing gesture if not closed properly.
     if touching and cur_points:
-        gestures.append(
-            Gesture(
-                start_t=cur_start_t or last_t,
-                end_t=last_t,
-                points=cur_points[:],
-                explicit_touch=current_explicit_touch,
-            )
+        trailing = Gesture(
+            start_t=cur_start_t or last_t,
+            end_t=last_t,
+            points=cur_points[:],
+            explicit_touch=current_explicit_touch,
         )
+        trailing_signature = (round(trailing.start_t, 6), round(trailing.end_t, 6), len(trailing.points))
+        if trailing_signature != last_gesture_signature:
+            gestures.append(trailing)
+            if on_gesture_captured is not None and selected_dev is not None:
+                on_gesture_captured(trailing, selected_dev)
+            if on_gesture_raw_captured is not None and selected_dev is not None:
+                on_gesture_raw_captured(trailing, selected_dev, cur_raw_lines[:])
 
     filtered = [g for g in gestures if len(g.points) >= min_points]
     print(f"[Recorder] Kept gestures: {len(filtered)} / raw {len(gestures)}")
@@ -706,6 +864,7 @@ def listen_click_coordinates(
     invert_x: bool,
     invert_y: bool,
     swap_xy: bool,
+    profile: Optional[Dict[str, float]] = None,
 ) -> str:
     selected_dev_holder: List[str] = []
 
@@ -721,7 +880,7 @@ def listen_click_coordinates(
         x2, y2 = map_raw_point_to_screen(
             last.x_raw, last.y_raw, x_max, y_max, screen_w, screen_h, invert_x, invert_y, swap_xy
         )
-        click = gesture_to_click(x1, y1, x2, y2, gesture)
+        click = gesture_to_click(x1, y1, x2, y2, gesture, profile)
         if click is not None:
             print(f"[Click] x={click['x']} y={click['y']}", flush=True)
 
@@ -735,6 +894,421 @@ def listen_click_coordinates(
         on_gesture_captured=report_click,
     )
     return selected_dev
+
+
+def build_diagnostic_cases(screen_w: int, screen_h: int) -> List[Dict[str, object]]:
+    center_y = int(round(screen_h * 0.72))
+    joy_x = int(round(screen_w * 0.50))
+    joy_y = int(round(screen_h * 0.80))
+    return [
+        {
+            "name": "tap_center",
+            "kind": "tap",
+            "x": int(round(screen_w * 0.50)),
+            "y": int(round(screen_h * 0.50)),
+            "cooldown_sec": 0.9,
+        },
+        {
+            "name": "swipe_right",
+            "kind": "swipe",
+            "x1": int(round(screen_w * 0.32)),
+            "y1": center_y,
+            "x2": int(round(screen_w * 0.68)),
+            "y2": center_y,
+            "duration_ms": 450,
+            "cooldown_sec": 1.1,
+        },
+        {
+            "name": "swipe_up",
+            "kind": "swipe",
+            "x1": int(round(screen_w * 0.50)),
+            "y1": int(round(screen_h * 0.76)),
+            "x2": int(round(screen_w * 0.50)),
+            "y2": int(round(screen_h * 0.34)),
+            "duration_ms": 520,
+            "cooldown_sec": 1.1,
+        },
+        {
+            "name": "angle_120",
+            "kind": "swipe",
+            "x1": joy_x,
+            "y1": joy_y,
+            "x2": joy_x - 180,
+            "y2": joy_y - 312,
+            "duration_ms": 600,
+            "cooldown_sec": 1.1,
+        },
+        {
+            "name": "angle_-120",
+            "kind": "swipe",
+            "x1": joy_x,
+            "y1": joy_y,
+            "x2": joy_x - 180,
+            "y2": joy_y + 312,
+            "duration_ms": 600,
+            "cooldown_sec": 1.1,
+        },
+        {
+            "name": "joystick_hold_2s",
+            "kind": "swipe",
+            "x1": joy_x,
+            "y1": joy_y,
+            "x2": joy_x,
+            "y2": joy_y - 220,
+            "duration_ms": 2000,
+            "cooldown_sec": 1.2,
+        },
+    ]
+
+
+def diagnostic_event_device(forced_event_dev: Optional[str], touch_caps: Dict[str, Tuple[int, int]]) -> str:
+    if forced_event_dev:
+        return forced_event_dev
+    if len(touch_caps) == 1:
+        return next(iter(touch_caps.keys()))
+    return sorted(touch_caps.keys())[0]
+
+
+def send_shell(adb: str, device: Optional[str], shell_args: List[str]) -> subprocess.CompletedProcess[str]:
+    return run_cmd(adb_cmd(adb, device, ["shell"] + shell_args), check=False)
+
+
+def sendevent(adb: str, device: Optional[str], event_dev: str, etype: int, ecode: int, value: int) -> None:
+    send_shell(adb, device, ["sendevent", event_dev, str(etype), str(ecode), str(value)])
+
+
+def inject_low_level_tap(
+    adb: str,
+    device: Optional[str],
+    event_dev: str,
+    raw_x: int,
+    raw_y: int,
+    hold_sec: float = 0.05,
+    tracking_id: int = 1001,
+) -> None:
+    sendevent(adb, device, event_dev, 3, 47, 0)  # ABS_MT_SLOT
+    sendevent(adb, device, event_dev, 3, 57, tracking_id)
+    sendevent(adb, device, event_dev, 3, 0, raw_x)  # ABS_X
+    sendevent(adb, device, event_dev, 3, 1, raw_y)  # ABS_Y
+    sendevent(adb, device, event_dev, 3, 53, raw_x)
+    sendevent(adb, device, event_dev, 3, 54, raw_y)
+    sendevent(adb, device, event_dev, 1, 325, 1)  # BTN_TOOL_FINGER
+    sendevent(adb, device, event_dev, 1, 330, 1)
+    sendevent(adb, device, event_dev, 0, 0, 0)
+    time.sleep(max(0.02, hold_sec))
+    sendevent(adb, device, event_dev, 3, 57, -1)
+    sendevent(adb, device, event_dev, 1, 325, 0)
+    sendevent(adb, device, event_dev, 1, 330, 0)
+    sendevent(adb, device, event_dev, 0, 0, 0)
+
+
+def inject_low_level_swipe(
+    adb: str,
+    device: Optional[str],
+    event_dev: str,
+    start_raw: Tuple[int, int],
+    end_raw: Tuple[int, int],
+    duration_ms: int,
+    steps: int = 12,
+    tracking_id: int = 1001,
+) -> None:
+    x1, y1 = start_raw
+    x2, y2 = end_raw
+    total_steps = max(2, steps)
+    sendevent(adb, device, event_dev, 3, 47, 0)  # ABS_MT_SLOT
+    sendevent(adb, device, event_dev, 3, 57, tracking_id)
+    sendevent(adb, device, event_dev, 3, 0, x1)  # ABS_X
+    sendevent(adb, device, event_dev, 3, 1, y1)  # ABS_Y
+    sendevent(adb, device, event_dev, 3, 53, x1)
+    sendevent(adb, device, event_dev, 3, 54, y1)
+    sendevent(adb, device, event_dev, 1, 325, 1)  # BTN_TOOL_FINGER
+    sendevent(adb, device, event_dev, 1, 330, 1)
+    sendevent(adb, device, event_dev, 0, 0, 0)
+    step_sleep = max(0.005, duration_ms / 1000.0 / total_steps)
+    for idx in range(1, total_steps + 1):
+        ratio = idx / float(total_steps)
+        x = int(round(x1 + (x2 - x1) * ratio))
+        y = int(round(y1 + (y2 - y1) * ratio))
+        sendevent(adb, device, event_dev, 3, 0, x)
+        sendevent(adb, device, event_dev, 3, 1, y)
+        sendevent(adb, device, event_dev, 3, 53, x)
+        sendevent(adb, device, event_dev, 3, 54, y)
+        sendevent(adb, device, event_dev, 0, 0, 0)
+        time.sleep(step_sleep)
+    sendevent(adb, device, event_dev, 3, 57, -1)
+    sendevent(adb, device, event_dev, 1, 325, 0)
+    sendevent(adb, device, event_dev, 1, 330, 0)
+    sendevent(adb, device, event_dev, 0, 0, 0)
+
+
+def dispatch_diagnostic_inputs(
+    adb: str,
+    device: Optional[str],
+    event_dev: str,
+    touch_caps: Dict[str, Tuple[int, int]],
+    screen_w: int,
+    screen_h: int,
+    invert_x: bool,
+    invert_y: bool,
+    swap_xy: bool,
+    cases: List[Dict[str, object]],
+    start_delay_sec: float = 1.0,
+) -> None:
+    time.sleep(start_delay_sec)
+    x_max, y_max = touch_caps[event_dev]
+    for case in cases:
+        kind = str(case.get("kind", ""))
+        if kind == "tap":
+            raw_x, raw_y = map_screen_point_to_raw(
+                int(case["x"]), int(case["y"]), x_max, y_max, screen_w, screen_h, invert_x, invert_y, swap_xy
+            )
+            inject_low_level_tap(adb, device, event_dev, raw_x, raw_y)
+        else:
+            start_raw = map_screen_point_to_raw(
+                int(case["x1"]), int(case["y1"]), x_max, y_max, screen_w, screen_h, invert_x, invert_y, swap_xy
+            )
+            end_raw = map_screen_point_to_raw(
+                int(case["x2"]), int(case["y2"]), x_max, y_max, screen_w, screen_h, invert_x, invert_y, swap_xy
+            )
+            inject_low_level_swipe(
+                adb, device, event_dev, start_raw, end_raw, int(case.get("duration_ms", 400))
+            )
+        time.sleep(float(case.get("cooldown_sec", 0.9)))
+
+
+def action_end_point(action: Dict) -> Optional[Tuple[int, int]]:
+    if action.get("type") == "click":
+        return int(action.get("x", 0)), int(action.get("y", 0))
+    if action.get("type") == "trace":
+        points = action.get("points")
+        if isinstance(points, list) and points:
+            last = points[-1]
+            return int(last.get("x", 0)), int(last.get("y", 0))
+    return None
+
+
+def evaluate_diagnostic_actions(
+    actions: List[Dict], cases: List[Dict[str, object]], raw_snippets: Optional[List[Dict[str, object]]] = None
+) -> Dict[str, object]:
+    comparable = [act for act in actions if act.get("type") in {"click", "trace"}]
+    score = 0.0
+    swipe_as_click = 0
+    tap_as_trace = 0
+    details: List[Dict[str, object]] = []
+    snippet_list = raw_snippets or []
+
+    for index, case in enumerate(cases):
+        actual = comparable[index] if index < len(comparable) else None
+        kind = str(case.get("kind"))
+        expected_type = "click" if kind == "tap" else "trace"
+        item: Dict[str, object] = {"case": case.get("name", f"case_{index}"), "expected": expected_type}
+        if index < len(snippet_list):
+            item["raw_excerpt"] = snippet_list[index]
+
+        if actual is None:
+            item["actual"] = "missing"
+            item["penalty"] = 120.0
+            score += 120.0
+            details.append(item)
+            continue
+
+        actual_type = str(actual.get("type"))
+        item["actual"] = actual_type
+        penalty = 0.0
+        if actual_type != expected_type:
+            penalty += 80.0
+            if kind == "swipe" and actual_type == "click":
+                swipe_as_click += 1
+            if kind == "tap" and actual_type == "trace":
+                tap_as_trace += 1
+
+        end_point = action_end_point(actual)
+        if kind == "tap":
+            target = (int(case["x"]), int(case["y"]))
+        else:
+            target = (int(case["x2"]), int(case["y2"]))
+        if end_point is not None:
+            end_error = math.hypot(end_point[0] - target[0], end_point[1] - target[1])
+            penalty += min(60.0, end_error / 2.0)
+            item["end_error_px"] = round(end_error, 2)
+        item["penalty"] = round(penalty, 2)
+        score += penalty
+        details.append(item)
+
+    extra_actions = max(0, len(comparable) - len(cases))
+    if extra_actions:
+        score += extra_actions * 45.0
+
+    return {
+        "score": round(score, 2),
+        "expected_case_count": len(cases),
+        "recorded_action_count": len(comparable),
+        "extra_actions": extra_actions,
+        "swipe_as_click": swipe_as_click,
+        "tap_as_trace": tap_as_trace,
+        "details": details,
+    }
+
+
+def propose_profile_adjustment(profile: Dict[str, float], evaluation: Dict[str, object]) -> Tuple[Dict[str, float], List[str]]:
+    updated = dict(profile)
+    reasons: List[str] = []
+
+    swipe_as_click = int(evaluation.get("swipe_as_click", 0))
+    tap_as_trace = int(evaluation.get("tap_as_trace", 0))
+    extra_actions = int(evaluation.get("extra_actions", 0))
+
+    if swipe_as_click > 0:
+        updated["tap_distance_px"] = max(8.0, updated["tap_distance_px"] - 4.0)
+        updated["tap_duration_sec"] = max(0.20, updated["tap_duration_sec"] - 0.05)
+        reasons.append("拖动被识别成点击，收紧点击阈值")
+    if tap_as_trace > 0:
+        updated["tap_distance_px"] = min(36.0, updated["tap_distance_px"] + 4.0)
+        updated["tap_duration_sec"] = min(0.70, updated["tap_duration_sec"] + 0.05)
+        reasons.append("点击被识别成拖动，放宽点击阈值")
+    if extra_actions > 0:
+        updated["merge_gap_sec"] = min(0.90, updated["merge_gap_sec"] + 0.15)
+        updated["merge_distance_px"] = min(24.0, updated["merge_distance_px"] + 4.0)
+        updated["continuation_gap_sec"] = min(1.80, updated["continuation_gap_sec"] + 0.25)
+        updated["continuation_distance_px"] = min(28.0, updated["continuation_distance_px"] + 4.0)
+        reasons.append("单次拖动被拆分，放宽 trace 合并阈值")
+
+    return normalize_profile(updated), reasons
+
+
+def run_diagnostic_capture(
+    adb: str,
+    effective_device: str,
+    touch_caps: Dict[str, Tuple[int, int]],
+    screen_w: int,
+    screen_h: int,
+    forced_event_dev: Optional[str],
+    invert_x: bool,
+    invert_y: bool,
+    swap_xy: bool,
+    profile: Dict[str, float],
+    cases: List[Dict[str, object]],
+) -> Dict[str, object]:
+    event_dev = diagnostic_event_device(forced_event_dev, touch_caps)
+    print(f"[Diag] Injection event device: {event_dev}")
+    raw_snippets: List[Dict[str, object]] = []
+
+    def capture_raw_snippet(gesture: Gesture, selected_dev: str, raw_lines: List[str]) -> None:
+        raw_snippets.append(
+            {
+                "device": selected_dev,
+                "start_t": round(gesture.start_t, 6),
+                "end_t": round(gesture.end_t, 6),
+                "lines": build_raw_excerpt(raw_lines),
+            }
+        )
+
+    sender = threading.Thread(
+        target=dispatch_diagnostic_inputs,
+        args=(adb, effective_device, event_dev, touch_caps, screen_w, screen_h, invert_x, invert_y, swap_xy, cases),
+        daemon=True,
+    )
+    sender.start()
+    gestures, selected_dev = record_gestures(
+        adb,
+        effective_device,
+        touch_caps,
+        min_points=1,
+        forced_event_dev=event_dev,
+        stop_after_gestures=len(cases),
+        on_gesture_raw_captured=capture_raw_snippet,
+    )
+    sender.join(timeout=5.0)
+    x_max, y_max = touch_caps[selected_dev]
+    actions = build_actions_from_gestures(
+        gestures,
+        x_max,
+        y_max,
+        screen_w,
+        screen_h,
+        invert_x=invert_x,
+        invert_y=invert_y,
+        swap_xy=swap_xy,
+        profile=profile,
+    )
+    actions = clean_actions_noise(actions)
+    actions = merge_short_gap_traces(actions, profile=profile)
+    evaluation = evaluate_diagnostic_actions(actions, cases, raw_snippets=raw_snippets)
+    return {
+        "selected_dev": selected_dev,
+        "injection_event_dev": event_dev,
+        "profile": normalize_profile(profile),
+        "actions": actions,
+        "raw_gesture_snippets": raw_snippets,
+        "evaluation": evaluation,
+    }
+
+
+def run_self_heal_diagnostic(
+    adb: str,
+    effective_device: str,
+    touch_caps: Dict[str, Tuple[int, int]],
+    screen_w: int,
+    screen_h: int,
+    forced_event_dev: Optional[str],
+    invert_x: bool,
+    invert_y: bool,
+    swap_xy: bool,
+    profile_path: Optional[str],
+    output_path: str,
+) -> int:
+    base_profile = load_recording_profile(profile_path)
+    cases = build_diagnostic_cases(screen_w, screen_h)
+    print(f"[Diag] Cases: {len(cases)}")
+    print(f"[Diag] Baseline profile: {json.dumps(base_profile, ensure_ascii=False)}")
+    baseline = run_diagnostic_capture(
+        adb, effective_device, touch_caps, screen_w, screen_h, forced_event_dev, invert_x, invert_y, swap_xy, base_profile, cases
+    )
+    print(f"[Diag] Baseline score: {baseline['evaluation']['score']}")
+
+    candidate_profile, reasons = propose_profile_adjustment(base_profile, baseline["evaluation"])
+    result: Dict[str, object] = {
+        "mode": "diagnose_self_heal",
+        "cases": cases,
+        "baseline": baseline,
+        "candidate": None,
+        "applied": False,
+        "applied_profile": base_profile,
+        "reasons": reasons,
+    }
+
+    if reasons and candidate_profile != base_profile:
+        print(f"[Diag] Proposed repair: {'; '.join(reasons)}")
+        print(f"[Diag] Candidate profile: {json.dumps(candidate_profile, ensure_ascii=False)}")
+        candidate = run_diagnostic_capture(
+            adb,
+            effective_device,
+            touch_caps,
+            screen_w,
+            screen_h,
+            forced_event_dev,
+            invert_x,
+            invert_y,
+            swap_xy,
+            candidate_profile,
+            cases,
+        )
+        result["candidate"] = candidate
+        print(f"[Diag] Candidate score: {candidate['evaluation']['score']}")
+        if float(candidate["evaluation"]["score"]) < float(baseline["evaluation"]["score"]):
+            result["applied"] = True
+            result["applied_profile"] = candidate_profile
+            if profile_path:
+                save_recording_profile(profile_path, candidate_profile)
+                print(f"[Diag] Applied profile saved: {profile_path}")
+        else:
+            print("[Diag] Candidate profile did not improve score; keep baseline profile")
+    else:
+        print("[Diag] No repair action proposed; keep baseline profile")
+
+    Path(output_path).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[Diag] Report saved: {output_path}")
+    return 0
 
 
 def recommend_mapping(
@@ -797,7 +1371,10 @@ def main() -> int:
     parser.add_argument("--mapping-lock", action="store_true", help="Write mapping_locked=true in output plan")
     parser.add_argument("--calibrate-mapping", action="store_true", help="Record one stroke and print best mapping")
     parser.add_argument("--print-clicks-only", action="store_true", help="Listen to touches and print click coordinates only")
+    parser.add_argument("--profile", help="Recording profile JSON path")
+    parser.add_argument("--diagnose-self-heal", action="store_true", help="Run diagnostic capture, propose repair, and save better profile")
     args = parser.parse_args()
+    profile = load_recording_profile(args.profile)
 
     retried = False
     while True:
@@ -833,10 +1410,26 @@ def main() -> int:
             bool(args.invert_x),
             bool(args.invert_y),
             bool(args.swap_xy),
+            profile=profile,
         )
         x_max, y_max = touch_caps[selected_dev]
         print(f"[Recorder] Using touch device: {selected_dev}, raw max: x={x_max}, y={y_max}")
         return 0
+
+    if args.diagnose_self_heal:
+        return run_self_heal_diagnostic(
+            args.adb,
+            effective_device,
+            touch_caps,
+            screen_w,
+            screen_h,
+            args.event_dev,
+            bool(args.invert_x),
+            bool(args.invert_y),
+            bool(args.swap_xy),
+            args.profile,
+            args.output,
+        )
 
     gestures, selected_dev = record_gestures(
         args.adb,
@@ -872,10 +1465,11 @@ def main() -> int:
         invert_x=bool(args.invert_x),
         invert_y=bool(args.invert_y),
         swap_xy=bool(args.swap_xy),
+        profile=profile,
     )
     if not args.no_clean_noise:
         actions = clean_actions_noise(actions)
-    actions = merge_short_gap_traces(actions)
+    actions = merge_short_gap_traces(actions, profile=profile)
     if not actions:
         raise RecorderError("No actions captured. Please record again.")
 
@@ -897,6 +1491,7 @@ def main() -> int:
             "invert_y": bool(args.invert_y),
             "swap_xy": bool(args.swap_xy),
         },
+        "recording_profile": profile,
     }
     if args.mapping_lock:
         plan["mapping_locked"] = True

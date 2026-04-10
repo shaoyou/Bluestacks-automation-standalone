@@ -2,6 +2,7 @@
 
 本方案通过 `adb shell input ...` 直接控制 BlueStacks，支持：
 - 点击（`click`）
+- 识别文字并点击（`find_text_click`）
 - 滑动（`swipe`）
 - 等待（`wait`）
 - 循环（`loop`）
@@ -189,7 +190,26 @@ adb -s 127.0.0.1:5555 shell input tap 500 500
 { "type": "wait", "seconds": 1.0, "jitter_seconds": 0.2 }
 ```
 
-4. `loop`
+4. `find_text_click`
+
+```json
+{
+  "type": "find_text_click",
+  "text": "START",
+  "match": "contains",
+  "lang": "eng",
+  "timeout_sec": 8,
+  "interval_sec": 0.8
+}
+```
+
+- 运行时会先截图，再用 `tesseract` OCR 查找文字，找到后点击文字区域中心
+- 当前默认使用 `tesseract` 的 `eng` 语言包；如本机安装了其他语言包，可自行传 `lang`
+- `match` 支持：
+  - `contains`
+  - `exact`
+
+5. `loop`
 
 ```json
 { "type": "loop", "count": -1, "actions": [ ... ] }
@@ -197,7 +217,7 @@ adb -s 127.0.0.1:5555 shell input tap 500 500
 
 - `count = -1` 表示无限循环
 
-5. `patrol`
+6. `patrol`
 
 ```json
 {

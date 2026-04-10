@@ -37,6 +37,7 @@
 
 支持的 `type`：
 - `click`
+- `find_text_click`
 - `swipe`
 - `trace`
 - `wait`
@@ -53,7 +54,29 @@
 - `x` (number, 必填): X 坐标
 - `y` (number, 必填): Y 坐标
 
-### 2.2 swipe
+### 2.2 find_text_click
+
+```json
+{
+  "type": "find_text_click",
+  "text": "START",
+  "match": "contains",
+  "lang": "eng",
+  "timeout_sec": 8,
+  "interval_sec": 0.8
+}
+```
+
+- `text` (string, 必填): 目标文字
+- `match` (string, 可选，默认 `contains`): `contains` 或 `exact`
+- `lang` (string, 可选，默认 `eng`): tesseract 语言包
+- `timeout_sec` (number, 可选，默认 `8`): 最长等待时间
+- `interval_sec` (number, 可选，默认 `0.8`): 轮询截图间隔
+- `index` (number, 可选，默认 `0`): 同一文字出现多次时，点击第几个命中项
+- `offset_x` `offset_y` (number, 可选，默认 `0`): 对命中的中心点做额外偏移
+- 说明：该动作会先截图，再做 OCR，点击坐标使用当前设备屏幕坐标，不依赖录制脚本的源分辨率
+
+### 2.3 swipe
 
 ```json
 { "type": "swipe", "x1": 300, "y1": 400, "x2": 900, "y2": 400, "duration_ms": 600 }
@@ -63,7 +86,7 @@
 - `x2` `y2` (number, 必填): 终点
 - `duration_ms` (number, 可选，默认 `300`): 滑动时长（毫秒）
 
-### 2.3 wait
+### 2.4 wait
 
 ```json
 { "type": "wait", "seconds": 1.0, "jitter_seconds": 0.2 }
@@ -72,7 +95,7 @@
 - `seconds` (number, 可选，默认 `1.0`): 等待秒数
 - `jitter_seconds` (number, 可选，默认 `0.0`): 随机扰动秒数（`±`）
 
-### 2.3 trace
+### 2.5 trace
 
 ```json
 {
@@ -93,7 +116,7 @@
 - `max_segment_ms` (number, 可选，默认 `80`): 每段最大时长
 - 用途：精细回放手写轨迹（如画 `123`）
 
-### 2.4 sequence
+### 2.6 sequence
 
 ```json
 {
@@ -108,7 +131,7 @@
 - `actions` (array, 必填): 子动作列表
 - 用途：把一组动作打包成逻辑段落
 
-### 2.5 loop
+### 2.7 loop
 
 ```json
 {
@@ -127,7 +150,7 @@
   - `-1`: 无限循环
 - `actions` (array, 必填): 循环体
 
-### 2.6 patrol
+### 2.8 patrol
 
 ```json
 {
