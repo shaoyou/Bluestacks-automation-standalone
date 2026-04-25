@@ -1,0 +1,162 @@
+{
+  "actions" : [
+    {
+      "interval_sec" : 0.59999999999999998,
+      "region" : {
+        "height" : 67,
+        "width" : 230,
+        "x" : 410,
+        "y" : 1536
+      },
+      "remark" : "识别图标role_cancel.png并点击",
+      "template" : "..\/image_templates\/role_cancel.png",
+      "threshold" : 0.88,
+      "timeout_sec" : 8,
+      "type" : "find_image_click"
+    },
+    {
+      "interval_sec" : 0.59999999999999998,
+      "region" : {
+        "height" : 147,
+        "width" : 684,
+        "x" : 185,
+        "y" : 1383
+      },
+      "remark" : "识别图标role_done_min.png并点击",
+      "template" : "..\/image_templates\/role_done_min.png",
+      "threshold" : 0.88,
+      "timeout_sec" : 8,
+      "type" : "find_image_click"
+    },
+    {
+      "interval_sec" : 0.59999999999999998,
+      "region" : {
+        "height" : 205,
+        "width" : 931,
+        "x" : 70,
+        "y" : 1370
+      },
+      "remark" : "识别图标role_done_max.png并点击",
+      "template" : "..\/image_templates\/role_done_max.png",
+      "threshold" : 0.88,
+      "timeout_sec" : 8,
+      "type" : "find_image_click"
+    },
+    {
+      "interval_sec" : 0.59999999999999998,
+      "region" : {
+        "height" : 154,
+        "width" : 985,
+        "x" : 54,
+        "y" : 1239
+      },
+      "remark" : "识别图标role_count_max.png并点击",
+      "template" : "..\/image_templates\/role_count_max.png",
+      "threshold" : 0.88,
+      "timeout_sec" : 8,
+      "type" : "find_image_click"
+    },
+    {
+      "interval_sec" : 0.59999999999999998,
+      "region" : {
+        "height" : 417,
+        "width" : 1008,
+        "x" : 29,
+        "y" : 780
+      },
+      "remark" : "识别图标role_kakaxi.png",
+      "template" : "..\/image_templates\/role_kakaxi.png",
+      "threshold" : 0.88,
+      "timeout_sec" : 8,
+      "type" : "find_image"
+    },
+    {
+      "else_actions" : [
+        {
+          "remark" : "未识别到图标后的分支",
+          "seconds" : 0.5,
+          "type" : "wait"
+        }
+      ],
+      "interval_sec" : 0.59999999999999998,
+      "region" : {
+        "height" : 417,
+        "width" : 1008,
+        "x" : 29,
+        "y" : 780
+      },
+      "remark" : "如果识别到图标role_kakaxi.png",
+      "template" : "..\/image_templates\/role_kakaxi.png",
+      "then_actions" : [
+        {
+          "remark" : "识别到图标后的分支",
+          "seconds" : 0.5,
+          "type" : "wait"
+        }
+      ],
+      "threshold" : 0.88,
+      "timeout_sec" : 8,
+      "type" : "if_image"
+    },
+    {
+      "actions" : [
+        {
+          "max_segment_ms" : 1000,
+          "min_segment_ms" : 1,
+          "mode" : "motion",
+          "points" : [
+            {
+              "t_ms" : 0,
+              "x" : 205,
+              "y" : 1587
+            },
+            {
+              "t_ms" : 100,
+              "x" : 385,
+              "y" : 1587
+            },
+            {
+              "t_ms" : 500,
+              "x" : 385,
+              "y" : 1587
+            }
+          ],
+          "remark" : "向右移动0.5秒",
+          "type" : "trace"
+        }
+      ],
+      "count" : 12,
+      "type" : "loop"
+    },
+    {
+      "remark" : "点击(132,1555)",
+      "type" : "click",
+      "x" : 132,
+      "y" : 1555
+    }
+  ],
+  "device" : "emulator-5554",
+  "jitter_px" : 0,
+  "mapping_locked" : true,
+  "mapping_profile" : {
+    "invert_x" : false,
+    "invert_y" : false,
+    "swap_xy" : false
+  },
+  "max_runtime_sec" : 0,
+  "recording_profile" : {
+    "continuation_distance_px" : 12,
+    "continuation_duration_ms" : 700,
+    "continuation_gap_sec" : 1.2,
+    "continuation_span_px" : 40,
+    "merge_distance_px" : 10,
+    "merge_gap_sec" : 0.34999999999999998,
+    "min_swipe_duration_sec" : 0.17999999999999999,
+    "tap_distance_px" : 24,
+    "tap_duration_sec" : 0.45000000000000001
+  },
+  "screen_size" : {
+    "height" : 1920,
+    "width" : 1080
+  }
+}

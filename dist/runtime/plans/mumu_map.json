@@ -1,0 +1,66 @@
+{
+  "jitter_px": 0,
+  "max_runtime_sec": 0,
+  "actions": [
+    {
+      "type": "loop",
+      "count": 1,
+      "actions": [
+          {
+            "remark" : "点击左下角地图",
+            "type" : "click",
+            "x" : 978,
+            "y" : 1492
+          },
+          {
+            "seconds" : 1,
+            "type" : "wait"
+          },
+          {
+            "remark" : "调整地图",
+            "type": "loop",
+            "count": 4,
+            "actions": [
+                {
+                  "type": "click",
+                  "x": 1018,
+                  "y": 1147
+                },
+                {
+                  "type": "wait",
+                  "seconds": 0.552
+                }
+            ]
+          },
+        {
+            "remark" : "点击左下角关闭地图",
+          "type": "click",
+          "x": 214,
+          "y": 1763
+        }
+      ]
+    }
+  ],
+  "screen_size": {
+    "width": 1080,
+    "height": 1920
+  },
+  "mapping_profile": {
+    "invert_x": false,
+    "invert_y": false,
+    "swap_xy": false
+  },
+  "recording_profile": {
+    "tap_distance_px": 24.0,
+    "tap_duration_sec": 0.45,
+    "min_swipe_duration_sec": 0.18,
+    "merge_gap_sec": 0.35,
+    "merge_distance_px": 10.0,
+    "continuation_gap_sec": 1.2,
+    "continuation_distance_px": 12.0,
+    "continuation_span_px": 40.0,
+    "continuation_duration_ms": 700.0
+  },
+  "mapping_locked": true,
+  "device": "emulator-5554"
+}

@@ -2,6 +2,10 @@
 
 本方案通过 `adb shell input ...` 直接控制 BlueStacks，支持：
 - 点击（`click`）
+- 保存截图（`save_screenshot`）
+- 只识别图标（`find_image`）
+- 识别图标并点击（`find_image_click`）
+- 条件识别分支（`if_image`）
 - 识别文字并点击（`find_text_click`）
 - 滑动（`swipe`）
 - 等待（`wait`）
@@ -37,6 +41,7 @@ adb devices
 - `adb_bot.py`: 主脚本
 - `patrol_plan.json`: 可直接运行的巡逻配置样例
 - `plans/`: UI 管理的脚本目录（建议所有脚本放这里）
+- `image_templates/`: 图标模板目录（用于 `find_image_click`）
 - `ui_manager.py`: 本地脚本管理 UI（新建/编辑/保存/切换/双实例运行）
 - `swiftui_manager/`: SwiftUI 管理 UI（推荐）
 - `record_touch.py`: 录制 BlueStacks 触摸并导出脚本
@@ -190,7 +195,38 @@ adb -s 127.0.0.1:5555 shell input tap 500 500
 { "type": "wait", "seconds": 1.0, "jitter_seconds": 0.2 }
 ```
 
-4. `find_text_click`
+4. `find_image`
+
+```json
+{
+  "type": "find_image",
+  "template": "../image_templates/start_button.png",
+  "threshold": 0.92,
+  "timeout_sec": 2,
+  "interval_sec": 0.6
+}
+```
+
+- 只识别图标，不点击
+- 适合先验证模板和区域是否设置正确
+
+5. `save_screenshot`
+
+```json
+{
+  "type": "save_screenshot",
+  "pair_key": "draw_result",
+  "stage": "before",
+  "label": "min",
+  "remark": "保存抽卡前截图"
+}
+```
+
+- 默认输出到 `diagnostics/draw_result_pairs/`
+- 如果用 `pair_key + before/after`，文件名会自动成对，并在同目录生成 `index.csv` 和 `index.jsonl`
+- 适合做抽卡前后对比、结果统计、批量回看
+
+6. `find_text_click`
 
 ```json
 {
@@ -209,7 +245,103 @@ adb -s 127.0.0.1:5555 shell input tap 500 500
   - `contains`
   - `exact`
 
-5. `loop`
+7. `find_image_click`
+
+```json
+{
+  "type": "find_image_click",
+  "template": "../image_templates/start_button.png",
+  "threshold": 0.92,
+  "timeout_sec": 8,
+  "interval_sec": 0.6,
+  "preview_only": true
+}
+```
+
+- 运行时会先截图，再与模板图标做匹配，找到后点击图标中心
+- 若在 `timeout_sec` 内未命中，会输出一条跳过日志并继续执行下一个动作，不会终止整条脚本
+- 推荐把图标裁成尽量紧凑的 PNG，小图标背景越干净越准
+- `template` 支持绝对路径，也支持相对当前脚本文件的路径
+- 如果要匹配多个候选图标，可改用 `templates: ["a.png", "b.png", "c.png"]`；按数组顺序依次判定，命中任意一个即成功
+- 使用 `templates` 时，日志会逐个模板输出成功或失败，方便看识别进度
+- 可选字段：
+  - `threshold`: 匹配阈值，默认 `0.92`
+  - `timeout_sec`: 最长等待时间，默认 `8`
+  - `interval_sec`: 轮询截图间隔，默认 `0.6`
+  - `max_attempts`: 最多重试多少轮完整识别；设为 `1` 时整组模板只扫一轮
+  - `index`: 同图标多处出现时，点击第几个命中项
+  - `max_candidates`: 每个缩放级别最多保留多少个候选点；如果只关心“是否出现任意一个”，可设为 `1`
+  - `offset_x` / `offset_y`: 对命中中心额外偏移
+  - `region`: 限定搜索区域，格式如 `{ "x": 100, "y": 200, "width": 300, "height": 200 }`；默认全屏
+- 默认会自动尝试一组缩放比例来适配屏幕上图标大小变化；如需手动控制，可额外传：
+  - `scale_min`
+  - `scale_max`
+  - `scale_step`
+  - 或 `scales: [0.75, 0.9, 1.0, 1.1]`
+- `preview_only: true` 时只会保存高亮预览图，不会执行点击
+- 每次运行 `find_image_click` 都会自动把最佳候选保存到 `diagnostics/image_match_debug/`
+- 提速建议：尽量缩小 `region`；如果图标大小稳定，优先用 `scales: [1.0]`；把最常出现的模板放在 `templates` 前面；只做存在性判断时可配 `max_candidates: 1`
+- SwiftUI 编辑器支持两种模板来源：
+  - 直接上传本地图标
+  - 从 `image_templates/` 中直接选择已有图标
+  - 从当前设备截图中框选图标并保存到 `image_templates/`
+- SwiftUI 编辑器支持从当前设备截图中框选搜索区域，并可一键恢复为全屏区域
+- 多目标示例：
+
+```json
+{
+  "type": "find_image_click",
+  "templates": [
+    "../image_templates/reward_a.png",
+    "../image_templates/reward_b.png",
+    "../image_templates/reward_c.png"
+  ],
+  "threshold": 0.9,
+  "timeout_sec": 5,
+  "remark": "任意奖励图标出现就点击"
+}
+```
+
+8. `if_image`
+
+```json
+{
+  "type": "if_image",
+  "template": "../image_templates/start_button.png",
+  "threshold": 0.88,
+  "timeout_sec": 2,
+  "interval_sec": 0.6,
+  "then_actions": [
+    { "type": "click_match", "remark": "点击当前命中的图标" }
+  ],
+  "else_actions": [
+    { "type": "wait", "seconds": 0.5 }
+  ]
+}
+```
+
+- 识别到图标时走 `then_actions`
+- 未识别到时走 `else_actions`
+- 也支持 `templates`，用于“多个目标图标出现任意一个就进 then_actions”
+- 在 `then_actions` 里可以写 `{ "type": "click_match" }`，直接点击当前这次 `if_image` 命中的图标中心
+
+```json
+{
+  "type": "if_image",
+  "templates": [
+    "../image_templates/a.png",
+    "../image_templates/b.png"
+  ],
+  "then_actions": [
+    { "type": "click_match", "remark": "点击当前命中的图标" }
+  ],
+  "else_actions": [
+    { "type": "wait", "seconds": 0.5, "remark": "没有命中任何图标" }
+  ]
+}
+```
+
+9. `loop`
 
 ```json
 { "type": "loop", "count": -1, "actions": [ ... ] }
@@ -217,7 +349,7 @@ adb -s 127.0.0.1:5555 shell input tap 500 500
 
 - `count = -1` 表示无限循环
 
-6. `patrol`
+10. `patrol`
 
 ```json
 {

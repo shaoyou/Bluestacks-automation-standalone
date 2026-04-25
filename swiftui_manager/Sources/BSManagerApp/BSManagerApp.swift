@@ -1,11 +1,113 @@
 import SwiftUI
 import Foundation
 import AppKit
+import UniformTypeIdentifiers
 
-private let appRoot = URL(fileURLWithPath: "/Users/admins/Documents/Playground/Bluestacks-automation-standalone", isDirectory: true)
+private func workspaceMarkerExists(at directory: URL) -> Bool {
+    let fileManager = FileManager.default
+    return fileManager.fileExists(atPath: directory.appendingPathComponent("plans", isDirectory: true).path)
+        && fileManager.fileExists(atPath: directory.appendingPathComponent("adb_bot.py").path)
+        && fileManager.fileExists(atPath: directory.appendingPathComponent("record_touch.py").path)
+}
+
+private func synchronizedRuntimeRoot(from bundledRoot: URL) -> URL? {
+    let fileManager = FileManager.default
+    guard let supportBase = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+        return nil
+    }
+    let destinationRoot = supportBase
+        .appendingPathComponent("BSManagerApp", isDirectory: true)
+        .appendingPathComponent("runtime", isDirectory: true)
+
+    try? fileManager.createDirectory(at: destinationRoot, withIntermediateDirectories: true)
+
+    let filesToOverwrite = ["adb_bot.py", "record_touch.py"]
+    for name in filesToOverwrite {
+        let source = bundledRoot.appendingPathComponent(name)
+        let destination = destinationRoot.appendingPathComponent(name)
+        if fileManager.fileExists(atPath: destination.path) {
+            try? fileManager.removeItem(at: destination)
+        }
+        if fileManager.fileExists(atPath: source.path) {
+            try? fileManager.copyItem(at: source, to: destination)
+        }
+    }
+
+    let directoriesToMerge = ["plans", "image_templates"]
+    for name in directoriesToMerge {
+        let sourceDir = bundledRoot.appendingPathComponent(name, isDirectory: true)
+        let destinationDir = destinationRoot.appendingPathComponent(name, isDirectory: true)
+        guard fileManager.fileExists(atPath: sourceDir.path) else { continue }
+        try? fileManager.createDirectory(at: destinationDir, withIntermediateDirectories: true)
+        let children = (try? fileManager.contentsOfDirectory(at: sourceDir, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
+        for child in children {
+            let destinationChild = destinationDir.appendingPathComponent(child.lastPathComponent, isDirectory: false)
+            guard !fileManager.fileExists(atPath: destinationChild.path) else { continue }
+            try? fileManager.copyItem(at: child, to: destinationChild)
+        }
+    }
+
+    let directoriesToEnsure = ["diagnostics", "recording_profiles"]
+    for name in directoriesToEnsure {
+        try? fileManager.createDirectory(
+            at: destinationRoot.appendingPathComponent(name, isDirectory: true),
+            withIntermediateDirectories: true
+        )
+    }
+
+    return workspaceMarkerExists(at: destinationRoot) ? destinationRoot : nil
+}
+
+private func findAppRoot(startingAt directory: URL?) -> URL? {
+    guard var current = directory?.resolvingSymlinksInPath() else { return nil }
+    for _ in 0..<10 {
+        if workspaceMarkerExists(at: current) {
+            return current
+        }
+        let parent = current.deletingLastPathComponent()
+        if parent.path == current.path {
+            break
+        }
+        current = parent
+    }
+    return nil
+}
+
+private func resolveAppRoot() -> URL {
+    if let resourceURL = Bundle.main.resourceURL {
+        let bundledRuntime = resourceURL.appendingPathComponent("Runtime", isDirectory: true)
+        if workspaceMarkerExists(at: bundledRuntime) {
+            return synchronizedRuntimeRoot(from: bundledRuntime) ?? bundledRuntime
+        }
+    }
+
+    if let executableDirectory = Bundle.main.executableURL?.deletingLastPathComponent() {
+        let siblingRuntime = executableDirectory.appendingPathComponent("runtime", isDirectory: true)
+        if workspaceMarkerExists(at: siblingRuntime) {
+            return siblingRuntime
+        }
+    }
+
+    let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+    let candidates = [
+        cwd,
+        Bundle.main.executableURL?.deletingLastPathComponent(),
+    ]
+    for candidate in candidates {
+        if let found = findAppRoot(startingAt: candidate) {
+            return found
+        }
+    }
+    return cwd
+}
+
+private let appRoot = resolveAppRoot()
 private let plansDir = appRoot.appendingPathComponent("plans", isDirectory: true)
+private let imageTemplatesDir = appRoot.appendingPathComponent("image_templates", isDirectory: true)
 private let recordingProfilesDir = appRoot.appendingPathComponent("recording_profiles", isDirectory: true)
 private let diagnosticsDir = appRoot.appendingPathComponent("diagnostics", isDirectory: true)
+private let drawStatsDir = diagnosticsDir.appendingPathComponent("draw_stats", isDirectory: true)
+private let drawResultPairsDir = diagnosticsDir.appendingPathComponent("draw_result_pairs", isDirectory: true)
 private let botScript = appRoot.appendingPathComponent("adb_bot.py")
 private let recorderScript = appRoot.appendingPathComponent("record_touch.py")
 private let appVersion = "1.1.0"
@@ -370,6 +472,81 @@ private func openScriptsDirectoryInFinder() {
     NSWorkspace.shared.open(plansDir)
 }
 
+private func openImageTemplatesDirectoryInFinder() {
+    try? FileManager.default.createDirectory(at: imageTemplatesDir, withIntermediateDirectories: true)
+    NSWorkspace.shared.open(imageTemplatesDir)
+}
+
+private func openDrawResultPairsDirectoryInFinder() {
+    try? FileManager.default.createDirectory(at: drawResultPairsDir, withIntermediateDirectories: true)
+    NSWorkspace.shared.open(drawResultPairsDir)
+}
+
+private func imageTemplateReferencePath(for fileURL: URL) -> String {
+    let resolvedFile = fileURL.resolvingSymlinksInPath()
+    let resolvedDirectory = imageTemplatesDir.resolvingSymlinksInPath()
+    let directoryPath = resolvedDirectory.path
+    let filePath = resolvedFile.path
+    if filePath.hasPrefix(directoryPath + "/") {
+        let relative = String(filePath.dropFirst(directoryPath.count + 1))
+        return "../image_templates/\(relative)"
+    }
+    return filePath
+}
+
+private func uniqueFileURL(in directory: URL, preferredName: String) -> URL {
+    let fileManager = FileManager.default
+    let ext = (preferredName as NSString).pathExtension
+    let base = (preferredName as NSString).deletingPathExtension
+    var candidate = directory.appendingPathComponent(preferredName)
+    var index = 2
+    while fileManager.fileExists(atPath: candidate.path) {
+        let name = ext.isEmpty ? "\(base)-\(index)" : "\(base)-\(index).\(ext)"
+        candidate = directory.appendingPathComponent(name)
+        index += 1
+    }
+    return candidate
+}
+
+private func importImageTemplateWithOpenPanel() throws -> String? {
+    let panel = NSOpenPanel()
+    panel.canChooseFiles = true
+    panel.canChooseDirectories = false
+    panel.allowsMultipleSelection = false
+    panel.allowedContentTypes = [.image]
+    guard panel.runModal() == .OK, let sourceURL = panel.url else {
+        return nil
+    }
+
+    let fileManager = FileManager.default
+    try fileManager.createDirectory(at: imageTemplatesDir, withIntermediateDirectories: true)
+
+    let sourceDirectory = sourceURL.resolvingSymlinksInPath().deletingLastPathComponent().path
+    let templatesDirectory = imageTemplatesDir.resolvingSymlinksInPath().path
+    let destinationURL: URL
+    if sourceDirectory == templatesDirectory {
+        destinationURL = imageTemplatesDir.appendingPathComponent(sourceURL.lastPathComponent)
+    } else {
+        destinationURL = uniqueFileURL(in: imageTemplatesDir, preferredName: sourceURL.lastPathComponent)
+        try fileManager.copyItem(at: sourceURL, to: destinationURL)
+    }
+    return imageTemplateReferencePath(for: destinationURL)
+}
+
+private func chooseImageTemplateWithOpenPanel() throws -> String? {
+    try FileManager.default.createDirectory(at: imageTemplatesDir, withIntermediateDirectories: true)
+    let panel = NSOpenPanel()
+    panel.canChooseFiles = true
+    panel.canChooseDirectories = false
+    panel.allowsMultipleSelection = false
+    panel.allowedContentTypes = [.image]
+    panel.directoryURL = imageTemplatesDir
+    guard panel.runModal() == .OK, let selectedURL = panel.url else {
+        return nil
+    }
+    return imageTemplateReferencePath(for: selectedURL)
+}
+
 private func sanitizedDeviceFileName(_ device: String) -> String {
     let trimmed = device.trimmingCharacters(in: .whitespacesAndNewlines)
     let base = trimmed.isEmpty ? "default" : trimmed
@@ -439,6 +616,193 @@ struct EditorInsertionRequest: Identifiable, Equatable {
     let text: String
 }
 
+struct DeviceScreenshotCapture: Identifiable {
+    let id = UUID()
+    let image: NSImage
+    let cgImage: CGImage
+    let pixelSize: CGSize
+    let defaultTemplateName: String
+}
+
+struct ImageSearchRegion: Equatable {
+    let x: Int
+    let y: Int
+    let width: Int
+    let height: Int
+
+    init(x: Int, y: Int, width: Int, height: Int) {
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+    }
+
+    init(rect: CGRect) {
+        self.x = Int(rect.minX.rounded())
+        self.y = Int(rect.minY.rounded())
+        self.width = Int(rect.width.rounded())
+        self.height = Int(rect.height.rounded())
+    }
+
+    var rect: CGRect {
+        CGRect(x: x, y: y, width: width, height: height)
+    }
+
+    var summaryText: String {
+        "x=\(x), y=\(y), w=\(width), h=\(height)"
+    }
+}
+
+struct DrawSessionSummary: Identifiable, Hashable {
+    let id: String
+    let sessionID: String
+    let updatedAt: Date?
+    let updatedAtText: String
+    let drawStartedCount: Int
+    let targetHitCount: Int
+    let latestEvent: String
+    let latestDrawType: String
+    let latestMatchedTemplate: String
+    let eventsURL: URL
+
+    var hitRateText: String {
+        guard drawStartedCount > 0 else { return "0%" }
+        let value = Double(targetHitCount) / Double(drawStartedCount) * 100.0
+        return String(format: "%.1f%%", value)
+    }
+}
+
+struct DrawEventRecord: Identifiable, Hashable {
+    let id: String
+    let timestamp: Date?
+    let timestampText: String
+    let event: String
+    let drawType: String
+    let matchedTemplate: String
+    let drawStartedCount: Int
+    let targetHitCount: Int
+}
+
+struct DrawScreenshotPair: Identifiable, Hashable {
+    let id: String
+    let sessionID: String
+    let pairIndex: Int
+    let pairPrefix: String
+    let drawType: String
+    let beforeLabel: String
+    let beforeURL: URL?
+    let beforeSavedAt: Date?
+    let beforeSavedAtText: String
+    let afterLabel: String
+    let afterURL: URL?
+    let afterSavedAt: Date?
+    let afterSavedAtText: String
+}
+
+private struct AppOperationError: LocalizedError {
+    let message: String
+
+    var errorDescription: String? { message }
+}
+
+private func sanitizedTemplateFileName(_ rawPath: String) -> String {
+    let candidate = URL(fileURLWithPath: rawPath).lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+    let fallback = "template-\(Int(Date().timeIntervalSince1970)).png"
+    var name = candidate.isEmpty ? fallback : candidate
+    name = name.replacingOccurrences(of: #"[^\p{L}\p{N}._-]+"#, with: "_", options: .regularExpression)
+    if name.isEmpty {
+        name = fallback
+    }
+    let ext = (name as NSString).pathExtension.lowercased()
+    if ext.isEmpty {
+        name += ".png"
+    } else if ext != "png" {
+        name = ((name as NSString).deletingPathExtension) + ".png"
+    }
+    return name
+}
+
+private func captureDeviceScreenshot(adbPath: String, device: String, suggestedTemplatePath: String) throws -> DeviceScreenshotCapture {
+    guard let resolvedADB = resolveADBExecutable(adbPath) else {
+        throw AppOperationError(message: "未找到 adb: \(adbPath)")
+    }
+
+    let proc = Process()
+    let outPipe = Pipe()
+    let errPipe = Pipe()
+    proc.executableURL = URL(fileURLWithPath: resolvedADB)
+    var args: [String] = []
+    let trimmedDevice = device.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !trimmedDevice.isEmpty {
+        args += ["-s", trimmedDevice]
+    }
+    args += ["exec-out", "screencap", "-p"]
+    proc.arguments = args
+    proc.environment = mergedEnvironment()
+    proc.standardOutput = outPipe
+    proc.standardError = errPipe
+
+    var imageData = Data()
+    var errorData = Data()
+    let readGroup = DispatchGroup()
+    readGroup.enter()
+    DispatchQueue.global(qos: .userInitiated).async {
+        imageData = outPipe.fileHandleForReading.readDataToEndOfFile()
+        readGroup.leave()
+    }
+    readGroup.enter()
+    DispatchQueue.global(qos: .utility).async {
+        errorData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        readGroup.leave()
+    }
+
+    do {
+        try proc.run()
+        proc.waitUntilExit()
+    } catch {
+        throw AppOperationError(message: "截图命令启动失败: \(error.localizedDescription)")
+    }
+    readGroup.wait()
+
+    let errorText = String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard proc.terminationStatus == 0 else {
+        throw AppOperationError(message: errorText.isEmpty ? "截图失败，adb exit code \(proc.terminationStatus)" : errorText)
+    }
+    let pngHeader = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+    guard imageData.starts(with: pngHeader) else {
+        throw AppOperationError(message: "设备截图未返回 PNG 数据")
+    }
+    guard let rep = NSBitmapImageRep(data: imageData), let cgImage = rep.cgImage else {
+        throw AppOperationError(message: "设备截图解码失败")
+    }
+    let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+    return DeviceScreenshotCapture(
+        image: nsImage,
+        cgImage: cgImage,
+        pixelSize: CGSize(width: cgImage.width, height: cgImage.height),
+        defaultTemplateName: sanitizedTemplateFileName(suggestedTemplatePath)
+    )
+}
+
+private func saveCroppedTemplateImage(source: CGImage, cropRect: CGRect, preferredName: String) throws -> String {
+    try FileManager.default.createDirectory(at: imageTemplatesDir, withIntermediateDirectories: true)
+    let bounds = CGRect(x: 0, y: 0, width: source.width, height: source.height)
+    let normalized = cropRect.integral.intersection(bounds)
+    guard normalized.width >= 1, normalized.height >= 1 else {
+        throw AppOperationError(message: "裁剪区域无效")
+    }
+    guard let cropped = source.cropping(to: normalized) else {
+        throw AppOperationError(message: "模板裁剪失败")
+    }
+    let rep = NSBitmapImageRep(cgImage: cropped)
+    guard let pngData = rep.representation(using: .png, properties: [:]) else {
+        throw AppOperationError(message: "模板 PNG 编码失败")
+    }
+    let destination = uniqueFileURL(in: imageTemplatesDir, preferredName: sanitizedTemplateFileName(preferredName))
+    try pngData.write(to: destination)
+    return "../image_templates/\(destination.lastPathComponent)"
+}
+
 final class RunnerModel: ObservableObject {
     private static let maxLogChars = 80_000
     private static let logFlushIntervalSec: Double = 0.12
@@ -448,6 +812,7 @@ final class RunnerModel: ObservableObject {
     @Published var device: String = ""
     @Published var adbPath: String = "adb"
     @Published var logs: String = ""
+    @Published var isStarting: Bool = false
     @Published var isRunning: Bool = false
     @Published var cycleDurationSec: Double = 0
     @Published var cycleProgressSec: Double = 0
@@ -464,6 +829,7 @@ final class RunnerModel: ObservableObject {
     private var pendingLogs: [String] = []
     private var logFlushScheduled = false
     private var bufferedProcessOutput = ""
+    private var pendingStartID: UUID?
 
     init(slotName: String) {
         self.slotName = slotName
@@ -643,7 +1009,7 @@ final class RunnerModel: ObservableObject {
     }
 
     func start(scriptURL: URL?) {
-        guard !isRunning else {
+        guard !isRunning && !isStarting else {
             appendLog("[\(slotName)] already running\n")
             return
         }
@@ -651,13 +1017,28 @@ final class RunnerModel: ObservableObject {
             appendLog("[\(slotName)] no script selected\n")
             return
         }
+        isStarting = true
+        let startID = UUID()
+        pendingStartID = startID
+        appendLog("[\(slotName)] starting...\n")
+        DispatchQueue.main.async { [weak self] in
+            self?.startProcessIfNeeded(scriptURL: scriptURL, startID: startID)
+        }
+    }
+
+    private func startProcessIfNeeded(scriptURL: URL, startID: UUID) {
+        guard pendingStartID == startID, isStarting else { return }
         guard FileManager.default.fileExists(atPath: scriptURL.path) else {
             appendLog("[\(slotName)] script not found: \(scriptURL.path)\n")
+            isStarting = false
+            pendingStartID = nil
             return
         }
         guard let resolvedADB = resolveADBExecutable(adbPath) else {
             appendLog("[\(slotName)] adb not found: \(adbPath)\n")
             appendLog("[\(slotName)] set full path or install Android platform-tools (example: /opt/homebrew/bin/adb)\n")
+            isStarting = false
+            pendingStartID = nil
             return
         }
 
@@ -694,6 +1075,8 @@ final class RunnerModel: ObservableObject {
         do {
             try proc.run()
             process = proc
+            pendingStartID = nil
+            isStarting = false
             isRunning = true
             startProgressTimer(scriptURL: scriptURL)
             exitObserver = NotificationCenter.default.addObserver(
@@ -712,6 +1095,8 @@ final class RunnerModel: ObservableObject {
                     }
                 }
                 self.appendLog("[\(self.slotName)] exit code: \(code)\n")
+                self.pendingStartID = nil
+                self.isStarting = false
                 self.isRunning = false
                 self.process = nil
                 self.stopProgressTimer()
@@ -721,12 +1106,20 @@ final class RunnerModel: ObservableObject {
             readHandle?.readabilityHandler = nil
             readHandle = nil
             process = nil
+            pendingStartID = nil
+            isStarting = false
             isRunning = false
             stopProgressTimer()
         }
     }
 
     func stop() {
+        if isStarting && process == nil {
+            appendLog("[\(slotName)] startup cancelled\n")
+            pendingStartID = nil
+            isStarting = false
+            return
+        }
         guard let proc = process else {
             appendLog("[\(slotName)] not running\n")
             return
@@ -1409,6 +1802,136 @@ private extension Process {
     }
 }
 
+private let drawStatsTimestampFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = TimeZone.current
+    formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    return formatter
+}()
+
+private func drawStatsDate(from rawValue: String) -> Date? {
+    drawStatsTimestampFormatter.date(from: rawValue.trimmingCharacters(in: .whitespacesAndNewlines))
+}
+
+private func drawSessionSummaries() -> [DrawSessionSummary] {
+    let fileManager = FileManager.default
+    let urls = (try? fileManager.contentsOfDirectory(at: drawStatsDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
+    return urls
+        .filter { $0.lastPathComponent != "latest_summary.json" && $0.lastPathComponent.hasSuffix("_summary.json") }
+        .compactMap { url -> DrawSessionSummary? in
+            guard let data = try? Data(contentsOf: url),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return nil
+            }
+            let sessionIDFallback = url.deletingPathExtension().lastPathComponent.replacingOccurrences(of: "_summary", with: "")
+            let sessionIDRaw = (object["session_id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let sessionID = sessionIDRaw.isEmpty ? sessionIDFallback : sessionIDRaw
+            let updatedAtText = (object["updated_at"] as? String) ?? ""
+            let eventPathString = (object["events_path"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let eventsURL = eventPathString.isEmpty
+                ? drawStatsDir.appendingPathComponent("\(sessionID)_events.jsonl")
+                : URL(fileURLWithPath: eventPathString)
+            return DrawSessionSummary(
+                id: sessionID,
+                sessionID: sessionID,
+                updatedAt: drawStatsDate(from: updatedAtText),
+                updatedAtText: updatedAtText,
+                drawStartedCount: intValue(from: object["draw_started_count"]),
+                targetHitCount: intValue(from: object["target_hit_count"]),
+                latestEvent: (object["latest_event"] as? String) ?? "",
+                latestDrawType: (object["latest_draw_type"] as? String) ?? "",
+                latestMatchedTemplate: (object["latest_matched_template"] as? String) ?? "",
+                eventsURL: eventsURL
+            )
+        }
+        .sorted {
+            let lhsDate = $0.updatedAt ?? .distantPast
+            let rhsDate = $1.updatedAt ?? .distantPast
+            if lhsDate != rhsDate {
+                return lhsDate > rhsDate
+            }
+            return $0.sessionID > $1.sessionID
+        }
+}
+
+private func drawEvents(for session: DrawSessionSummary) -> [DrawEventRecord] {
+    guard let text = try? String(contentsOf: session.eventsURL, encoding: .utf8) else { return [] }
+    return text
+        .split(separator: "\n")
+        .compactMap { line -> DrawEventRecord? in
+            guard let data = line.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return nil
+            }
+            let timestampText = (object["timestamp"] as? String) ?? ""
+            let event = (object["event"] as? String) ?? ""
+            let drawType = (object["draw_type"] as? String) ?? ""
+            let matchedTemplate = (object["matched_template"] as? String) ?? ""
+            let drawStartedCount = intValue(from: object["draw_started_count"])
+            let targetHitCount = intValue(from: object["target_hit_count"])
+            let id = "\(session.sessionID)-\(timestampText)-\(event)-\(drawStartedCount)-\(targetHitCount)"
+            return DrawEventRecord(
+                id: id,
+                timestamp: drawStatsDate(from: timestampText),
+                timestampText: timestampText,
+                event: event,
+                drawType: drawType,
+                matchedTemplate: matchedTemplate,
+                drawStartedCount: drawStartedCount,
+                targetHitCount: targetHitCount
+            )
+        }
+        .sorted {
+            let lhsDate = $0.timestamp ?? .distantPast
+            let rhsDate = $1.timestamp ?? .distantPast
+            if lhsDate != rhsDate {
+                return lhsDate > rhsDate
+            }
+            return $0.id > $1.id
+        }
+}
+
+private func drawScreenshotPairs(for sessionID: String) -> [DrawScreenshotPair] {
+    let indexURL = drawResultPairsDir.appendingPathComponent("index.jsonl")
+    guard let text = try? String(contentsOf: indexURL, encoding: .utf8) else { return [] }
+    return text
+        .split(separator: "\n")
+        .compactMap { line -> DrawScreenshotPair? in
+            guard let data = line.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return nil
+            }
+            let entrySessionID = (object["session_id"] as? String) ?? ""
+            guard entrySessionID == sessionID else { return nil }
+            let beforeLabel = (object["before_label"] as? String) ?? ""
+            let afterLabel = (object["after_label"] as? String) ?? ""
+            let beforePath = (object["before_path"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let afterPath = (object["after_path"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return DrawScreenshotPair(
+                id: (object["pair_prefix"] as? String) ?? UUID().uuidString,
+                sessionID: entrySessionID,
+                pairIndex: intValue(from: object["pair_index"]),
+                pairPrefix: (object["pair_prefix"] as? String) ?? "",
+                drawType: !beforeLabel.isEmpty ? beforeLabel : afterLabel,
+                beforeLabel: beforeLabel,
+                beforeURL: beforePath.isEmpty ? nil : URL(fileURLWithPath: beforePath),
+                beforeSavedAt: drawStatsDate(from: (object["before_saved_at"] as? String) ?? ""),
+                beforeSavedAtText: (object["before_saved_at"] as? String) ?? "",
+                afterLabel: afterLabel,
+                afterURL: afterPath.isEmpty ? nil : URL(fileURLWithPath: afterPath),
+                afterSavedAt: drawStatsDate(from: (object["after_saved_at"] as? String) ?? ""),
+                afterSavedAtText: (object["after_saved_at"] as? String) ?? ""
+            )
+        }
+        .sorted {
+            if $0.pairIndex != $1.pairIndex {
+                return $0.pairIndex > $1.pairIndex
+            }
+            return $0.pairPrefix > $1.pairPrefix
+        }
+}
+
 final class AppModel: ObservableObject {
     @Published var scripts: [ScriptFile] = []
     @Published var selectedScriptName: String = ""
@@ -1425,6 +1948,7 @@ final class AppModel: ObservableObject {
         }
     }
 
+    @Published var drawRunner = RunnerModel(slotName: "DRAW")
     @Published var runnerA = RunnerModel(slotName: "A")
     @Published var runnerB = RunnerModel(slotName: "B")
     @Published var recorder: RecorderModel!
@@ -1434,6 +1958,7 @@ final class AppModel: ObservableObject {
     private let runnerBLastScriptKey = "bs.runnerB.lastScript"
     private let lastDeviceKey = "bs.lastDevice"
     private let languageKey = "bs.ui.language"
+    private let defaultDrawScriptFileName = "choukaka.json"
 
     private let defaultTemplate = """
 {
@@ -1482,6 +2007,7 @@ final class AppModel: ObservableObject {
     func setup() {
         ensurePlansDir()
         refreshScripts()
+        drawRunner.adbPath = recorder.adbPath
         calibration.adbPath = recorder.adbPath
         diagnostic.adbPath = recorder.adbPath
         refreshADBAndDevices(adbInput: recorder.adbPath)
@@ -1558,6 +2084,7 @@ final class AppModel: ObservableObject {
                         self.adbStatusMessage = "ADB 正常 (\(resolvedADB))，在线设备: \(devices.count)，可联通: \(healthyCount)，异常: \(unhealthyCount)"
                     }
                     self.recorder.device = self.preferredDevice(from: devices, current: self.recorder.device)
+                    self.drawRunner.device = self.preferredDevice(from: devices, current: self.drawRunner.device)
                     self.runnerA.device = self.preferredDevice(from: devices, current: self.runnerA.device)
                     self.runnerB.device = self.preferredDevice(from: devices, current: self.runnerB.device)
                     self.calibration.device = self.preferredDevice(from: devices, current: self.calibration.device)
@@ -1590,6 +2117,7 @@ final class AppModel: ObservableObject {
                 } else {
                     self.adbStatusMessage = "ADB 强制重启完成 (\(resolvedADB))，在线设备: \(devices.count)，可联通: \(reachability.healthy.count)，异常: \(reachability.unhealthy.count)"
                     self.recorder.device = self.preferredDevice(from: devices, current: self.recorder.device)
+                    self.drawRunner.device = self.preferredDevice(from: devices, current: self.drawRunner.device)
                     self.runnerA.device = self.preferredDevice(from: devices, current: self.runnerA.device)
                     self.runnerB.device = self.preferredDevice(from: devices, current: self.runnerB.device)
                     self.calibration.device = self.preferredDevice(from: devices, current: self.calibration.device)
@@ -1614,6 +2142,9 @@ final class AppModel: ObservableObject {
         if !FileManager.default.fileExists(atPath: plansDir.path) {
             try? FileManager.default.createDirectory(at: plansDir, withIntermediateDirectories: true)
         }
+        if !FileManager.default.fileExists(atPath: imageTemplatesDir.path) {
+            try? FileManager.default.createDirectory(at: imageTemplatesDir, withIntermediateDirectories: true)
+        }
         if !FileManager.default.fileExists(atPath: recordingProfilesDir.path) {
             try? FileManager.default.createDirectory(at: recordingProfilesDir, withIntermediateDirectories: true)
         }
@@ -1632,6 +2163,7 @@ final class AppModel: ObservableObject {
         if scripts.isEmpty {
             selectedScriptName = ""
             editorText = ""
+            drawRunner.selectedScript = ""
             runnerA.selectedScript = ""
             runnerB.selectedScript = ""
             return
@@ -1651,12 +2183,49 @@ final class AppModel: ObservableObject {
         if runnerB.selectedScript.isEmpty || !scripts.contains(where: { $0.name == runnerB.selectedScript }) {
             runnerB.selectedScript = scripts.contains(where: { $0.name == savedB }) ? savedB : selectedScriptName
         }
+        drawRunner.selectedScript = scripts.contains(where: { $0.name == defaultDrawScriptFileName })
+            ? defaultDrawScriptFileName
+            : selectedScriptName
         rememberRunnerScript(slot: "A", name: runnerA.selectedScript)
         rememberRunnerScript(slot: "B", name: runnerB.selectedScript)
     }
 
     func scriptURL(named: String) -> URL? {
         scripts.first(where: { $0.name == named })?.url
+    }
+
+    func drawScriptName() -> String {
+        scripts.contains(where: { $0.name == defaultDrawScriptFileName }) ? defaultDrawScriptFileName : selectedScriptName
+    }
+
+    func syncDrawRunnerDefaults() {
+        drawRunner.adbPath = recorder.adbPath
+        let scriptName = drawScriptName()
+        if !scriptName.isEmpty {
+            drawRunner.selectedScript = scriptName
+        }
+        drawRunner.device = preferredDevice(from: availableDevices, current: drawRunner.device)
+    }
+
+    func startDrawRun() {
+        syncDrawRunnerDefaults()
+        let scriptName = drawScriptName()
+        guard !scriptName.isEmpty else {
+            statusMessage = "抽卡失败: 未找到默认脚本 choukaka.json"
+            return
+        }
+        guard let scriptURL = scriptURL(named: scriptName) else {
+            statusMessage = "抽卡失败: 脚本不存在 \(scriptName)"
+            return
+        }
+        let device = preferredDevice(from: availableDevices, current: drawRunner.device)
+        drawRunner.device = device
+        if device.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            statusMessage = "抽卡失败: 没有可连接设备"
+            return
+        }
+        rememberLastDevice(device)
+        drawRunner.start(scriptURL: scriptURL)
     }
 
     func preferredEditorDebugDevice() -> String {
@@ -1718,6 +2287,16 @@ final class AppModel: ObservableObject {
     func loadSelectedScript() {
         guard let url = scriptURL(named: selectedScriptName) else { return }
         editorText = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    }
+
+    func selectScript(named name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, scripts.contains(where: { $0.name == trimmed }) else { return }
+        if selectedScriptName != trimmed {
+            selectedScriptName = trimmed
+        }
+        loadSelectedScript()
+        statusMessage = "已切换脚本: \(trimmed)"
     }
 
     func newScript(name: String) {
@@ -1816,11 +2395,6 @@ struct RunnerView: View {
                 }
             }
             HStack {
-                Text(t(lang, "ADB", "ADB"))
-                TextField("adb", text: $runner.adbPath)
-                    .textFieldStyle(.roundedBorder)
-            }
-            HStack {
                 Button(t(lang, "开始 \(runner.slotName)", "Start \(runner.slotName)")) {
                     runner.start(scriptURL: resolveScriptURL(runner.selectedScript))
                 }
@@ -1907,9 +2481,6 @@ struct RecorderView: View {
                 }
             }
             HStack {
-                Text(t(lang, "ADB", "ADB"))
-                TextField("adb", text: $recorder.adbPath)
-                    .textFieldStyle(.roundedBorder)
                 Text(t(lang, "循环", "Loop"))
                 TextField("-1", text: $recorder.loopCount)
                     .frame(width: 64)
@@ -1987,11 +2558,6 @@ struct CalibrationView: View {
                 }
             }
             HStack {
-                Text(t(lang, "ADB", "ADB"))
-                TextField("adb", text: $calibration.adbPath)
-                    .textFieldStyle(.roundedBorder)
-            }
-            HStack {
                 Button(t(lang, "连通检查", "Ping")) {
                     calibration.ping(adbPath: calibration.adbPath, device: calibration.device)
                 }
@@ -2049,6 +2615,7 @@ struct CalibrationView: View {
 
 enum MainSection: CaseIterable, Identifiable {
     case run
+    case draw
     case record
     case editor
     case settings
@@ -2056,6 +2623,7 @@ enum MainSection: CaseIterable, Identifiable {
     var id: String {
         switch self {
         case .run: return "run"
+        case .draw: return "draw"
         case .record: return "record"
         case .editor: return "editor"
         case .settings: return "settings"
@@ -2065,9 +2633,450 @@ enum MainSection: CaseIterable, Identifiable {
     func title(_ lang: AppLanguage) -> String {
         switch self {
         case .run: return t(lang, "运行", "Run")
+        case .draw: return t(lang, "抽卡", "Draw")
         case .record: return t(lang, "录制", "Record")
         case .editor: return t(lang, "编辑", "Editor")
         case .settings: return t(lang, "设置", "Settings")
+        }
+    }
+}
+
+private struct DrawMetricCard: View {
+    let title: String
+    let value: String
+    let detail: String?
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.system(size: 24, weight: .semibold, design: .rounded))
+                if let detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
+        }
+    }
+}
+
+private struct DrawLocalImageView: View {
+    let title: String
+    let url: URL?
+    let placeholder: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color(nsColor: .textBackgroundColor))
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.gray.opacity(0.35), lineWidth: 1)
+                if let url, let image = NSImage(contentsOf: url) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .interpolation(.high)
+                        .aspectRatio(contentMode: .fit)
+                        .padding(8)
+                } else {
+                    Text(placeholder)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+}
+
+struct DrawHistoryView: View {
+    @EnvironmentObject private var model: AppModel
+    @ObservedObject var runner: RunnerModel
+    @State private var sessions: [DrawSessionSummary] = []
+    @State private var selectedSessionID: String?
+    @State private var events: [DrawEventRecord] = []
+    @State private var pairs: [DrawScreenshotPair] = []
+    @State private var selectedPairID: String?
+    private let refreshTimer = Timer.publish(every: 2.0, on: .main, in: .common).autoconnect()
+
+    private var selectedSession: DrawSessionSummary? {
+        sessions.first { $0.sessionID == selectedSessionID }
+    }
+
+    private var selectedPair: DrawScreenshotPair? {
+        pairs.first { $0.id == selectedPairID }
+    }
+
+    private var currentSession: DrawSessionSummary? {
+        sessions.first
+    }
+
+    private var drawTypeSummary: (min: Int, max: Int) {
+        let drawEventsOnly = events.filter { $0.event == "draw_started" }
+        let minCount = drawEventsOnly.filter { $0.drawType == "min" }.count
+        let maxCount = drawEventsOnly.filter { $0.drawType == "max" }.count
+        return (minCount, maxCount)
+    }
+
+    private var currentScriptName: String {
+        model.drawScriptName()
+    }
+
+    private var drawRunnerStatusText: String {
+        if runner.isStarting {
+            return t(model.language, "启动中", "Starting")
+        }
+        if runner.isRunning {
+            return t(model.language, "运行中", "Running")
+        }
+        return t(model.language, "空闲", "Idle")
+    }
+
+    private func eventTitle(_ event: String) -> String {
+        switch event {
+        case "draw_started":
+            return t(model.language, "开启抽卡", "Draw Started")
+        case "target_hit":
+            return t(model.language, "命中目标卡", "Target Hit")
+        default:
+            return event
+        }
+    }
+
+    private func sessionSubtitle(_ session: DrawSessionSummary) -> String {
+        let updated = session.updatedAtText.isEmpty ? session.sessionID : session.updatedAtText
+        return t(model.language, "更新于 ", "Updated ") + updated
+    }
+
+    private func pairTitle(_ pair: DrawScreenshotPair) -> String {
+        let drawType = pair.drawType.isEmpty ? t(model.language, "记录", "Record") : pair.drawType.uppercased()
+        return "\(drawType) #\(pair.pairIndex)"
+    }
+
+    private func loadSelectedSession() {
+        guard let selectedSession else {
+            events = []
+            pairs = []
+            selectedPairID = nil
+            return
+        }
+        events = drawEvents(for: selectedSession)
+        pairs = drawScreenshotPairs(for: selectedSession.sessionID)
+        if let selectedPairID, pairs.contains(where: { $0.id == selectedPairID }) {
+            return
+        }
+        selectedPairID = pairs.first?.id
+    }
+
+    private func reload() {
+        sessions = drawSessionSummaries()
+        if let selectedSessionID, sessions.contains(where: { $0.sessionID == selectedSessionID }) {
+            self.selectedSessionID = selectedSessionID
+        } else {
+            self.selectedSessionID = sessions.first?.sessionID
+        }
+        loadSelectedSession()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(t(model.language, "抽卡面板", "Draw Console"))
+                    .font(.title3)
+                    .fontWeight(.semibold)
+                Spacer()
+                Button(t(model.language, "打开截图目录", "Open Screenshot Folder")) {
+                    openDrawResultPairsDirectoryInFinder()
+                }
+                Button(t(model.language, "刷新", "Refresh")) {
+                    reload()
+                }
+            }
+
+            GroupBox(t(model.language, "开始抽卡", "Start Draw")) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text(t(model.language, "脚本", "Script"))
+                        Text(currentScriptName.isEmpty ? "choukaka.json" : currentScriptName)
+                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        Spacer()
+                        Text(drawRunnerStatusText)
+                            .foregroundStyle((runner.isRunning || runner.isStarting) ? .orange : .secondary)
+                    }
+
+                    HStack {
+                        Text(t(model.language, "设备", "Device"))
+                        TextField("emulator-5554", text: $runner.device)
+                            .textFieldStyle(.roundedBorder)
+                            .onChange(of: runner.device) { newValue in
+                                model.rememberLastDevice(newValue)
+                            }
+                        Menu(t(model.language, "选择", "Select")) {
+                            Button(t(model.language, "清空", "Clear")) { runner.device = "" }
+                            ForEach(model.availableDevices, id: \.self) { serial in
+                                Button(serial) {
+                                    runner.device = serial
+                                    model.rememberLastDevice(serial)
+                                }
+                            }
+                        }
+                        Button(t(model.language, "刷新设备", "Refresh Devices")) {
+                            model.refreshADBAndDevices(adbInput: model.recorder.adbPath)
+                        }
+                    }
+
+                    HStack {
+                        Button(runner.isStarting ? t(model.language, "启动中...", "Starting...") : t(model.language, "开始抽卡", "Start Draw")) {
+                            model.startDrawRun()
+                            reload()
+                        }
+                        .disabled(runner.isRunning || runner.isStarting)
+                        Button(t(model.language, "停止抽卡", "Stop Draw")) {
+                            runner.stop()
+                        }
+                        Button(t(model.language, "清空日志", "Clear Logs")) {
+                            runner.clearLogs()
+                        }
+                        Toggle(t(model.language, "显示实时日志", "Show Realtime Logs"), isOn: $runner.showRealtimeCommandLogs)
+                            .toggleStyle(.checkbox)
+                        Spacer()
+                    }
+
+                    if runner.isStarting {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text(t(model.language, "正在启动抽卡脚本并连接设备，请稍候。", "Starting the draw script and connecting to the device."))
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .padding(8)
+            }
+
+            if let currentSession {
+                GroupBox(t(model.language, "当前抽卡状态", "Current Draw Status")) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 12) {
+                            DrawMetricCard(
+                                title: t(model.language, "抽卡次数", "Draw Count"),
+                                value: "\(currentSession.drawStartedCount)",
+                                detail: currentSession.updatedAtText
+                            )
+                            DrawMetricCard(
+                                title: t(model.language, "目标命中", "Target Hits"),
+                                value: "\(currentSession.targetHitCount)",
+                                detail: currentSession.latestMatchedTemplate
+                            )
+                                    DrawMetricCard(
+                                        title: t(model.language, "命中率", "Hit Rate"),
+                                        value: currentSession.hitRateText,
+                                        detail: t(model.language, "基于当前最新会话", "From Latest Session")
+                                    )
+                                    DrawMetricCard(
+                                        title: t(model.language, "循环进度", "Cycle"),
+                                        value: runner.progressText,
+                                        detail: "\(t(model.language, "循环次数", "Cycles")) \(runner.cycleCountText)"
+                                    )
+                                }
+
+                                ScrollView {
+                                    Text(runner.logs.isEmpty ? t(model.language, "暂无抽卡日志", "No Draw Logs") : runner.logs)
+                                        .font(.system(size: 12, design: .monospaced))
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(6)
+                                .textSelection(.enabled)
+                        }
+                        .frame(height: 180)
+                        .background(Color(nsColor: .textBackgroundColor))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.gray.opacity(0.4), lineWidth: 1)
+                        )
+                    }
+                    .padding(8)
+                }
+            }
+
+            if sessions.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(t(model.language, "暂无抽卡记录", "No Draw Records"))
+                        .font(.headline)
+                    Text(t(model.language, "运行脚本并触发抽卡后，这里会显示历史记录、统计和前后截图。", "Run the draw script and trigger draws to see history, statistics, and before/after screenshots here."))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            } else {
+                HSplitView {
+                    List(sessions, selection: $selectedSessionID) { session in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(session.sessionID)
+                                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                            Text(sessionSubtitle(session))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text("\(t(model.language, "抽卡", "Draws")) \(session.drawStartedCount)  ·  \(t(model.language, "命中", "Hits")) \(session.targetHitCount)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .tag(session.sessionID)
+                    }
+                    .frame(minWidth: 260, idealWidth: 300, maxWidth: 340)
+
+                    ScrollView {
+                        if let selectedSession {
+                            VStack(alignment: .leading, spacing: 12) {
+                                HStack(spacing: 12) {
+                                    DrawMetricCard(
+                                        title: t(model.language, "抽卡次数", "Draw Count"),
+                                        value: "\(selectedSession.drawStartedCount)",
+                                        detail: t(model.language, "当前会话", "Current Session")
+                                    )
+                                    DrawMetricCard(
+                                        title: t(model.language, "目标命中", "Target Hits"),
+                                        value: "\(selectedSession.targetHitCount)",
+                                        detail: selectedSession.latestMatchedTemplate
+                                    )
+                                    DrawMetricCard(
+                                        title: t(model.language, "命中率", "Hit Rate"),
+                                        value: selectedSession.hitRateText,
+                                        detail: t(model.language, "目标卡命中 / 抽卡次数", "Target Hits / Draws")
+                                    )
+                                    DrawMetricCard(
+                                        title: t(model.language, "抽卡类型", "Draw Types"),
+                                        value: "\(drawTypeSummary.max) / \(drawTypeSummary.min)",
+                                        detail: t(model.language, "大抽 / 小抽", "Max / Min")
+                                    )
+                                }
+
+                                GroupBox(t(model.language, "结果截图", "Result Screenshots")) {
+                                    if pairs.isEmpty {
+                                        Text(t(model.language, "当前会话还没有保存成对截图。", "No paired screenshots have been saved for this session yet."))
+                                            .font(.footnote)
+                                            .foregroundStyle(.secondary)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .padding(8)
+                                    } else {
+                                        HSplitView {
+                                            List(pairs, selection: $selectedPairID) { pair in
+                                                VStack(alignment: .leading, spacing: 4) {
+                                                    Text(pairTitle(pair))
+                                                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                                    Text(pair.afterSavedAtText.isEmpty ? pair.beforeSavedAtText : pair.afterSavedAtText)
+                                                        .font(.caption)
+                                                        .foregroundStyle(.secondary)
+                                                }
+                                                .tag(pair.id)
+                                            }
+                                            .frame(minWidth: 200, idealWidth: 220, maxWidth: 260)
+
+                                            if let selectedPair {
+                                                VStack(alignment: .leading, spacing: 12) {
+                                                    HStack {
+                                                        Text(pairTitle(selectedPair))
+                                                            .font(.headline)
+                                                        Spacer()
+                                                        Text(selectedPair.afterSavedAtText.isEmpty ? selectedPair.beforeSavedAtText : selectedPair.afterSavedAtText)
+                                                            .font(.caption)
+                                                            .foregroundStyle(.secondary)
+                                                    }
+                                                    HStack(alignment: .top, spacing: 12) {
+                                                        DrawLocalImageView(
+                                                            title: t(model.language, "抽卡前", "Before"),
+                                                            url: selectedPair.beforeURL,
+                                                            placeholder: t(model.language, "暂无抽卡前截图", "No Before Screenshot")
+                                                        )
+                                                        DrawLocalImageView(
+                                                            title: t(model.language, "抽卡后", "After"),
+                                                            url: selectedPair.afterURL,
+                                                            placeholder: t(model.language, "暂无抽卡后截图", "No After Screenshot")
+                                                        )
+                                                    }
+                                                }
+                                                .padding(8)
+                                            }
+                                        }
+                                        .frame(minHeight: 320)
+                                    }
+                                }
+
+                                GroupBox(t(model.language, "事件时间线", "Event Timeline")) {
+                                    if events.isEmpty {
+                                        Text(t(model.language, "当前会话还没有事件记录。", "No events have been recorded for this session yet."))
+                                            .font(.footnote)
+                                            .foregroundStyle(.secondary)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .padding(8)
+                                    } else {
+                                        LazyVStack(alignment: .leading, spacing: 8) {
+                                            ForEach(events) { event in
+                                                VStack(alignment: .leading, spacing: 4) {
+                                                    HStack {
+                                                        Text(eventTitle(event.event))
+                                                            .font(.system(size: 12, weight: .semibold))
+                                                        if !event.drawType.isEmpty {
+                                                            Text(event.drawType.uppercased())
+                                                                .font(.caption.monospaced())
+                                                                .foregroundStyle(.secondary)
+                                                        }
+                                                        Spacer()
+                                                        Text(event.timestampText)
+                                                            .font(.caption.monospaced())
+                                                            .foregroundStyle(.secondary)
+                                                    }
+                                                    HStack {
+                                                        Text("\(t(model.language, "抽卡", "Draws")) \(event.drawStartedCount)")
+                                                            .font(.caption)
+                                                            .foregroundStyle(.secondary)
+                                                        Text("·")
+                                                            .foregroundStyle(.secondary)
+                                                        Text("\(t(model.language, "命中", "Hits")) \(event.targetHitCount)")
+                                                            .font(.caption)
+                                                            .foregroundStyle(.secondary)
+                                                        if !event.matchedTemplate.isEmpty {
+                                                            Text("·")
+                                                                .foregroundStyle(.secondary)
+                                                            Text(event.matchedTemplate)
+                                                                .font(.caption.monospaced())
+                                                                .foregroundStyle(.secondary)
+                                                        }
+                                                    }
+                                                }
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                                .padding(.vertical, 4)
+                                                Divider()
+                                            }
+                                        }
+                                        .padding(8)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .onAppear {
+            model.syncDrawRunnerDefaults()
+            reload()
+        }
+        .onChange(of: selectedSessionID) { _ in
+            loadSelectedSession()
+        }
+        .onReceive(refreshTimer) { _ in
+            if runner.isRunning || runner.isStarting {
+                reload()
+            }
         }
     }
 }
@@ -2221,11 +3230,6 @@ struct RecordingDiagnosticView: View {
                 }
             }
             HStack {
-                Text(t(lang, "ADB", "ADB"))
-                TextField("adb", text: $diagnostic.adbPath)
-                    .textFieldStyle(.roundedBorder)
-            }
-            HStack {
                 Button(diagnostic.isRunning ? t(lang, "诊断中...", "Diagnosing...") : t(lang, "开始诊断并自修复", "Run Diagnosis and Auto Fix")) {
                     diagnostic.start()
                 }
@@ -2267,6 +3271,340 @@ struct RecordingDiagnosticView: View {
     }
 }
 
+struct DeviceScreenshotCropperSheet: View {
+    let capture: DeviceScreenshotCapture
+    let lang: AppLanguage
+    let onSaved: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var fileName: String
+    @State private var selectionInImage: CGRect?
+    @State private var errorMessage = ""
+
+    init(capture: DeviceScreenshotCapture, lang: AppLanguage, onSaved: @escaping (String) -> Void) {
+        self.capture = capture
+        self.lang = lang
+        self.onSaved = onSaved
+        _fileName = State(initialValue: capture.defaultTemplateName)
+    }
+
+    private func aspectFitRect(imageSize: CGSize, containerSize: CGSize) -> CGRect {
+        guard imageSize.width > 0, imageSize.height > 0, containerSize.width > 0, containerSize.height > 0 else {
+            return .zero
+        }
+        let imageAspect = imageSize.width / imageSize.height
+        let containerAspect = containerSize.width / containerSize.height
+        if imageAspect > containerAspect {
+            let width = containerSize.width
+            let height = width / imageAspect
+            return CGRect(x: 0, y: (containerSize.height - height) / 2.0, width: width, height: height)
+        }
+        let height = containerSize.height
+        let width = height * imageAspect
+        return CGRect(x: (containerSize.width - width) / 2.0, y: 0, width: width, height: height)
+    }
+
+    private func clampedPoint(_ point: CGPoint, to frame: CGRect) -> CGPoint {
+        CGPoint(
+            x: min(max(point.x, frame.minX), frame.maxX),
+            y: min(max(point.y, frame.minY), frame.maxY)
+        )
+    }
+
+    private func imagePoint(from viewPoint: CGPoint, imageFrame: CGRect) -> CGPoint {
+        let safe = clampedPoint(viewPoint, to: imageFrame)
+        let x = (safe.x - imageFrame.minX) / max(imageFrame.width, 1) * capture.pixelSize.width
+        let y = (safe.y - imageFrame.minY) / max(imageFrame.height, 1) * capture.pixelSize.height
+        return CGPoint(x: x, y: y)
+    }
+
+    private func viewRect(from imageRect: CGRect, imageFrame: CGRect) -> CGRect {
+        CGRect(
+            x: imageFrame.minX + imageRect.minX / max(capture.pixelSize.width, 1) * imageFrame.width,
+            y: imageFrame.minY + imageRect.minY / max(capture.pixelSize.height, 1) * imageFrame.height,
+            width: imageRect.width / max(capture.pixelSize.width, 1) * imageFrame.width,
+            height: imageRect.height / max(capture.pixelSize.height, 1) * imageFrame.height
+        )
+    }
+
+    private func normalizedRect(from a: CGPoint, to b: CGPoint) -> CGRect {
+        CGRect(
+            x: min(a.x, b.x),
+            y: min(a.y, b.y),
+            width: abs(a.x - b.x),
+            height: abs(a.y - b.y)
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(t(lang, "从当前设备截图裁图", "Crop Template From Current Screenshot"))
+                    .font(.headline)
+                Spacer()
+                Text("\(Int(capture.pixelSize.width)) x \(Int(capture.pixelSize.height))")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Text(t(lang, "模板文件名", "Template File Name"))
+                TextField("icon.png", text: $fileName)
+                    .textFieldStyle(.roundedBorder)
+                Button(t(lang, "打开图标目录", "Open Image Folder")) {
+                    openImageTemplatesDirectoryInFinder()
+                }
+            }
+
+            GeometryReader { geometry in
+                let imageFrame = aspectFitRect(imageSize: capture.pixelSize, containerSize: geometry.size)
+                ZStack(alignment: .topLeading) {
+                    Color.black.opacity(0.06)
+                    Image(nsImage: capture.image)
+                        .resizable()
+                        .interpolation(.high)
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    if let selectionInImage {
+                        let rect = viewRect(from: selectionInImage, imageFrame: imageFrame)
+                        Rectangle()
+                            .stroke(Color.red, lineWidth: 2)
+                            .frame(width: rect.width, height: rect.height)
+                            .position(x: rect.midX, y: rect.midY)
+                        Rectangle()
+                            .fill(Color.red.opacity(0.15))
+                            .frame(width: rect.width, height: rect.height)
+                            .position(x: rect.midX, y: rect.midY)
+                    }
+                }
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            let start = imagePoint(from: value.startLocation, imageFrame: imageFrame)
+                            let current = imagePoint(from: value.location, imageFrame: imageFrame)
+                            selectionInImage = normalizedRect(from: start, to: current)
+                            errorMessage = ""
+                        }
+                )
+            }
+            .frame(minHeight: 520)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.gray.opacity(0.35), lineWidth: 1)
+            )
+
+            Text(
+                t(
+                    lang,
+                    "拖动鼠标框选图标区域。建议尽量只截取图标本体，少带背景，识别会更准。",
+                    "Drag to select the icon region. A tight crop with minimal background usually matches best."
+                )
+            )
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+
+            if let selectionInImage {
+                Text(
+                    "x=\(Int(selectionInImage.minX)), y=\(Int(selectionInImage.minY)), w=\(Int(selectionInImage.width)), h=\(Int(selectionInImage.height))"
+                )
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(.secondary)
+            }
+
+            if !errorMessage.isEmpty {
+                Text(errorMessage)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
+
+            HStack {
+                Button(t(lang, "取消", "Cancel")) {
+                    dismiss()
+                }
+                Spacer()
+                Button(t(lang, "保存模板", "Save Template")) {
+                    guard let selectionInImage, selectionInImage.width >= 8, selectionInImage.height >= 8 else {
+                        errorMessage = t(lang, "请先框选一个足够大的区域。", "Please select a sufficiently large region first.")
+                        return
+                    }
+                    do {
+                        let relativePath = try saveCroppedTemplateImage(
+                            source: capture.cgImage,
+                            cropRect: selectionInImage,
+                            preferredName: fileName
+                        )
+                        onSaved(relativePath)
+                        dismiss()
+                    } catch {
+                        errorMessage = error.localizedDescription
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(18)
+        .frame(minWidth: 920, minHeight: 760)
+    }
+}
+
+struct DeviceScreenshotRegionPickerSheet: View {
+    let capture: DeviceScreenshotCapture
+    let lang: AppLanguage
+    let initialRegion: ImageSearchRegion?
+    let onSaved: (ImageSearchRegion) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectionInImage: CGRect?
+    @State private var errorMessage = ""
+
+    private func aspectFitRect(imageSize: CGSize, containerSize: CGSize) -> CGRect {
+        guard imageSize.width > 0, imageSize.height > 0, containerSize.width > 0, containerSize.height > 0 else {
+            return .zero
+        }
+        let imageAspect = imageSize.width / imageSize.height
+        let containerAspect = containerSize.width / containerSize.height
+        if imageAspect > containerAspect {
+            let width = containerSize.width
+            let height = width / imageAspect
+            return CGRect(x: 0, y: (containerSize.height - height) / 2.0, width: width, height: height)
+        }
+        let height = containerSize.height
+        let width = height * imageAspect
+        return CGRect(x: (containerSize.width - width) / 2.0, y: 0, width: width, height: height)
+    }
+
+    private func clampedPoint(_ point: CGPoint, to frame: CGRect) -> CGPoint {
+        CGPoint(
+            x: min(max(point.x, frame.minX), frame.maxX),
+            y: min(max(point.y, frame.minY), frame.maxY)
+        )
+    }
+
+    private func imagePoint(from viewPoint: CGPoint, imageFrame: CGRect) -> CGPoint {
+        let safe = clampedPoint(viewPoint, to: imageFrame)
+        let x = (safe.x - imageFrame.minX) / max(imageFrame.width, 1) * capture.pixelSize.width
+        let y = (safe.y - imageFrame.minY) / max(imageFrame.height, 1) * capture.pixelSize.height
+        return CGPoint(x: x, y: y)
+    }
+
+    private func viewRect(from imageRect: CGRect, imageFrame: CGRect) -> CGRect {
+        CGRect(
+            x: imageFrame.minX + imageRect.minX / max(capture.pixelSize.width, 1) * imageFrame.width,
+            y: imageFrame.minY + imageRect.minY / max(capture.pixelSize.height, 1) * imageFrame.height,
+            width: imageRect.width / max(capture.pixelSize.width, 1) * imageFrame.width,
+            height: imageRect.height / max(capture.pixelSize.height, 1) * imageFrame.height
+        )
+    }
+
+    private func normalizedRect(from a: CGPoint, to b: CGPoint) -> CGRect {
+        CGRect(
+            x: min(a.x, b.x),
+            y: min(a.y, b.y),
+            width: abs(a.x - b.x),
+            height: abs(a.y - b.y)
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(t(lang, "选择图像识别区域", "Select Image Search Region"))
+                    .font(.headline)
+                Spacer()
+                Text("\(Int(capture.pixelSize.width)) x \(Int(capture.pixelSize.height))")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+
+            GeometryReader { geometry in
+                let imageFrame = aspectFitRect(imageSize: capture.pixelSize, containerSize: geometry.size)
+                ZStack(alignment: .topLeading) {
+                    Color.black.opacity(0.06)
+                    Image(nsImage: capture.image)
+                        .resizable()
+                        .interpolation(.high)
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    if let selectionInImage {
+                        let rect = viewRect(from: selectionInImage, imageFrame: imageFrame)
+                        Rectangle()
+                            .stroke(Color.green, lineWidth: 2)
+                            .frame(width: rect.width, height: rect.height)
+                            .position(x: rect.midX, y: rect.midY)
+                        Rectangle()
+                            .fill(Color.green.opacity(0.15))
+                            .frame(width: rect.width, height: rect.height)
+                            .position(x: rect.midX, y: rect.midY)
+                    }
+                }
+                .contentShape(Rectangle())
+                .onAppear {
+                    if let initialRegion {
+                        selectionInImage = initialRegion.rect
+                    }
+                }
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            let start = imagePoint(from: value.startLocation, imageFrame: imageFrame)
+                            let current = imagePoint(from: value.location, imageFrame: imageFrame)
+                            selectionInImage = normalizedRect(from: start, to: current)
+                            errorMessage = ""
+                        }
+                )
+            }
+            .frame(minHeight: 520)
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.gray.opacity(0.35), lineWidth: 1)
+            )
+
+            Text(
+                t(
+                    lang,
+                    "拖动鼠标框选要搜索的屏幕区域。区域越小，识别越快也越稳。",
+                    "Drag to select the screen region where the icon should be searched. A smaller region is usually faster and more reliable."
+                )
+            )
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+
+            if let selectionInImage {
+                Text(ImageSearchRegion(rect: selectionInImage).summaryText)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+
+            if !errorMessage.isEmpty {
+                Text(errorMessage)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
+
+            HStack {
+                Button(t(lang, "取消", "Cancel")) {
+                    dismiss()
+                }
+                Spacer()
+                Button(t(lang, "确认区域", "Confirm Region")) {
+                    guard let selectionInImage, selectionInImage.width >= 8, selectionInImage.height >= 8 else {
+                        errorMessage = t(lang, "请先框选一个足够大的区域。", "Please select a sufficiently large region first.")
+                        return
+                    }
+                    onSaved(ImageSearchRegion(rect: selectionInImage))
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(18)
+        .frame(minWidth: 920, minHeight: 760)
+    }
+}
+
 struct ScriptEditorView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var calibration: CalibrationModel
@@ -2275,6 +3613,7 @@ struct ScriptEditorView: View {
     @Binding var newScriptName: String
     let onNavigateToRun: () -> Void
     @State private var editorSelection = NSRange(location: 0, length: 0)
+    @State private var editorViewIdentity = UUID()
     @State private var wheelCenterX = ""
     @State private var wheelBottomInset = "200"
     @State private var dragSeconds = "2"
@@ -2286,6 +3625,22 @@ struct ScriptEditorView: View {
     @State private var quickFindText = "START"
     @State private var quickFindLang = "eng"
     @State private var quickFindTimeout = "8"
+    @State private var quickImageTemplatePath = ""
+    @State private var quickImageThreshold = "0.92"
+    @State private var quickImageTimeout = "8"
+    @State private var quickImagePreviewOnly = false
+    @State private var quickImageRegion: ImageSearchRegion?
+    @State private var quickImageRegionDisplayText = ""
+    @State private var quickImageRegionDisplayIdentity = UUID()
+    @State private var isCapturingImageTemplate = false
+    @State private var imageTemplateCapture: DeviceScreenshotCapture?
+    @State private var lastImageTemplateCapture: DeviceScreenshotCapture?
+    @State private var imageTemplateWorkflowMessage = ""
+    @State private var imageTemplateErrorMessage = ""
+    @State private var showImageTemplateErrorAlert = false
+    @State private var isCapturingImageRegion = false
+    @State private var imageRegionCapture: DeviceScreenshotCapture?
+    @State private var lastImageRegionCapture: DeviceScreenshotCapture?
     @State private var didSeedWheelDefaults = false
     @State private var showRunGuideAlert = false
     @State private var pendingInsertion: EditorInsertionRequest?
@@ -2467,6 +3822,235 @@ struct ScriptEditorView: View {
 """
     }
 
+    private func makeFindImageClickSnippet(templatePath: String, threshold: Double, timeoutSeconds: Double, previewOnly: Bool) -> String {
+        let indent = currentLineIndent()
+        let normalizedThreshold = normalizedNumberText(threshold)
+        let normalizedTimeout = normalizedNumberText(timeoutSeconds)
+        let safePath = jsonEscaped(templatePath)
+        let label = URL(fileURLWithPath: templatePath).lastPathComponent
+        let safeLabel = jsonEscaped(label.isEmpty ? templatePath : label)
+        let previewField = previewOnly ? #", "preview_only": true"# : ""
+        let region = effectiveQuickImageRegion()
+        return """
+\(indent){ "type": "find_image_click", "template": "\(safePath)", "threshold": \(normalizedThreshold), "timeout_sec": \(normalizedTimeout), "interval_sec": 0.6, "region": { "x": \(region.x), "y": \(region.y), "width": \(region.width), "height": \(region.height) }\(previewField), "remark": "识别图标\(safeLabel)\(previewOnly ? "并高亮预览" : "并点击")" },
+
+"""
+    }
+
+    private func makeFindImageSnippet(templatePath: String, threshold: Double, timeoutSeconds: Double) -> String {
+        let indent = currentLineIndent()
+        let normalizedThreshold = normalizedNumberText(threshold)
+        let normalizedTimeout = normalizedNumberText(timeoutSeconds)
+        let safePath = jsonEscaped(templatePath)
+        let label = URL(fileURLWithPath: templatePath).lastPathComponent
+        let safeLabel = jsonEscaped(label.isEmpty ? templatePath : label)
+        let region = effectiveQuickImageRegion()
+        return """
+\(indent){ "type": "find_image", "template": "\(safePath)", "threshold": \(normalizedThreshold), "timeout_sec": \(normalizedTimeout), "interval_sec": 0.6, "region": { "x": \(region.x), "y": \(region.y), "width": \(region.width), "height": \(region.height) }, "remark": "识别图标\(safeLabel)" },
+
+"""
+    }
+
+    private func makeIfImageSnippet(templatePath: String, threshold: Double, timeoutSeconds: Double) -> String {
+        let indent = currentLineIndent()
+        let normalizedThreshold = normalizedNumberText(threshold)
+        let normalizedTimeout = normalizedNumberText(timeoutSeconds)
+        let safePath = jsonEscaped(templatePath)
+        let label = URL(fileURLWithPath: templatePath).lastPathComponent
+        let safeLabel = jsonEscaped(label.isEmpty ? templatePath : label)
+        let region = effectiveQuickImageRegion()
+        let bodyIndent = indent + "  "
+        let actionIndent = bodyIndent + "  "
+        return """
+\(indent){
+\(bodyIndent)"type": "if_image",
+\(bodyIndent)"template": "\(safePath)",
+\(bodyIndent)"threshold": \(normalizedThreshold),
+\(bodyIndent)"timeout_sec": \(normalizedTimeout),
+\(bodyIndent)"interval_sec": 0.6,
+\(bodyIndent)"region": { "x": \(region.x), "y": \(region.y), "width": \(region.width), "height": \(region.height) },
+\(bodyIndent)"remark": "如果识别到图标\(safeLabel)",
+\(bodyIndent)"then_actions": [
+\(actionIndent){ "type": "click_match", "remark": "点击当前命中的图标" }
+\(bodyIndent)],
+\(bodyIndent)"else_actions": [
+\(actionIndent){ "type": "wait", "seconds": 0.5, "remark": "未识别到图标后的分支" }
+\(bodyIndent)]
+\(indent)},
+
+"""
+    }
+
+    private func effectiveQuickImageRegion() -> ImageSearchRegion {
+        if let quickImageRegion {
+            return quickImageRegion
+        }
+        let size = currentScreenSize()
+        return ImageSearchRegion(x: 0, y: 0, width: size.width, height: size.height)
+    }
+
+    private func quickImageRegionSummaryText() -> String {
+        if let quickImageRegion {
+            return quickImageRegion.summaryText
+        }
+        let region = effectiveQuickImageRegion()
+        return t(model.language, "全屏区域", "Full Screen Region") + " (\(region.summaryText))"
+    }
+
+    private func refreshQuickImageRegionDisplayText() {
+        quickImageRegionDisplayText = quickImageRegionSummaryText()
+        quickImageRegionDisplayIdentity = UUID()
+    }
+
+    private func imageTemplateInstructionText() -> String {
+        if isCapturingImageTemplate {
+            return t(
+                model.language,
+                "正在从当前设备抓取截图，请稍等。成功后会自动弹出裁图窗口。",
+                "Capturing a screenshot from the current device. The cropper will open automatically when ready."
+            )
+        }
+        if lastImageTemplateCapture != nil {
+            return t(
+                model.language,
+                "截图已准备好。请在弹出的裁图窗口里拖拽框选图标；如果没看到弹窗，可以点“打开裁图窗口”。",
+                "The screenshot is ready. Drag to select the icon in the cropper window. If you do not see it, click \"Open Cropper\"."
+            )
+        }
+        return t(
+            model.language,
+            "推荐流程：1. 点“设备截图裁图” 2. 在裁图窗口框选图标 3. 点“保存模板” 4. 再插入 find_image_click。",
+            "Recommended flow: 1. Click \"Crop From Device Screenshot\" 2. Select the icon in the cropper 3. Save the template 4. Insert find_image_click."
+        )
+    }
+
+    private func importImageTemplate() {
+        do {
+            if let relativePath = try importImageTemplateWithOpenPanel() {
+                quickImageTemplatePath = relativePath
+                model.statusMessage = "已导入图标: \(relativePath)"
+                imageTemplateWorkflowMessage = t(model.language, "已导入本地图标，可直接插入 find_image_click。", "Image imported. You can now insert find_image_click.")
+            }
+        } catch {
+            model.statusMessage = "导入图标失败: \(error.localizedDescription)"
+            imageTemplateErrorMessage = error.localizedDescription
+            showImageTemplateErrorAlert = true
+        }
+    }
+
+    private func chooseExistingImageTemplate() {
+        do {
+            if let relativePath = try chooseImageTemplateWithOpenPanel() {
+                quickImageTemplatePath = relativePath
+                model.statusMessage = "已选择图标: \(relativePath)"
+                imageTemplateWorkflowMessage = t(model.language, "已选择图标，可直接插入 find_image_click。", "Image selected. You can now insert find_image_click.")
+            }
+        } catch {
+            model.statusMessage = "选择图标失败: \(error.localizedDescription)"
+            imageTemplateErrorMessage = error.localizedDescription
+            showImageTemplateErrorAlert = true
+        }
+    }
+
+    private func captureImageTemplateFromDevice() {
+        let adbInput = model.recorder.adbPath
+        let device = editorDevice()
+        let suggestedPath = quickImageTemplatePath
+        imageTemplateWorkflowMessage = t(model.language, "正在抓取当前设备截图...", "Capturing screenshot from current device...")
+        imageTemplateErrorMessage = ""
+        isCapturingImageTemplate = true
+        DispatchQueue.global().async {
+            do {
+                let capture = try captureDeviceScreenshot(
+                    adbPath: adbInput,
+                    device: device,
+                    suggestedTemplatePath: suggestedPath
+                )
+                DispatchQueue.main.async {
+                    self.isCapturingImageTemplate = false
+                    self.lastImageTemplateCapture = capture
+                    self.imageTemplateCapture = capture
+                    self.imageTemplateWorkflowMessage = t(
+                        self.model.language,
+                        "截图抓取成功，裁图窗口已打开。请框选目标图标后保存模板。",
+                        "Screenshot captured successfully. The cropper is now open. Select the target icon and save the template."
+                    )
+                    self.model.statusMessage = "已抓取当前设备截图，请框选图标区域"
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.isCapturingImageTemplate = false
+                    self.model.statusMessage = "抓取设备截图失败: \(error.localizedDescription)"
+                    self.imageTemplateWorkflowMessage = t(
+                        self.model.language,
+                        "设备截图失败。请确认模拟器窗口正常、设备已连接，然后重试。",
+                        "Screenshot capture failed. Make sure the emulator is running and connected, then try again."
+                    )
+                    self.imageTemplateErrorMessage = error.localizedDescription
+                    self.showImageTemplateErrorAlert = true
+                }
+            }
+        }
+    }
+
+    private func reopenImageTemplateCropper() {
+        guard let capture = lastImageTemplateCapture else { return }
+        imageTemplateCapture = capture
+        imageTemplateWorkflowMessage = t(
+            model.language,
+            "已重新打开裁图窗口，请框选图标后保存模板。",
+            "Reopened the cropper. Select the icon and save the template."
+        )
+    }
+
+    private func captureImageRegionFromDevice() {
+        let adbInput = model.recorder.adbPath
+        let device = editorDevice()
+        isCapturingImageRegion = true
+        imageTemplateErrorMessage = ""
+        DispatchQueue.global().async {
+            do {
+                let capture = try captureDeviceScreenshot(
+                    adbPath: adbInput,
+                    device: device,
+                    suggestedTemplatePath: "region.png"
+                )
+                DispatchQueue.main.async {
+                    self.isCapturingImageRegion = false
+                    self.lastImageRegionCapture = capture
+                    self.imageRegionCapture = capture
+                    self.model.statusMessage = "已抓取区域选择截图，请框选搜索区域"
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.isCapturingImageRegion = false
+                    self.model.statusMessage = "抓取区域截图失败: \(error.localizedDescription)"
+                    self.imageTemplateErrorMessage = error.localizedDescription
+                    self.showImageTemplateErrorAlert = true
+                }
+            }
+        }
+    }
+
+    private func reopenImageRegionPicker() {
+        guard let capture = lastImageRegionCapture else { return }
+        imageRegionCapture = capture
+        model.statusMessage = t(model.language, "已重新打开区域选择窗口。", "Reopened the region picker.")
+    }
+
+    private func resetQuickImageRegionToFullScreen() {
+        quickImageRegion = nil
+        refreshQuickImageRegionDisplayText()
+        model.statusMessage = t(model.language, "已恢复为全屏搜索区域。", "Reset to full-screen search region.")
+    }
+
+    private func applySuggestedThresholdForRegionSelection() -> Bool {
+        let trimmed = quickImageThreshold.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty || trimmed == "0.92" else { return false }
+        quickImageThreshold = "0.88"
+        return true
+    }
+
     private func startEditorCoordinatePicker() {
         let preferred = editorDevice()
         calibration.adbPath = model.recorder.adbPath
@@ -2513,7 +4097,18 @@ struct ScriptEditorView: View {
                     .foregroundStyle(.secondary)
             }
             HStack {
-                Picker(t(model.language, "脚本", "Script"), selection: $model.selectedScriptName) {
+                Picker(
+                    t(model.language, "脚本", "Script"),
+                    selection: Binding(
+                        get: { model.selectedScriptName },
+                        set: {
+                            pendingInsertion = nil
+                            editorSelection = NSRange(location: 0, length: 0)
+                            model.selectScript(named: $0)
+                            editorViewIdentity = UUID()
+                        }
+                    )
+                ) {
                     ForEach(model.scripts.map(\.name), id: \.self) { name in
                         Text(name).tag(name)
                     }
@@ -2521,9 +4116,6 @@ struct ScriptEditorView: View {
                 Button(t(model.language, "打开目录", "Open")) {
                     openScriptsDirectoryInFinder()
                 }
-            }
-            .onChange(of: model.selectedScriptName) { _ in
-                model.loadSelectedScript()
             }
             GroupBox(t(model.language, "取坐标", "Coordinate Picker")) {
         VStack(alignment: .leading, spacing: 8) {
@@ -2642,6 +4234,121 @@ struct ScriptEditorView: View {
                         }
                     }
                     HStack {
+                        Text(t(model.language, "图标", "Image"))
+                        TextField("../image_templates/icon.png", text: $quickImageTemplatePath)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(minWidth: 220)
+                        Button(t(model.language, "上传图标", "Import Image")) {
+                            importImageTemplate()
+                        }
+                        Button(t(model.language, "选择图标", "Select Image")) {
+                            chooseExistingImageTemplate()
+                        }
+                        Button(
+                            isCapturingImageTemplate
+                                ? t(model.language, "截图中...", "Capturing...")
+                                : t(model.language, "设备截图裁图", "Crop From Device Screenshot")
+                        ) {
+                            captureImageTemplateFromDevice()
+                        }
+                        .disabled(isCapturingImageTemplate)
+                    }
+                    HStack(spacing: 10) {
+                        if isCapturingImageTemplate {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Text(imageTemplateWorkflowMessage.isEmpty ? imageTemplateInstructionText() : imageTemplateWorkflowMessage)
+                            .font(.footnote)
+                            .foregroundStyle(isCapturingImageTemplate ? .orange : .secondary)
+                        Spacer()
+                        if lastImageTemplateCapture != nil && !isCapturingImageTemplate {
+                            Button(t(model.language, "打开裁图窗口", "Open Cropper")) {
+                                reopenImageTemplateCropper()
+                            }
+                        }
+                    }
+                    HStack(spacing: 10) {
+                        Text(t(model.language, "区域", "Region"))
+                        Text(quickImageRegionDisplayText.isEmpty ? quickImageRegionSummaryText() : quickImageRegionDisplayText)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        if isCapturingImageRegion {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Button(
+                            isCapturingImageRegion
+                                ? t(model.language, "区域截图中...", "Capturing Region...")
+                                : t(model.language, "选择区域", "Select Region")
+                        ) {
+                            captureImageRegionFromDevice()
+                        }
+                        .disabled(isCapturingImageRegion)
+                        if lastImageRegionCapture != nil && !isCapturingImageRegion {
+                            Button(t(model.language, "打开区域窗口", "Open Region Picker")) {
+                                reopenImageRegionPicker()
+                            }
+                        }
+                        Button(t(model.language, "恢复全屏", "Reset Full Screen")) {
+                            resetQuickImageRegionToFullScreen()
+                        }
+                    }
+                    .id(quickImageRegionDisplayIdentity)
+                    HStack {
+                        Text(t(model.language, "阈值", "Threshold"))
+                        TextField("0.92", text: $quickImageThreshold)
+                            .frame(width: 70)
+                            .textFieldStyle(.roundedBorder)
+                        Text(t(model.language, "超时秒数", "Timeout"))
+                        TextField("8", text: $quickImageTimeout)
+                            .frame(width: 70)
+                            .textFieldStyle(.roundedBorder)
+                        Toggle(t(model.language, "仅预览不点击", "Preview Only"), isOn: $quickImagePreviewOnly)
+                            .toggleStyle(.checkbox)
+                        Button(t(model.language, "插入 find_image", "Insert Find Image")) {
+                            let rawPath = quickImageTemplatePath.trimmingCharacters(in: .whitespacesAndNewlines)
+                            let templatePath = rawPath.isEmpty ? "../image_templates/icon.png" : rawPath
+                            let threshold = Double(quickImageThreshold.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0.92
+                            let timeout = Double(quickImageTimeout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 8
+                            insertTextAtCursor(
+                                makeFindImageSnippet(
+                                    templatePath: templatePath,
+                                    threshold: min(max(0.1, threshold), 1.0),
+                                    timeoutSeconds: max(0.1, timeout)
+                                )
+                            )
+                        }
+                        Button(t(model.language, "插入 find_image_click", "Insert Find Image Click")) {
+                            let rawPath = quickImageTemplatePath.trimmingCharacters(in: .whitespacesAndNewlines)
+                            let templatePath = rawPath.isEmpty ? "../image_templates/icon.png" : rawPath
+                            let threshold = Double(quickImageThreshold.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0.92
+                            let timeout = Double(quickImageTimeout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 8
+                            insertTextAtCursor(
+                                makeFindImageClickSnippet(
+                                    templatePath: templatePath,
+                                    threshold: min(max(0.1, threshold), 1.0),
+                                    timeoutSeconds: max(0.1, timeout),
+                                    previewOnly: quickImagePreviewOnly
+                                )
+                            )
+                        }
+                        Button(t(model.language, "插入 if_image", "Insert If Image")) {
+                            let rawPath = quickImageTemplatePath.trimmingCharacters(in: .whitespacesAndNewlines)
+                            let templatePath = rawPath.isEmpty ? "../image_templates/icon.png" : rawPath
+                            let threshold = Double(quickImageThreshold.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0.92
+                            let timeout = Double(quickImageTimeout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 8
+                            insertTextAtCursor(
+                                makeIfImageSnippet(
+                                    templatePath: templatePath,
+                                    threshold: min(max(0.1, threshold), 1.0),
+                                    timeoutSeconds: max(0.1, timeout)
+                                )
+                            )
+                        }
+                    }
+                    HStack {
                         Text(t(model.language, "轮盘中心 X", "Wheel Center X"))
                         TextField("540", text: $wheelCenterX)
                             .frame(width: 80)
@@ -2696,14 +4403,19 @@ struct ScriptEditorView: View {
             }
 
             CodeTextView(text: $model.editorText, selectedRange: $editorSelection, pendingInsertion: $pendingInsertion)
+                .id(editorViewIdentity)
                 .border(Color.gray.opacity(0.4), width: 1)
                 .onAppear {
                     seedWheelDefaultsIfNeeded()
+                    refreshQuickImageRegionDisplayText()
                 }
 
             Text(model.statusMessage)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+        }
+        .onChange(of: model.selectedScriptName) { newValue in
+            editorViewIdentity = UUID()
         }
         .alert(t(model.language, "无法直接调试", "Unable to Debug Directly"), isPresented: $showRunGuideAlert) {
             Button(t(model.language, "前往运行", "Go to Run")) {
@@ -2712,6 +4424,36 @@ struct ScriptEditorView: View {
             Button(t(model.language, "取消", "Cancel"), role: .cancel) {}
         } message: {
             Text(t(model.language, "当前没有默认可连接设备。请先到运行模块确认设备，再执行调试运行。", "No default reachable device is available. Go to the Run section and confirm the device first."))
+        }
+        .alert(t(model.language, "设备截图失败", "Device Screenshot Failed"), isPresented: $showImageTemplateErrorAlert) {
+            Button(t(model.language, "确定", "OK"), role: .cancel) {}
+        } message: {
+            Text(imageTemplateErrorMessage.isEmpty ? t(model.language, "请重试。", "Please try again.") : imageTemplateErrorMessage)
+        }
+        .sheet(item: $imageTemplateCapture) { capture in
+            DeviceScreenshotCropperSheet(capture: capture, lang: model.language) { relativePath in
+                quickImageTemplatePath = relativePath
+                imageTemplateWorkflowMessage = t(
+                    model.language,
+                    "模板已保存，可直接插入 find_image_click。",
+                    "Template saved. You can now insert find_image_click."
+                )
+                model.statusMessage = "已保存模板: \(relativePath)"
+            }
+        }
+        .sheet(item: $imageRegionCapture) { capture in
+            DeviceScreenshotRegionPickerSheet(
+                capture: capture,
+                lang: model.language,
+                initialRegion: quickImageRegion
+            ) { region in
+                quickImageRegion = region
+                refreshQuickImageRegionDisplayText()
+                let thresholdAdjusted = applySuggestedThresholdForRegionSelection()
+                model.statusMessage = thresholdAdjusted
+                    ? "已设置图像识别区域: \(region.summaryText)，阈值已自动调整为 0.88"
+                    : "已设置图像识别区域: \(region.summaryText)"
+            }
         }
     }
 }
@@ -2776,6 +4518,29 @@ struct CodeTextView: NSViewRepresentable {
         return scrollView
     }
 
+    private func clampedRange(_ range: NSRange, for textView: NSTextView) -> NSRange {
+        let length = (textView.string as NSString).length
+        let safeLocation = min(max(0, range.location), length)
+        let safeLength = min(max(0, range.length), length - safeLocation)
+        return NSRange(location: safeLocation, length: safeLength)
+    }
+
+    private func replaceTextExternally(_ textView: NSTextView, with newText: String) {
+        let undoManager = textView.undoManager
+        let shouldRestoreUndoRegistration = undoManager?.isUndoRegistrationEnabled ?? false
+        if shouldRestoreUndoRegistration {
+            undoManager?.disableUndoRegistration()
+        }
+        textView.string = newText
+        if shouldRestoreUndoRegistration {
+            undoManager?.enableUndoRegistration()
+        }
+        if let textStorage = textView.textStorage {
+            undoManager?.removeAllActions(withTarget: textStorage)
+        }
+        undoManager?.removeAllActions(withTarget: textView)
+    }
+
     private func applyInsertionIfNeeded(_ textView: NSTextView, context: Context) -> Bool {
         guard let request = pendingInsertion else { return false }
         if context.coordinator.lastAppliedInsertionID == request.id {
@@ -2785,21 +4550,14 @@ struct CodeTextView: NSViewRepresentable {
         context.coordinator.lastAppliedInsertionID = request.id
         context.coordinator.isSyncing = true
 
-        let current = textView.selectedRange()
-        let safeLocation = min(max(0, current.location), (textView.string as NSString).length)
-        let safeLength = min(max(0, current.length), (textView.string as NSString).length - safeLocation)
-        let safeRange = NSRange(location: safeLocation, length: safeLength)
+        let safeRange = clampedRange(textView.selectedRange(), for: textView)
 
-        if textView.shouldChangeText(in: safeRange, replacementString: request.text) {
-            textView.textStorage?.replaceCharacters(in: safeRange, with: request.text)
-            textView.didChangeText()
-            let cursor = safeLocation + (request.text as NSString).length
-            let newRange = NSRange(location: cursor, length: 0)
-            textView.setSelectedRange(newRange)
-            textView.scrollRangeToVisible(newRange)
-            self.text = textView.string
-            self.selectedRange = newRange
-        }
+        textView.insertText(request.text, replacementRange: safeRange)
+        let newRange = clampedRange(textView.selectedRange(), for: textView)
+        textView.setSelectedRange(newRange)
+        textView.scrollRangeToVisible(newRange)
+        self.text = textView.string
+        self.selectedRange = newRange
 
         context.coordinator.isSyncing = false
         DispatchQueue.main.async {
@@ -2818,11 +4576,12 @@ struct CodeTextView: NSViewRepresentable {
         }
         context.coordinator.isSyncing = true
         if textView.string != text {
-            textView.string = text
+            replaceTextExternally(textView, with: text)
         }
-        if textView.selectedRange() != selectedRange {
-            textView.setSelectedRange(selectedRange)
-            textView.scrollRangeToVisible(selectedRange)
+        let safeSelectedRange = clampedRange(selectedRange, for: textView)
+        if textView.selectedRange() != safeSelectedRange {
+            textView.setSelectedRange(safeSelectedRange)
+            textView.scrollRangeToVisible(safeSelectedRange)
         }
         context.coordinator.isSyncing = false
     }
@@ -3202,6 +4961,11 @@ struct ContentView: View {
                     GroupBox(t(model.language, "运行管理", "Run Manager")) {
                         RunHomeView()
                     }
+                case .draw:
+                    GroupBox(t(model.language, "抽卡", "Draw")) {
+                        DrawHistoryView(runner: model.drawRunner)
+                            .padding(8)
+                    }
                 case .record:
                     GroupBox(t(model.language, "录制", "Record")) {
                         RecorderView(
@@ -3224,6 +4988,7 @@ struct ContentView: View {
                                 selectedSection = .run
                             }
                         )
+                        .id("editor-\(model.selectedScriptName)")
                         .padding(8)
                     }
                 case .settings:

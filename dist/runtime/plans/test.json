@@ -1,0 +1,57 @@
+{
+  "actions" : [
+    {
+      "actions" : [
+        {
+          "remark" : "点击(824,1379)",
+          "type" : "click",
+          "x" : 824,
+          "y" : 1379
+        },
+        {
+          "remark" : "等待2秒",
+          "seconds" : 2,
+          "type" : "wait"
+        },
+        {
+          "remark" : "点击(179,1576)",
+          "type" : "click",
+          "x" : 179,
+          "y" : 1576
+        },
+        {
+          "remark" : "等待2秒",
+          "seconds" : 2,
+          "type" : "wait"
+        },
+        {
+          "remark" : "点击(422,1590)",
+          "type" : "click",
+          "x" : 422,
+          "y" : 1590
+        },
+        {
+          "remark" : "等待0.5秒",
+          "seconds" : 0.5,
+          "type" : "wait"
+        },
+        {
+          "remark" : "点击(422,1590)",
+          "type" : "click",
+          "x" : 422,
+          "y" : 1590
+        },
+        {
+          "remark" : "等待2秒",
+          "seconds" : 2,
+          "type" : "wait"
+        }
+      ],
+      "count" : 1,
+      "type" : "loop"
+    }
+  ],
+  "device" : "127.0.0.1:5555",
+  "jitter_px" : 3,
+  "max_runtime_sec" : 0
+}

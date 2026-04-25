@@ -10,15 +10,30 @@ APP_VERSION="1.1.0"
 APP_BUILD="2"
 APP_BUNDLE="$DIST_DIR/${APP_NAME}.app"
 APP_EXEC="$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+BUNDLE_RUNTIME_DIR="$APP_BUNDLE/Contents/Resources/Runtime"
 RELEASE_BIN="$SWIFT_DIR/.build/release/$APP_NAME"
 STANDALONE_BIN="$DIST_DIR/$APP_NAME"
+STANDALONE_RUNTIME_DIR="$DIST_DIR/runtime"
 
 if ! command -v swift >/dev/null 2>&1; then
   echo "ERROR: swift not found. Please install Xcode Command Line Tools."
   exit 1
 fi
 
-echo "[1/4] Building release binary..."
+copy_runtime_tree() {
+  local dest_dir="$1"
+  rm -rf "$dest_dir"
+  mkdir -p "$dest_dir"
+
+  cp "$ROOT_DIR/adb_bot.py" "$dest_dir/adb_bot.py"
+  cp "$ROOT_DIR/record_touch.py" "$dest_dir/record_touch.py"
+  cp -R "$ROOT_DIR/plans" "$dest_dir/plans"
+  cp -R "$ROOT_DIR/image_templates" "$dest_dir/image_templates"
+  mkdir -p "$dest_dir/diagnostics"
+  mkdir -p "$dest_dir/recording_profiles"
+}
+
+echo "[1/5] Building release binary..."
 cd "$SWIFT_DIR"
 mkdir -p "$PACK_HOME/.cache" "$SWIFT_DIR/.build/clang-module-cache"
 HOME="$PACK_HOME" \
@@ -31,12 +46,12 @@ if [[ ! -f "$RELEASE_BIN" ]]; then
   exit 1
 fi
 
-echo "[2/4] Preparing dist folder..."
+echo "[2/5] Preparing dist folder..."
 mkdir -p "$DIST_DIR"
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
 
-echo "[3/4] Creating .app bundle..."
+echo "[3/5] Creating .app bundle..."
 cp "$RELEASE_BIN" "$APP_EXEC"
 chmod +x "$APP_EXEC"
 
@@ -67,7 +82,11 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "[4/4] Exporting standalone executable..."
+echo "[4/5] Bundling runtime resources..."
+copy_runtime_tree "$BUNDLE_RUNTIME_DIR"
+copy_runtime_tree "$STANDALONE_RUNTIME_DIR"
+
+echo "[5/5] Exporting standalone executable..."
 cp "$RELEASE_BIN" "$STANDALONE_BIN"
 chmod +x "$STANDALONE_BIN"
 
