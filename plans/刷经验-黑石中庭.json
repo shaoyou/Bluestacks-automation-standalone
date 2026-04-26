@@ -1,0 +1,386 @@
+{
+  "actions" : [
+    {
+      "actions" : [
+        {
+          "max_segment_ms" : 1000,
+          "min_segment_ms" : 1,
+          "mode" : "motion",
+          "points" : [
+            {
+              "t_ms" : 0,
+              "x" : 540,
+              "y" : 1720
+            },
+            {
+              "t_ms" : 100,
+              "x" : 360,
+              "y" : 1720
+            },
+            {
+              "t_ms" : 1500,
+              "x" : 360,
+              "y" : 1720
+            }
+          ],
+          "remark" : "向左移动1.5秒",
+          "type" : "trace"
+        },
+        {
+          "max_segment_ms" : 1000,
+          "min_segment_ms" : 1,
+          "mode" : "motion",
+          "points" : [
+            {
+              "t_ms" : 0,
+              "x" : 540,
+              "y" : 1720
+            },
+            {
+              "t_ms" : 100,
+              "x" : 540,
+              "y" : 1540
+            },
+            {
+              "t_ms" : 2000,
+              "x" : 540,
+              "y" : 1540
+            }
+          ],
+          "remark" : "向上移动2秒",
+          "type" : "trace"
+        },
+        {
+          "remark" : "等待4秒",
+          "seconds" : 4,
+          "type" : "wait"
+        },
+        {
+          "max_segment_ms" : 1000,
+          "min_segment_ms" : 1,
+          "mode" : "motion",
+          "points" : [
+            {
+              "t_ms" : 0,
+              "x" : 540,
+              "y" : 1720
+            },
+            {
+              "t_ms" : 100,
+              "x" : 360,
+              "y" : 1720
+            },
+            {
+              "t_ms" : 2000,
+              "x" : 360,
+              "y" : 1720
+            }
+          ],
+          "remark" : "向左移动2秒",
+          "type" : "trace"
+        },
+        {
+          "remark" : "等待4秒",
+          "seconds" : 4,
+          "type" : "wait"
+        },
+        {
+          "max_segment_ms" : 1000,
+          "min_segment_ms" : 1,
+          "mode" : "motion",
+          "points" : [
+            {
+              "t_ms" : 0,
+              "x" : 540,
+              "y" : 1720
+            },
+            {
+              "t_ms" : 100,
+              "x" : 540,
+              "y" : 1540
+            },
+            {
+              "t_ms" : 1300,
+              "x" : 540,
+              "y" : 1540
+            }
+          ],
+          "remark" : "向上移动1.3秒",
+          "type" : "trace"
+        },
+        {
+          "remark" : "等待4秒",
+          "seconds" : 4,
+          "type" : "wait"
+        },
+        {
+          "max_segment_ms" : 1000,
+          "min_segment_ms" : 1,
+          "mode" : "motion",
+          "points" : [
+            {
+              "t_ms" : 0,
+              "x" : 540,
+              "y" : 1720
+            },
+            {
+              "t_ms" : 100,
+              "x" : 424,
+              "y" : 1582
+            },
+            {
+              "t_ms" : 3000,
+              "x" : 424,
+              "y" : 1582
+            }
+          ],
+          "remark" : "向130度移动3秒",
+          "type" : "trace"
+        },
+        {
+          "remark" : "等待3秒",
+          "seconds" : 3,
+          "type" : "wait"
+        },
+        {
+          "max_segment_ms" : 1000,
+          "min_segment_ms" : 1,
+          "mode" : "motion",
+          "points" : [
+            {
+              "t_ms" : 0,
+              "x" : 540,
+              "y" : 1720
+            },
+            {
+              "t_ms" : 100,
+              "x" : 413,
+              "y" : 1593
+            },
+            {
+              "t_ms" : 3000,
+              "x" : 413,
+              "y" : 1593
+            }
+          ],
+          "remark" : "向135度移动3秒",
+          "type" : "trace"
+        },
+        {
+          "remark" : "等待3秒",
+          "seconds" : 3,
+          "type" : "wait"
+        },
+        {
+          "max_segment_ms" : 1000,
+          "min_segment_ms" : 1,
+          "mode" : "motion",
+          "points" : [
+            {
+              "t_ms" : 0,
+              "x" : 540,
+              "y" : 1720
+            },
+            {
+              "t_ms" : 100,
+              "x" : 384,
+              "y" : 1630
+            },
+            {
+              "t_ms" : 1500,
+              "x" : 384,
+              "y" : 1630
+            }
+          ],
+          "remark" : "向150度移动1.5秒",
+          "type" : "trace"
+        },
+        {
+          "remark" : "等待3秒",
+          "seconds" : 3,
+          "type" : "wait"
+        },
+        {
+          "max_segment_ms" : 1000,
+          "min_segment_ms" : 1,
+          "mode" : "motion",
+          "points" : [
+            {
+              "t_ms" : 0,
+              "x" : 540,
+              "y" : 1720
+            },
+            {
+              "t_ms" : 100,
+              "x" : 360,
+              "y" : 1720
+            },
+            {
+              "t_ms" : 1000,
+              "x" : 360,
+              "y" : 1720
+            }
+          ],
+          "remark" : "向左移动1秒",
+          "type" : "trace"
+        },
+        {
+          "remark" : "等待2秒",
+          "seconds" : 2,
+          "type" : "wait"
+        },
+        {
+          "max_segment_ms" : 1000,
+          "min_segment_ms" : 1,
+          "mode" : "motion",
+          "points" : [
+            {
+              "t_ms" : 0,
+              "x" : 540,
+              "y" : 1720
+            },
+            {
+              "t_ms" : 100,
+              "x" : 393,
+              "y" : 1823
+            },
+            {
+              "t_ms" : 2000,
+              "x" : 393,
+              "y" : 1823
+            }
+          ],
+          "remark" : "向-145度移动2秒",
+          "type" : "trace"
+        },
+        {
+          "remark" : "等待3秒",
+          "seconds" : 3,
+          "type" : "wait"
+        },
+        {
+          "max_segment_ms" : 1000,
+          "min_segment_ms" : 1,
+          "mode" : "motion",
+          "points" : [
+            {
+              "t_ms" : 0,
+              "x" : 540,
+              "y" : 1720
+            },
+            {
+              "t_ms" : 100,
+              "x" : 393,
+              "y" : 1823
+            },
+            {
+              "t_ms" : 3000,
+              "x" : 393,
+              "y" : 1823
+            }
+          ],
+          "remark" : "向-145度移动3秒",
+          "type" : "trace"
+        },
+        {
+          "remark" : "等待3秒",
+          "seconds" : 3,
+          "type" : "wait"
+        },
+        {
+          "max_segment_ms" : 1000,
+          "min_segment_ms" : 1,
+          "mode" : "motion",
+          "points" : [
+            {
+              "t_ms" : 0,
+              "x" : 540,
+              "y" : 1720
+            },
+            {
+              "t_ms" : 100,
+              "x" : 393,
+              "y" : 1823
+            },
+            {
+              "t_ms" : 3000,
+              "x" : 393,
+              "y" : 1823
+            }
+          ],
+          "remark" : "向-145度移动3秒",
+          "type" : "trace"
+        },
+        {
+          "type" : "click",
+          "x" : 991,
+          "y" : 1488
+        },
+        {
+          "seconds" : 1.6160000000000001,
+          "type" : "wait"
+        },
+        {
+          "type" : "click",
+          "x" : 173,
+          "y" : 1581
+        },
+        {
+          "seconds" : 1.3680000000000001,
+          "type" : "wait"
+        },
+        {
+          "type" : "click",
+          "x" : 419,
+          "y" : 1590
+        },
+        {
+          "seconds" : 0.73299999999999998,
+          "type" : "wait"
+        },
+        {
+          "type" : "click",
+          "x" : 419,
+          "y" : 1590
+        },
+        {
+          "seconds" : 1.9490000000000001,
+          "type" : "wait"
+        },
+        {
+          "type" : "click",
+          "x" : 543,
+          "y" : 798
+        },
+        {
+          "seconds" : 0.71799999999999997,
+          "type" : "wait"
+        },
+        {
+          "type" : "click",
+          "x" : 543,
+          "y" : 798
+        },
+        {
+          "seconds" : 1.1850000000000001,
+          "type" : "wait"
+        },
+        {
+          "type" : "click",
+          "x" : 563,
+          "y" : 695
+        },
+        {
+          "remark" : "等待6秒",
+          "seconds" : 6,
+          "type" : "wait"
+        }
+      ],
+      "count" : -1,
+      "type" : "loop"
+    }
+  ],
+  "device" : "127.0.0.1:5555",
+  "jitter_px" : 3,
+  "max_runtime_sec" : 0
+}
