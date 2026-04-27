@@ -12,6 +12,9 @@
   "device": "127.0.0.1:5555",
   "jitter_px": 3,
   "max_runtime_sec": 0,
+  "variables": [
+    { "name": "WAIT_SHORT", "value": "0.5", "note": "短等待秒数" }
+  ],
   "actions": []
 }
 ```
@@ -30,10 +33,51 @@
   - `0` 表示不限制。
   - 也可被命令行 `--max-runtime-sec` 覆盖。
 
+- `variables` (array, 可选)
+  - 当前脚本自己的变量列表。
+  - 运行面板会显示 `name` / `value` / `note`，其中 `value` 和 `note` 可直接编辑并保存回脚本。
+  - 动作字段里可用 `${变量名}` 或 `$变量名` 引用。
+
 - `actions` (array, 必填)
   - 动作队列，按顺序执行。
 
-## 2. type 命令列表
+## 2. 脚本变量
+
+变量写在脚本根级：
+
+```json
+{
+  "variables": [
+    { "name": "WAIT_SHORT", "value": "0.5", "note": "短等待秒数" },
+    { "name": "TARGET_TEXT", "value": "开始", "note": "按钮文字" }
+  ],
+  "actions": [
+    { "type": "wait", "seconds": "${WAIT_SHORT}", "remark": "等待${WAIT_SHORT}秒" },
+    { "type": "find_text_click", "text": "${TARGET_TEXT}", "remark": "点击${TARGET_TEXT}" }
+  ]
+}
+```
+
+- `name` (string, 必填): 变量名。建议使用字母、数字、下划线，且不要以数字开头。
+- `value` (string, 必填): 变量值。
+- `note` (string, 可选): 备注，仅用于运行面板展示和编辑，不参与执行。
+- 当整个字段值就是变量时，例如 `"seconds": "${WAIT_SHORT}"`，运行时会尝试按 JSON 字面量解析，`"0.5"` 会变成数字 `0.5`，`"true"` 会变成布尔值。
+- 当变量嵌在普通字符串里时，例如 `"remark": "等待${WAIT_SHORT}秒"`，运行时按字符串替换。
+
+也兼容简写对象格式：
+
+```json
+{
+  "variables": {
+    "WAIT_SHORT": "0.5",
+    "TARGET_TEXT": "开始"
+  }
+}
+```
+
+但对象格式没有 `note`，如果需要在运行面板维护备注，推荐使用数组格式。
+
+## 3. type 命令列表
 
 支持的 `type`：
 - `click`
@@ -50,7 +94,7 @@
 - `loop`
 - `patrol`
 
-### 2.1 click
+### 3.1 click
 
 ```json
 { "type": "click", "x": 1000, "y": 650 }
@@ -59,7 +103,7 @@
 - `x` (number, 必填): X 坐标
 - `y` (number, 必填): Y 坐标
 
-### 2.2 click_match
+### 3.2 click_match
 
 ```json
 { "type": "click_match" }
@@ -75,7 +119,7 @@
 
 - 如果当前运行上下文里没有可用的 `if_image` 命中结果，会报错提醒脚本写法有问题
 
-### 2.3 save_screenshot
+### 3.3 save_screenshot
 
 ```json
 {
@@ -99,7 +143,7 @@
   - `index.csv`
   - `index.jsonl`
 
-### 2.4 find_image
+### 3.4 find_image
 
 ```json
 {
@@ -116,7 +160,7 @@
 - 可用于先验证模板是否稳定
 - 参数与 `find_image_click` 基本一致
 
-### 2.5 find_image_click
+### 3.5 find_image_click
 
 ```json
 {
@@ -163,7 +207,7 @@
 }
 ```
 
-### 2.6 if_image
+### 3.6 if_image
 
 ```json
 {
@@ -204,7 +248,7 @@
 }
 ```
 
-### 2.7 find_text_click
+### 3.7 find_text_click
 
 ```json
 {
@@ -226,7 +270,7 @@
 - `offset_x` `offset_y` (number, 可选，默认 `0`): 对命中的中心点做额外偏移
 - 说明：该动作会先截图，再做 OCR，点击坐标使用当前设备屏幕坐标，不依赖录制脚本的源分辨率
 
-### 2.8 swipe
+### 3.8 swipe
 
 ```json
 { "type": "swipe", "x1": 300, "y1": 400, "x2": 900, "y2": 400, "duration_ms": 600 }
@@ -236,7 +280,7 @@
 - `x2` `y2` (number, 必填): 终点
 - `duration_ms` (number, 可选，默认 `300`): 滑动时长（毫秒）
 
-### 2.9 wait
+### 3.9 wait
 
 ```json
 { "type": "wait", "seconds": 1.0, "jitter_seconds": 0.2 }
@@ -245,7 +289,7 @@
 - `seconds` (number, 可选，默认 `1.0`): 等待秒数
 - `jitter_seconds` (number, 可选，默认 `0.0`): 随机扰动秒数（`±`）
 
-### 2.10 trace
+### 3.10 trace
 
 ```json
 {
@@ -266,7 +310,7 @@
 - `max_segment_ms` (number, 可选，默认 `80`): 每段最大时长
 - 用途：精细回放手写轨迹（如画 `123`）
 
-### 2.11 sequence
+### 3.11 sequence
 
 ```json
 {
@@ -281,7 +325,7 @@
 - `actions` (array, 必填): 子动作列表
 - 用途：把一组动作打包成逻辑段落
 
-### 2.12 loop
+### 3.12 loop
 
 ```json
 {
@@ -300,7 +344,7 @@
   - `-1`: 无限循环
 - `actions` (array, 必填): 循环体
 
-### 2.13 patrol
+### 3.13 patrol
 
 ```json
 {
@@ -323,9 +367,9 @@
   - `0`: 不执行
   - `-1`: 无限往返
 
-## 3. 操作实例
+## 4. 操作实例
 
-### 3.1 实例A：进入页面后无限巡逻
+### 4.1 实例A：进入页面后无限巡逻
 
 ```json
 {
@@ -354,7 +398,7 @@
 }
 ```
 
-### 3.2 实例B：固定执行 20 次采集动作
+### 4.2 实例B：固定执行 20 次采集动作
 
 ```json
 {
@@ -374,7 +418,7 @@
 }
 ```
 
-### 3.3 实例C：多段路径巡逻（矩形）
+### 4.3 实例C：多段路径巡逻（矩形）
 
 ```json
 {
@@ -398,7 +442,7 @@
 }
 ```
 
-## 4. 命令行参数说明
+## 5. 命令行参数说明
 
 脚本命令：
 
@@ -412,7 +456,7 @@ python3 adb_bot.py --plan patrol_plan.json [--device SERIAL] [--adb ADB_PATH] [-
 - `--dry-run` (可选): 仅打印动作，不执行
 - `--max-runtime-sec` (可选): 覆盖 JSON 的最大运行时间
 
-## 5. 快速排错
+## 6. 快速排错
 
 - 先验证通道：
 ```bash
@@ -431,7 +475,7 @@ python3 adb_bot.py --plan patrol_plan.json --dry-run
 python3 adb_bot.py --plan patrol_plan.json --max-runtime-sec 30
 ```
 
-## 6. 录制命令
+## 7. 录制命令
 
 录制 BlueStacks 触摸并生成脚本：
 

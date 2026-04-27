@@ -171,35 +171,63 @@ def _parse_env_literal(raw_value: str) -> Any:
         return raw_value
 
 
-def resolve_plan_env_string(text: str, path: str) -> Any:
+def plan_variable_dictionary(raw_plan: Dict[str, Any]) -> Dict[str, str]:
+    def variable_value_text(value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        return json.dumps(value, ensure_ascii=False)
+
+    raw_variables = raw_plan.get("variables", [])
+    variables: Dict[str, str] = {}
+    if isinstance(raw_variables, dict):
+        for name, value in raw_variables.items():
+            if not str(name).strip():
+                continue
+            variables[str(name).strip()] = variable_value_text(value)
+        return variables
+    if not isinstance(raw_variables, list):
+        return variables
+    for item in raw_variables:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        if not name:
+            continue
+        variables[name] = variable_value_text(item.get("value", ""))
+    return variables
+
+
+def resolve_plan_env_string(text: str, path: str, variables: Dict[str, str]) -> Any:
     matches = list(ENV_REF_RE.finditer(text))
     if not matches:
         return text
 
     if len(matches) == 1 and matches[0].span() == (0, len(text)):
         name = _env_name(matches[0])
-        raw_value = os.environ.get(name)
+        raw_value = variables.get(name)
         if raw_value is None:
-            raise BotError(f"Missing environment variable '{name}' for plan value at {path}")
+            raise BotError(f"Missing script variable '{name}' for plan value at {path}")
         return _parse_env_literal(raw_value)
 
     def replace(match: re.Match[str]) -> str:
         name = _env_name(match)
-        raw_value = os.environ.get(name)
+        raw_value = variables.get(name)
         if raw_value is None:
-            raise BotError(f"Missing environment variable '{name}' for plan value at {path}")
+            raise BotError(f"Missing script variable '{name}' for plan value at {path}")
         return raw_value
 
     return ENV_REF_RE.sub(replace, text)
 
 
-def resolve_plan_env_value(value: Any, path: str = "plan") -> Any:
+def resolve_plan_env_value(value: Any, path: str = "plan", variables: Optional[Dict[str, str]] = None) -> Any:
+    if variables is None:
+        variables = {}
     if isinstance(value, dict):
-        return {key: resolve_plan_env_value(item, f"{path}.{key}") for key, item in value.items()}
+        return {key: resolve_plan_env_value(item, f"{path}.{key}", variables) for key, item in value.items()}
     if isinstance(value, list):
-        return [resolve_plan_env_value(item, f"{path}[{index}]") for index, item in enumerate(value)]
+        return [resolve_plan_env_value(item, f"{path}[{index}]", variables) for index, item in enumerate(value)]
     if isinstance(value, str):
-        return resolve_plan_env_string(value, path)
+        return resolve_plan_env_string(value, path, variables)
     return value
 
 
@@ -1755,7 +1783,7 @@ def load_plan(path: Path) -> Dict[str, Any]:
         raise BotError(f"Plan file not found: {path}") from exc
     except json.JSONDecodeError as exc:
         raise BotError(f"Invalid JSON in plan file {path}: {exc}") from exc
-    resolved = resolve_plan_env_value(raw_plan, path="plan")
+    resolved = resolve_plan_env_value(raw_plan, path="plan", variables=plan_variable_dictionary(raw_plan))
     if not isinstance(resolved, dict):
         raise BotError(f"Plan root must be a JSON object: {path}")
     return resolved

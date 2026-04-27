@@ -113,30 +113,38 @@ private let recorderScript = appRoot.appendingPathComponent("record_touch.py")
 private let appVersion = "1.1.0"
 private let mainWindowSceneID = "main-window"
 private let mainWindowIdentifier = NSUserInterfaceItemIdentifier(mainWindowSceneID)
-private let scriptEnvironmentVariablesKey = "bs.scriptEnvironmentVariables"
 private let scriptEnvironmentReferenceRegex = try! NSRegularExpression(pattern: #"\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)"#)
 
-struct ScriptEnvironmentVariable: Identifiable, Codable, Equatable {
+struct ScriptVariable: Identifiable, Codable, Equatable {
     var id: UUID = UUID()
     var name: String
     var value: String
     var note: String
-}
 
-private func loadScriptEnvironmentVariables() -> [ScriptEnvironmentVariable] {
-    guard let data = UserDefaults.standard.data(forKey: scriptEnvironmentVariablesKey),
-          let variables = try? JSONDecoder().decode([ScriptEnvironmentVariable].self, from: data) else {
-        return []
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case value
+        case note
     }
-    return variables
+
+    init(id: UUID = UUID(), name: String, value: String, note: String) {
+        self.id = id
+        self.name = name
+        self.value = value
+        self.note = note
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? container.decode(UUID.self, forKey: .id)) ?? UUID()
+        name = (try? container.decode(String.self, forKey: .name)) ?? ""
+        value = (try? container.decode(String.self, forKey: .value)) ?? ""
+        note = (try? container.decode(String.self, forKey: .note)) ?? ""
+    }
 }
 
-private func saveScriptEnvironmentVariables(_ variables: [ScriptEnvironmentVariable]) {
-    guard let data = try? JSONEncoder().encode(variables) else { return }
-    UserDefaults.standard.set(data, forKey: scriptEnvironmentVariablesKey)
-}
-
-private func scriptEnvironmentDictionary(from variables: [ScriptEnvironmentVariable]) -> [String: String] {
+private func scriptVariableDictionary(from variables: [ScriptVariable]) -> [String: String] {
     var resolved: [String: String] = [:]
     for item in variables {
         let name = item.name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -146,8 +154,76 @@ private func scriptEnvironmentDictionary(from variables: [ScriptEnvironmentVaria
     return resolved
 }
 
-private func currentScriptEnvironmentDictionary() -> [String: String] {
-    scriptEnvironmentDictionary(from: loadScriptEnvironmentVariables())
+private func planScriptVariables(from rawPlan: [String: Any]) -> [ScriptVariable] {
+    if let items = rawPlan["variables"] as? [[String: Any]] {
+        return items.map { item in
+            ScriptVariable(
+                name: (item["name"] as? String) ?? "",
+                value: stringValue(from: item["value"]),
+                note: (item["note"] as? String) ?? ""
+            )
+        }
+    }
+    if let items = rawPlan["variables"] as? [String: Any] {
+        return items
+            .sorted { $0.key < $1.key }
+            .map { key, value in
+                ScriptVariable(name: key, value: stringValue(from: value), note: "")
+            }
+    }
+    if let items = rawPlan["environment_variables"] as? [[String: Any]] {
+        return items.map { item in
+            ScriptVariable(
+                name: (item["name"] as? String) ?? "",
+                value: stringValue(from: item["value"]),
+                note: (item["note"] as? String) ?? ""
+            )
+        }
+    }
+    return []
+}
+
+private func loadScriptVariables(from scriptURL: URL) -> [ScriptVariable] {
+    guard let data = try? Data(contentsOf: scriptURL),
+          let rawPlan = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        return []
+    }
+    return planScriptVariables(from: rawPlan)
+}
+
+private func stringValue(from value: Any?) -> String {
+    switch value {
+    case let value as String:
+        return value
+    case let value as NSNumber:
+        return value.stringValue
+    case _ as NSNull:
+        return ""
+    case let value?:
+        if JSONSerialization.isValidJSONObject([value]),
+           let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+           let text = String(data: data, encoding: .utf8) {
+            return text
+        }
+        return "\(value)"
+    default:
+        return ""
+    }
+}
+
+private func saveScriptVariables(_ variables: [ScriptVariable], to scriptURL: URL) throws {
+    let data = try Data(contentsOf: scriptURL)
+    var rawPlan = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+    rawPlan["variables"] = variables.map { item in
+        [
+            "name": item.name,
+            "value": item.value,
+            "note": item.note,
+        ]
+    }
+    rawPlan.removeValue(forKey: "environment_variables")
+    let pretty = try JSONSerialization.data(withJSONObject: rawPlan, options: [.prettyPrinted, .sortedKeys])
+    try pretty.write(to: scriptURL, options: [.atomic])
 }
 
 private func scriptEnvironmentName(in text: String, match: NSTextCheckingResult) -> String? {
@@ -248,9 +324,6 @@ private func intValue(from rawValue: Any?, default defaultValue: Int = 0) -> Int
 
 private func mergedEnvironment() -> [String: String] {
     var env = ProcessInfo.processInfo.environment
-    for (name, value) in currentScriptEnvironmentDictionary() {
-        env[name] = value
-    }
     let sdkADB = (NSHomeDirectory() as NSString).appendingPathComponent("Library/Android/sdk/platform-tools")
     let extra = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin", sdkADB]
     let current = env["PATH"] ?? ""
@@ -653,6 +726,12 @@ struct ImageSearchRegion: Equatable {
     }
 }
 
+struct WheelTurnStep: Identifiable, Equatable {
+    let id = UUID()
+    var angle: String
+    var seconds: String
+}
+
 struct DrawSessionSummary: Identifiable, Hashable {
     let id: String
     let sessionID: String
@@ -819,6 +898,8 @@ final class RunnerModel: ObservableObject {
     @Published var cycleCount: Int = 0
     @Published var profitPerCycle: String = "0"
     @Published var showRealtimeCommandLogs: Bool = false
+    @Published var scriptVariables: [ScriptVariable] = []
+    @Published var variableStatusMessage: String = ""
 
     private var process: Process?
     private var readHandle: FileHandle?
@@ -833,6 +914,28 @@ final class RunnerModel: ObservableObject {
 
     init(slotName: String) {
         self.slotName = slotName
+    }
+
+    func reloadScriptVariables(scriptURL: URL?) {
+        guard let scriptURL else {
+            scriptVariables = []
+            variableStatusMessage = ""
+            return
+        }
+        scriptVariables = loadScriptVariables(from: scriptURL)
+        variableStatusMessage = ""
+    }
+
+    func updateScriptVariable(id: UUID, keyPath: WritableKeyPath<ScriptVariable, String>, value: String, scriptURL: URL?) {
+        guard let index = scriptVariables.firstIndex(where: { $0.id == id }) else { return }
+        scriptVariables[index][keyPath: keyPath] = value
+        guard let scriptURL else { return }
+        do {
+            try saveScriptVariables(scriptVariables, to: scriptURL)
+            variableStatusMessage = ""
+        } catch {
+            variableStatusMessage = "变量保存失败: \(error.localizedDescription)"
+        }
     }
 
     func appendLog(_ line: String) {
@@ -963,7 +1066,7 @@ final class RunnerModel: ObservableObject {
               let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return 0
         }
-        let obj = resolveScriptEnvironmentValue(raw, variables: currentScriptEnvironmentDictionary()) as? [String: Any]
+        let obj = resolveScriptEnvironmentValue(raw, variables: scriptVariableDictionary(from: planScriptVariables(from: raw))) as? [String: Any]
         guard let obj,
               let actions = obj["actions"] as? [Any] else {
             return 0
@@ -1942,11 +2045,6 @@ final class AppModel: ObservableObject {
     @Published var showRunAfterRecordPrompt: Bool = false
     @Published var lastRecordedScriptToRun: String = ""
     @Published var language: AppLanguage = .zh
-    @Published var scriptEnvironmentVariables: [ScriptEnvironmentVariable] = loadScriptEnvironmentVariables() {
-        didSet {
-            saveScriptEnvironmentVariables(scriptEnvironmentVariables)
-        }
-    }
 
     @Published var drawRunner = RunnerModel(slotName: "DRAW")
     @Published var runnerA = RunnerModel(slotName: "A")
@@ -1965,6 +2063,9 @@ final class AppModel: ObservableObject {
   "device": "127.0.0.1:5555",
   "jitter_px": 3,
   "max_runtime_sec": 0,
+  "variables": [
+    { "name": "WAIT_SHORT", "value": "0.5", "note": "短等待秒数" }
+  ],
   "actions": [
     { "type": "click", "x": 1000, "y": 650, "remark": "点击(1000,650)" },
     { "type": "wait", "seconds": 1.2, "remark": "等待1.2秒" },
@@ -2016,19 +2117,6 @@ final class AppModel: ObservableObject {
     func setLanguage(_ lang: AppLanguage) {
         language = lang
         UserDefaults.standard.set(lang.rawValue, forKey: languageKey)
-    }
-
-    func addScriptEnvironmentVariable() {
-        scriptEnvironmentVariables.append(ScriptEnvironmentVariable(name: "", value: "", note: ""))
-    }
-
-    func removeScriptEnvironmentVariable(id: UUID) {
-        scriptEnvironmentVariables.removeAll { $0.id == id }
-    }
-
-    func updateScriptEnvironmentVariable(id: UUID, keyPath: WritableKeyPath<ScriptEnvironmentVariable, String>, value: String) {
-        guard let index = scriptEnvironmentVariables.firstIndex(where: { $0.id == id }) else { return }
-        scriptEnvironmentVariables[index][keyPath: keyPath] = value
     }
 
     func rememberLastDevice(_ device: String) {
@@ -2339,7 +2427,7 @@ final class AppModel: ObservableObject {
             }
             try text.write(to: url, atomically: true, encoding: .utf8)
             editorText = text
-            statusMessage = "已保存: \(selectedScriptName)"
+            statusMessage = "已保存: \(url.path)"
             refreshScripts()
         } catch {
             statusMessage = "保存失败: \(error.localizedDescription)"
@@ -2352,82 +2440,170 @@ struct RunnerView: View {
     let lang: AppLanguage
     let scripts: [String]
     let deviceOptions: [String]
+    let refreshScripts: () -> Void
     let refreshDevices: (String) -> Void
     let onDeviceChanged: (String) -> Void
     let resolveScriptURL: (String) -> URL?
     let onSelectionChanged: (String, String) -> Void
+    let openAdditionalRun: (() -> Void)?
+
+    private var currentScriptURL: URL? {
+        resolveScriptURL(runner.selectedScript)
+    }
+
+    private var isRunActive: Bool {
+        runner.isRunning || runner.isStarting
+    }
+
+    private var runButtonTitle: String {
+        if runner.isStarting {
+            return t(lang, "停止启动 \(runner.slotName)", "Cancel \(runner.slotName)")
+        }
+        if runner.isRunning {
+            return t(lang, "停止 \(runner.slotName)", "Stop \(runner.slotName)")
+        }
+        return t(lang, "运行 \(runner.slotName)", "Run \(runner.slotName)")
+    }
+
+    private var runButtonIcon: String {
+        isRunActive ? "stop.fill" : "play.fill"
+    }
+
+    private func variableBinding(for id: UUID, _ keyPath: WritableKeyPath<ScriptVariable, String>) -> Binding<String> {
+        Binding(
+            get: {
+                runner.scriptVariables.first(where: { $0.id == id })?[keyPath: keyPath] ?? ""
+            },
+            set: { newValue in
+                runner.updateScriptVariable(id: id, keyPath: keyPath, value: newValue, scriptURL: currentScriptURL)
+            }
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(t(lang, "脚本", "Script"))
-                Picker(t(lang, "脚本", "Script"), selection: $runner.selectedScript) {
-                    ForEach(scripts, id: \.self) { name in
-                        Text(name).tag(name)
-                    }
-                }
-                .frame(width: 240)
-                .onChange(of: runner.selectedScript) { newValue in
-                    onSelectionChanged(runner.slotName, newValue)
-                }
-                Button(t(lang, "打开目录", "Open")) {
-                    openScriptsDirectoryInFinder()
-                }
-            }
-            HStack {
-                Text(t(lang, "设备", "Device"))
-                TextField("127.0.0.1:5555", text: $runner.device)
-                    .textFieldStyle(.roundedBorder)
-                    .onChange(of: runner.device) { newValue in
-                        onDeviceChanged(newValue)
-                    }
-                Menu(t(lang, "选择", "Select")) {
-                    Button(t(lang, "清空", "Clear")) { runner.device = "" }
-                    ForEach(deviceOptions, id: \.self) { serial in
-                        Button(serial) {
-                            runner.device = serial
-                            onDeviceChanged(serial)
+            GroupBox {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .center, spacing: 10) {
+                        Text(t(lang, "脚本", "Script"))
+                            .frame(width: 36, alignment: .trailing)
+                        Picker("", selection: $runner.selectedScript) {
+                            ForEach(scripts, id: \.self) { name in
+                                Text(name).tag(name)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(minWidth: 220)
+                        .onChange(of: runner.selectedScript) { newValue in
+                            onSelectionChanged(runner.slotName, newValue)
+                            runner.reloadScriptVariables(scriptURL: resolveScriptURL(newValue))
+                        }
+                        Button {
+                            refreshScripts()
+                        } label: {
+                            Label(t(lang, "刷新", "Refresh"), systemImage: "arrow.clockwise")
+                        }
+
+                        Button {
+                            openScriptsDirectoryInFinder()
+                        } label: {
+                            Label(t(lang, "打开目录", "Open Folder"), systemImage: "folder")
+                        }
+
+                        Divider()
+                            .frame(height: 18)
+
+                        Text(t(lang, "设备", "Device"))
+                            .frame(width: 36, alignment: .trailing)
+                        TextField("127.0.0.1:5555", text: $runner.device)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(minWidth: 160)
+                            .onChange(of: runner.device) { newValue in
+                                onDeviceChanged(newValue)
+                            }
+                        Menu {
+                            Button(t(lang, "清空", "Clear")) { runner.device = "" }
+                            ForEach(deviceOptions, id: \.self) { serial in
+                                Button(serial) {
+                                    runner.device = serial
+                                    onDeviceChanged(serial)
+                                }
+                            }
+                        } label: {
+                            Label(t(lang, "选择", "Select"), systemImage: "list.bullet")
+                        }
+                        Button {
+                            refreshDevices(runner.adbPath)
+                        } label: {
+                            Label(t(lang, "刷新", "Refresh"), systemImage: "arrow.clockwise")
                         }
                     }
+
+                    HStack(alignment: .center, spacing: 10) {
+                        Button {
+                            if isRunActive {
+                                runner.stop()
+                            } else {
+                                runner.start(scriptURL: currentScriptURL)
+                            }
+                        } label: {
+                            Label(runButtonTitle, systemImage: runButtonIcon)
+                                .frame(minWidth: 110)
+                        }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(!isRunActive && currentScriptURL == nil)
+
+                        if let openAdditionalRun {
+                            Button {
+                                openAdditionalRun()
+                            } label: {
+                                Label(t(lang, "多开运行", "Open Additional"), systemImage: "plus.square.on.square")
+                            }
+                        }
+
+                        Button {
+                            runner.clearLogs()
+                        } label: {
+                            Label(t(lang, "清空日志", "Clear Logs"), systemImage: "trash")
+                        }
+
+                        Toggle(
+                            t(lang, "实时输出", "Realtime Output"),
+                            isOn: $runner.showRealtimeCommandLogs
+                        )
+                        .toggleStyle(.checkbox)
+
+                        Divider()
+                            .frame(height: 18)
+
+                        Text("\(t(lang, "进度", "Progress")): \(runner.progressText)")
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        Text("\(t(lang, "循环", "Loops")): \(runner.cycleCountText)")
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(.secondary)
+
+                        Spacer()
+
+                        Text(t(lang, "单次收益", "Profit"))
+                            .foregroundStyle(.secondary)
+                        TextField("0", text: $runner.profitPerCycle)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 92)
+                        Text("\(t(lang, "预期", "Expected")): \(runner.expectedProfitText)")
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                Button(t(lang, "刷新设备", "Refresh Devices")) {
-                    refreshDevices(runner.adbPath)
-                }
+                .padding(4)
             }
-            HStack {
-                Button(t(lang, "开始 \(runner.slotName)", "Start \(runner.slotName)")) {
-                    runner.start(scriptURL: resolveScriptURL(runner.selectedScript))
-                }
-                .disabled(runner.isRunning)
-                Button(t(lang, "停止 \(runner.slotName)", "Stop \(runner.slotName)")) {
-                    runner.stop()
-                }
-                Button(t(lang, "清空日志", "Clear Logs")) {
-                    runner.clearLogs()
-                }
-            }
-            Toggle(
-                t(lang, "显示实时指令输出", "Show Realtime Command Output"),
-                isOn: $runner.showRealtimeCommandLogs
+            ScriptVariablesRunPanel(
+                lang: lang,
+                variables: runner.scriptVariables,
+                statusMessage: runner.variableStatusMessage,
+                valueBinding: { id in variableBinding(for: id, \.value) },
+                noteBinding: { id in variableBinding(for: id, \.note) }
             )
-            HStack {
-                Text(t(lang, "进度", "Progress"))
-                Text(runner.progressText)
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                Text("\(t(lang, "循环次数", "Loop Count")): \(runner.cycleCountText)")
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-            HStack {
-                Text(t(lang, "单次循环收益", "Profit Per Cycle"))
-                TextField("0", text: $runner.profitPerCycle)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 120)
-                Text("\(t(lang, "预期收益", "Expected Profit")): \(runner.expectedProfitText)")
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
             ScrollView {
                 Text(runner.logs.isEmpty ? t(lang, "暂无日志", "No logs") : runner.logs)
                     .font(.system(size: 12, design: .monospaced))
@@ -2443,6 +2619,65 @@ struct RunnerView: View {
             )
         }
         .padding(10)
+        .onAppear {
+            runner.reloadScriptVariables(scriptURL: currentScriptURL)
+        }
+    }
+}
+
+struct ScriptVariablesRunPanel: View {
+    let lang: AppLanguage
+    let variables: [ScriptVariable]
+    let statusMessage: String
+    let valueBinding: (UUID) -> Binding<String>
+    let noteBinding: (UUID) -> Binding<String>
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(t(lang, "变量名", "Variable"))
+                    .frame(width: 150, alignment: .leading)
+                Text(t(lang, "值", "Value"))
+                    .frame(width: 180, alignment: .leading)
+                Text(t(lang, "备注", "Note"))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+
+            if variables.isEmpty {
+                Text(t(lang, "当前脚本没有 variables。可在脚本根级添加 variables 后在这里编辑值和备注。", "This script has no variables. Add a root-level variables list to edit values and notes here."))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(variables) { item in
+                    HStack(alignment: .top, spacing: 8) {
+                        Text(item.name.isEmpty ? t(lang, "未命名", "Unnamed") : item.name)
+                            .font(.system(size: 12, design: .monospaced))
+                            .frame(width: 150, alignment: .leading)
+                            .padding(.top, 5)
+                            .textSelection(.enabled)
+                        TextField("0.5", text: valueBinding(item.id))
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 180)
+                        TextField(t(lang, "备注", "Note"), text: noteBinding(item.id))
+                            .textFieldStyle(.roundedBorder)
+                    }
+                }
+            }
+
+            if !statusMessage.isEmpty {
+                Text(statusMessage)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(8)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.gray.opacity(0.25), lineWidth: 1)
+        )
     }
 }
 
@@ -3103,9 +3338,6 @@ struct SettingsView: View {
                 }
                 .padding(8)
             }
-            GroupBox(t(model.language, "环境变量", "Environment Variables")) {
-                ScriptEnvironmentSettingsView()
-            }
             GroupBox(t(model.language, "校准", "Calibration")) {
                 CalibrationView(
                     calibration: model.calibration,
@@ -3126,81 +3358,6 @@ struct SettingsView: View {
             }
             Spacer()
         }
-    }
-}
-
-struct ScriptEnvironmentSettingsView: View {
-    @EnvironmentObject private var model: AppModel
-
-    private func binding(for id: UUID, _ keyPath: WritableKeyPath<ScriptEnvironmentVariable, String>) -> Binding<String> {
-        Binding(
-            get: {
-                model.scriptEnvironmentVariables.first(where: { $0.id == id })?[keyPath: keyPath] ?? ""
-            },
-            set: { newValue in
-                model.updateScriptEnvironmentVariable(id: id, keyPath: keyPath, value: newValue)
-            }
-        )
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(
-                t(
-                    model.language,
-                    "脚本里可以写 \"seconds\": \"${WAIT_SHORT}\" 或 \"remark\": \"等待${WAIT_SHORT}秒\"。如果整值就是变量，占位后会自动按数字/布尔/JSON 解析。",
-                    "Use placeholders like \"seconds\": \"${WAIT_SHORT}\" or \"remark\": \"Wait ${WAIT_SHORT}s\". When the whole value is a variable, it is auto-parsed as number, bool, or JSON."
-                )
-            )
-            .font(.footnote)
-            .foregroundStyle(.secondary)
-            .textSelection(.enabled)
-
-            HStack(spacing: 8) {
-                Text(t(model.language, "变量名", "Name"))
-                    .frame(width: 160, alignment: .leading)
-                Text(t(model.language, "值", "Value"))
-                    .frame(minWidth: 180, alignment: .leading)
-                Text(t(model.language, "备注", "Note"))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Text("")
-                    .frame(width: 60)
-            }
-            .font(.footnote)
-            .foregroundStyle(.secondary)
-
-            if model.scriptEnvironmentVariables.isEmpty {
-                Text(t(model.language, "暂无环境变量，点击下方按钮新增。", "No environment variables yet. Add one below."))
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .padding(.vertical, 4)
-            }
-
-            ForEach(model.scriptEnvironmentVariables) { item in
-                HStack(alignment: .top, spacing: 8) {
-                    TextField("WAIT_SHORT", text: binding(for: item.id, \.name))
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 160)
-                    TextField("0.5", text: binding(for: item.id, \.value))
-                        .textFieldStyle(.roundedBorder)
-                        .frame(minWidth: 180)
-                    TextField(t(model.language, "例如：短等待秒数", "Example: short wait duration"), text: binding(for: item.id, \.note))
-                        .textFieldStyle(.roundedBorder)
-                    Button(t(model.language, "删除", "Delete")) {
-                        model.removeScriptEnvironmentVariable(id: item.id)
-                    }
-                    .frame(width: 60)
-                }
-            }
-
-            HStack {
-                Button(t(model.language, "新增变量", "Add Variable")) {
-                    model.addScriptEnvironmentVariable()
-                }
-                Spacer()
-            }
-        }
-        .padding(8)
     }
 }
 
@@ -3619,6 +3776,7 @@ struct ScriptEditorView: View {
     @State private var dragSeconds = "2"
     @State private var dragDistance = "180"
     @State private var dragAngle = "0"
+    @State private var wheelTurnSteps: [WheelTurnStep] = []
     @State private var quickClickX = ""
     @State private var quickClickY = ""
     @State private var quickWaitSeconds = "1"
@@ -3792,6 +3950,101 @@ struct ScriptEditorView: View {
 
     private func insertWheelTrace(angleDegrees: Double, remark: String? = nil) {
         insertTextAtCursor(makeWheelTraceSnippet(angleDegrees: angleDegrees, remark: remark))
+    }
+
+    private func wheelTargetPoint(centerX: Int, centerY: Int, distance: Int, angleDegrees: Double) -> (x: Int, y: Int) {
+        let radians = angleDegrees * Double.pi / 180.0
+        let dx = cos(radians) * Double(distance)
+        let dy = -sin(radians) * Double(distance)
+        return (centerX + Int(round(dx)), centerY + Int(round(dy)))
+    }
+
+    private func normalizedWheelTurnSteps() -> [(angle: Double, seconds: Double)] {
+        wheelTurnSteps.compactMap { step in
+            guard let angle = Double(step.angle.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                return nil
+            }
+            let seconds = max(0.1, Double(step.seconds.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0)
+            return (angle, seconds)
+        }
+    }
+
+    private func addWheelTurnStep(angleDegrees: Double? = nil, seconds: Double? = nil) {
+        let angle = angleDegrees ?? (Double(dragAngle.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0)
+        let duration = seconds ?? max(0.1, Double(dragSeconds.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 2.0)
+        wheelTurnSteps.append(
+            WheelTurnStep(
+                angle: normalizedAngleText(angle),
+                seconds: normalizedNumberText(duration)
+            )
+        )
+    }
+
+    private func updateWheelTurnStep(id: UUID, keyPath: WritableKeyPath<WheelTurnStep, String>, value: String) {
+        guard let index = wheelTurnSteps.firstIndex(where: { $0.id == id }) else { return }
+        wheelTurnSteps[index][keyPath: keyPath] = value
+    }
+
+    private func removeWheelTurnStep(id: UUID) {
+        wheelTurnSteps.removeAll { $0.id == id }
+    }
+
+    private func makeMultiWheelTraceSnippet() -> String {
+        let steps = normalizedWheelTurnSteps()
+        guard !steps.isEmpty else {
+            let angle = Double(dragAngle.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+            return makeWheelTraceSnippet(angleDegrees: angle, remark: nil)
+        }
+
+        let centerX = Int(wheelCenterX.trimmingCharacters(in: .whitespacesAndNewlines)) ?? (currentScreenSize().width / 2)
+        let centerY = wheelCenterY()
+        let distance = max(1, Int(dragDistance.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 180)
+        let indent = currentLineIndent()
+        let bodyIndent = indent + "  "
+        let pointIndent = bodyIndent + "  "
+        let fieldIndent = pointIndent + "  "
+
+        var points: [(x: Int, y: Int, t: Int)] = [(centerX, centerY, 0)]
+        var elapsedMs = 0
+        for step in steps {
+            let target = wheelTargetPoint(centerX: centerX, centerY: centerY, distance: distance, angleDegrees: step.angle)
+            let durationMs = max(100, Int(step.seconds * 1000.0))
+            let moveEndMs = min(elapsedMs + 100, elapsedMs + durationMs)
+            points.append((target.x, target.y, moveEndMs))
+            elapsedMs += durationMs
+            if points.last?.t != elapsedMs {
+                points.append((target.x, target.y, elapsedMs))
+            }
+        }
+
+        let pointLines = points.enumerated().map { index, point in
+            let comma = index == points.count - 1 ? "" : ","
+            return """
+\(pointIndent){
+\(fieldIndent)"x": \(point.x),
+\(fieldIndent)"y": \(point.y),
+\(fieldIndent)"t_ms": \(point.t)
+\(pointIndent)}\(comma)
+"""
+        }.joined(separator: "\n")
+        let summary = steps.map { "向\(normalizedAngleText($0.angle))度\(normalizedNumberText($0.seconds))秒" }.joined(separator: " -> ")
+        return """
+\(indent){
+\(bodyIndent)"type": "trace",
+\(bodyIndent)"remark": "\(jsonEscaped(summary))",
+\(bodyIndent)"points": [
+\(pointLines)
+\(bodyIndent)],
+\(bodyIndent)"mode": "motion",
+\(bodyIndent)"min_segment_ms": 1,
+\(bodyIndent)"max_segment_ms": 1000
+\(indent)},
+
+"""
+    }
+
+    private func insertMultiWheelTrace() {
+        insertTextAtCursor(makeMultiWheelTraceSnippet())
     }
 
     private func makeClickSnippet(x: Int, y: Int) -> String {
@@ -4079,6 +4332,7 @@ struct ScriptEditorView: View {
                     showNewScriptDialog = true
                 }
                 Button(t(model.language, "保存", "Save")) {
+                    NSApp.keyWindow?.makeFirstResponder(nil)
                     model.saveCurrentScript()
                 }
                 Button(isDebugRunning ? t(model.language, "停止调试", "Stop Debug") : t(model.language, "调试运行", "Debug Run")) {
@@ -4117,6 +4371,10 @@ struct ScriptEditorView: View {
                     openScriptsDirectoryInFinder()
                 }
             }
+            Text("\(t(model.language, "脚本目录", "Scripts Folder")): \(plansDir.path)")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
             GroupBox(t(model.language, "取坐标", "Coordinate Picker")) {
         VStack(alignment: .leading, spacing: 8) {
                     HStack {
@@ -4379,6 +4637,9 @@ struct ScriptEditorView: View {
                             let seconds = max(0.1, Double(dragSeconds.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 2.0)
                             insertWheelTrace(angleDegrees: angle, remark: makeWheelRemark(angleDegrees: angle, seconds: seconds))
                         }
+                        Button(t(model.language, "添加转向步骤", "Add Turn Step")) {
+                            addWheelTurnStep()
+                        }
                     }
                     HStack {
                         Button(t(model.language, "向左拖动", "Drag Left")) {
@@ -4396,6 +4657,67 @@ struct ScriptEditorView: View {
                         Button(t(model.language, "向右拖动", "Drag Right")) {
                             let seconds = max(0.1, Double(dragSeconds.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 2.0)
                             insertWheelTrace(angleDegrees: 0, remark: makeWheelRemark(angleDegrees: 0, seconds: seconds, prefix: "向右移动"))
+                        }
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text(t(model.language, "多转向步骤", "Multi-Turn Steps"))
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                            Button(t(model.language, "左", "Left")) {
+                                let seconds = max(0.1, Double(dragSeconds.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 2.0)
+                                addWheelTurnStep(angleDegrees: 180, seconds: seconds)
+                            }
+                            Button(t(model.language, "上", "Up")) {
+                                let seconds = max(0.1, Double(dragSeconds.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 2.0)
+                                addWheelTurnStep(angleDegrees: 90, seconds: seconds)
+                            }
+                            Button(t(model.language, "下", "Down")) {
+                                let seconds = max(0.1, Double(dragSeconds.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 2.0)
+                                addWheelTurnStep(angleDegrees: -90, seconds: seconds)
+                            }
+                            Button(t(model.language, "右", "Right")) {
+                                let seconds = max(0.1, Double(dragSeconds.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 2.0)
+                                addWheelTurnStep(angleDegrees: 0, seconds: seconds)
+                            }
+                            Button(t(model.language, "插入多转向", "Insert Multi-Turn")) {
+                                insertMultiWheelTrace()
+                            }
+                            .disabled(wheelTurnSteps.isEmpty)
+                            Button(t(model.language, "清空步骤", "Clear Steps")) {
+                                wheelTurnSteps.removeAll()
+                            }
+                            .disabled(wheelTurnSteps.isEmpty)
+                        }
+                        if wheelTurnSteps.isEmpty {
+                            Text(t(model.language, "添加多个步骤后，会插入一条连续 trace；每步到达设定秒数后直接换方向。", "Add multiple steps to insert one continuous trace; each step changes direction after its duration."))
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(wheelTurnSteps) { step in
+                                HStack(spacing: 8) {
+                                    Text(t(model.language, "角度", "Angle"))
+                                    TextField("0", text: Binding(
+                                        get: { wheelTurnSteps.first(where: { $0.id == step.id })?.angle ?? "" },
+                                        set: { updateWheelTurnStep(id: step.id, keyPath: \.angle, value: $0) }
+                                    ))
+                                    .frame(width: 70)
+                                    .textFieldStyle(.roundedBorder)
+                                    Text(t(model.language, "持续秒数", "Duration"))
+                                    TextField("2", text: Binding(
+                                        get: { wheelTurnSteps.first(where: { $0.id == step.id })?.seconds ?? "" },
+                                        set: { updateWheelTurnStep(id: step.id, keyPath: \.seconds, value: $0) }
+                                    ))
+                                    .frame(width: 70)
+                                    .textFieldStyle(.roundedBorder)
+                                    Text("→ \(makeWheelRemark(angleDegrees: Double(step.angle) ?? 0, seconds: Double(step.seconds) ?? 0.1))")
+                                        .font(.system(size: 12, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                    Button(t(model.language, "删除", "Delete")) {
+                                        removeWheelTurnStep(id: step.id)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -4479,9 +4801,16 @@ struct CodeTextView: NSViewRepresentable {
             parent.selectedRange = textView.selectedRange()
         }
 
+        func textDidEndEditing(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            parent.text = textView.string
+            parent.selectedRange = textView.selectedRange()
+        }
+
         func textViewDidChangeSelection(_ notification: Notification) {
             guard !isSyncing,
                   let textView = notification.object as? NSTextView else { return }
+            guard !textView.hasMarkedText() else { return }
             parent.selectedRange = textView.selectedRange()
         }
     }
@@ -4571,6 +4900,7 @@ struct CodeTextView: NSViewRepresentable {
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let textView = nsView.documentView as? NSTextView else { return }
         context.coordinator.parent = self
+        guard !textView.hasMarkedText() else { return }
         if applyInsertionIfNeeded(textView, context: context) {
             return
         }
@@ -4599,17 +4929,6 @@ struct RunHomeView: View {
             Text(t(model.language, "当前页面内置一个运行面板；点击“多开运行窗口”可继续并行打开更多运行窗口。", "This page includes one embedded runner; click \"Open Additional Run Window\" to run more scripts in parallel."))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-            HStack {
-                Button(t(model.language, "多开运行窗口", "Open Additional Run Window")) {
-                    openWindow(id: "run-window", value: buildRunWindowValue())
-                }
-                Button(t(model.language, "刷新脚本", "Refresh Scripts")) {
-                    model.refreshScripts()
-                }
-                Button(t(model.language, "刷新设备", "Refresh Devices")) {
-                    model.refreshADBAndDevices(adbInput: model.recorder.adbPath)
-                }
-            }
             if model.scripts.isEmpty {
                 Text(t(model.language, "plans/ 目录下没有脚本", "No scripts found in plans/"))
                     .font(.footnote)
@@ -4625,11 +4944,15 @@ struct RunHomeView: View {
                 lang: model.language,
                 scripts: model.scripts.map(\.name),
                 deviceOptions: model.availableDevices,
+                refreshScripts: model.refreshScripts,
                 refreshDevices: model.refreshADBAndDevices(adbInput:),
                 onDeviceChanged: model.rememberLastDevice(_:),
                 resolveScriptURL: model.scriptURL(named:),
                 onSelectionChanged: { slot, script in
                     model.rememberRunnerScript(slot: slot, name: script)
+                },
+                openAdditionalRun: {
+                    openWindow(id: "run-window", value: buildRunWindowValue())
                 }
             )
             Spacer()
@@ -4899,10 +5222,12 @@ struct RunWindowView: View {
                 lang: model.language,
                 scripts: model.scripts.map(\.name),
                 deviceOptions: model.availableDevices,
+                refreshScripts: model.refreshScripts,
                 refreshDevices: model.refreshADBAndDevices(adbInput:),
                 onDeviceChanged: model.rememberLastDevice(_:),
                 resolveScriptURL: model.scriptURL(named:),
-                onSelectionChanged: { _, _ in }
+                onSelectionChanged: { _, _ in },
+                openAdditionalRun: nil
             )
         }
         .padding(12)

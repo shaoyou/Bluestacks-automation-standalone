@@ -173,7 +173,31 @@ adb -s 127.0.0.1:5555 shell input tap 500 500
 - `device`: ADB 设备号（如 `127.0.0.1:5555`）
 - `jitter_px`: 点击/滑动的随机偏移像素，降低固定轨迹风险
 - `max_runtime_sec`: 最大运行秒数，`0` 为不限制
+- `variables`: 脚本变量数组，可在动作字段里用 `${变量名}` 或 `$变量名` 引用
 - `actions`: 动作数组
+
+### 6.1 脚本变量 variables
+
+每个脚本可以在根级配置自己的变量：
+
+```json
+{
+  "variables": [
+    { "name": "WAIT_SHORT", "value": "0.5", "note": "短等待秒数" },
+    { "name": "TARGET_TEXT", "value": "开始", "note": "需要识别的按钮文字" }
+  ],
+  "actions": [
+    { "type": "wait", "seconds": "${WAIT_SHORT}", "remark": "等待${WAIT_SHORT}秒" },
+    { "type": "find_text_click", "text": "${TARGET_TEXT}", "remark": "点击${TARGET_TEXT}" }
+  ]
+}
+```
+
+- `name`: 变量名，只建议使用字母、数字、下划线，且不要以数字开头。
+- `value`: 变量值。运行面板可直接编辑。
+- `note`: 备注。运行面板可直接编辑，不参与执行。
+- 当整个字段值就是变量（例如 `"seconds": "${WAIT_SHORT}"`）时，运行时会尝试按 JSON 字面量解析，所以 `"0.5"` 会变成数字 `0.5`，`"true"` 会变成布尔值。
+- 当变量嵌在字符串中（例如 `"remark": "等待${WAIT_SHORT}秒"`）时，会按字符串替换。
 
 动作定义：
 

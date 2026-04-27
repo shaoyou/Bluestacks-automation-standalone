@@ -1,96 +1,106 @@
 {
-    "actions" : [
+  "actions" : [
+    {
+      "actions" : [
         {
-          "type": "loop",
-          "count": -1,
-          "actions": [
-              {
-                  "else_actions" : [
-                      {
-                          "remark" : "未识别到图标后的分支",
-                          "seconds" : 0.5,
-                          "type" : "wait"
-                      },
-                      {
-                          "remark" : "等待60秒",
-                          "seconds" : 60,
-                          "type" : "wait"
-                      }
-                  ],
-                  "interval_sec" : 0.59999999999999998,
-                  "region" : {
-                      "height" : 1191,
-                      "width" : 828,
-                      "x" : 137,
-                      "y" : 378
-                  },
-                  "remark" : "如果识别到图标bl_baoxiaoxing.png",
-                  "template" : "..\/image_templates\/bl_baoxiaoxing.png",
-                  "then_actions" : [
-                      {
-                          "remark" : "识别到图标后的分支",
-                          "seconds" : 0.5,
-                          "type" : "wait"
-                      },
-                      {
-                        "remark" : "点击宝箱",
-                        "type" : "click_match"
-                      },
-                      {
-                          "remark" : "等待1秒",
-                          "seconds" : 1,
-                          "type" : "wait"
-                      },
-                      {
-                          "interval_sec" : 0.59999999999999998,
-                          "region" : {
-                              "height" : 1191,
-                              "width" : 828,
-                              "x" : 137,
-                              "y" : 378
-                          },
-                          "remark" : "识别确定领取按钮",
-                          "templates" : ["..\/image_templates\/bl_baoxiaoxing-done.png","..\/image_templates\/baoxiang_done_2.png"],
-                          "threshold" : 0.88,
-                          "timeout_sec" : 8,
-                          "type" : "find_image_click"
-                      },
-                      {
-                          "remark" : "等待2秒",
-                          "seconds" : 2,
-                          "type" : "wait"
-                      },
-                      {
-                          "remark" : "关闭领取页面",
-                          "type" : "click",
-                          "x" : 530,
-                          "y" : 1450
-                      },
-                      {
-                          "remark" : "等待2秒",
-                          "seconds" : 2,
-                          "type" : "wait"
-                      },
-                      {
-                          "remark" : "关闭领取页面（广告版本）",
-                          "type" : "click",
-                          "x" : 530,
-                          "y" : 1450
-                      },
-                      {
-                          "remark" : "等待60秒",
-                          "seconds" : 60,
-                          "type" : "wait"
-                      }
-                  ],
-                  "threshold" : 0.88,
-                  "timeout_sec" : 8,
-                  "type" : "if_image"
-              }
-          ]
+          "else_actions" : [
+            {
+              "remark" : "未识别到图标后的分支",
+              "seconds" : 0.5,
+              "type" : "wait"
+            },
+            {
+              "remark" : "等待宝箱刷新",
+              "seconds" : "$refresh_time",
+              "type" : "wait"
+            }
+          ],
+          "interval_sec" : 0.59999999999999998,
+          "region" : {
+            "height" : 1191,
+            "width" : 828,
+            "x" : 137,
+            "y" : 378
+          },
+          "remark" : "如果识别到图标bl_baoxiaoxing.png",
+          "template" : "..\/image_templates\/bl_baoxiaoxing.png",
+          "then_actions" : [
+            {
+              "remark" : "识别到图标后的分支",
+              "seconds" : 0.5,
+              "type" : "wait"
+            },
+            {
+              "remark" : "点击宝箱",
+              "type" : "click_match"
+            },
+            {
+              "remark" : "等待1秒",
+              "seconds" : 1,
+              "type" : "wait"
+            },
+            {
+              "interval_sec" : 0.59999999999999998,
+              "region" : {
+                "height" : 1191,
+                "width" : 828,
+                "x" : 137,
+                "y" : 378
+              },
+              "remark" : "识别确定领取按钮",
+              "templates" : [
+                "..\/image_templates\/bl_baoxiaoxing-done.png",
+                "..\/image_templates\/baoxiang_done_2.png"
+              ],
+              "threshold" : 0.88,
+              "timeout_sec" : 8,
+              "type" : "find_image_click"
+            },
+            {
+              "remark" : "等待2秒",
+              "seconds" : 2,
+              "type" : "wait"
+            },
+            {
+              "remark" : "关闭领取页面",
+              "type" : "click",
+              "x" : 530,
+              "y" : 1450
+            },
+            {
+              "remark" : "等待2秒",
+              "seconds" : 2,
+              "type" : "wait"
+            },
+            {
+              "remark" : "关闭领取页面（广告版本）",
+              "type" : "click",
+              "x" : 530,
+              "y" : 1450
+            },
+            {
+              "remark" : "等待宝箱刷新",
+              "seconds" : "$refresh_time",
+              "type" : "wait"
+            }
+          ],
+          "threshold" : 0.88,
+          "timeout_sec" : 8,
+          "type" : "if_image"
         }
-    ],
-    "device" : "127.0.0.1:5555",
-    "jitter_px" : 3,
-    "max_runtime_sec" : 0
+      ],
+      "count" : -1,
+      "type" : "loop"
+    }
+  ],
+  "device" : "127.0.0.1:5555",
+  "jitter_px" : 3,
+  "max_runtime_sec" : 0,
+  "variables" : [
+    {
+      "name" : "refresh_time",
+      "note" : "刷新时间",
+      "value" : "10"
+    }
+  ]
 }
