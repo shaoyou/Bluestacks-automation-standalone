@@ -1,0 +1,58 @@
+name: Package Windows Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  package-windows-x64:
+    name: Windows x64 package
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: electron_manager
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: electron_manager/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Electron dependencies
+        run: npm ci
+
+      - name: Build bundled automation runtime
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
+          ./scripts/build_windows_runtime.ps1 -Python python
+
+      - name: Package Windows installer and ZIP
+        run: npm run package:win
+
+      - name: List release files
+        shell: pwsh
+        run: Get-ChildItem -Recurse release | Select-Object FullName, Length
+
+      - name: Upload Windows release
+        uses: actions/upload-artifact@v4
+        with:
+          name: bs-manager-windows-x64-${{ github.run_number }}
+          path: electron_manager/release
+          if-no-files-found: error
+          retention-days: 14

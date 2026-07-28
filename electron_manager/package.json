@@ -1,0 +1,93 @@
+{
+  "name": "bs-manager-cross-platform",
+  "private": true,
+  "version": "1.2.0",
+  "description": "Cross-platform BlueStacks automation manager",
+  "author": "熊熊乐园小助手",
+  "main": "dist-electron/main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
+    "dev:renderer": "vite",
+    "dev:electron": "wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
+    "build": "tsc -p tsconfig.electron.json && vite build",
+    "package": "npm run build && electron-builder",
+    "package:mac": "npm run build && electron-builder --mac",
+    "prepackage:win": "node scripts/verify_windows_runtime.mjs",
+    "package:win": "npm run build && electron-builder --win --x64"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.1",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "local.playground.bsmanager",
+    "productName": "熊熊乐园小助手",
+    "asar": true,
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json",
+      "!node_modules/**/*",
+      "!dist-electron/preload.js",
+      "!dist/mac-*/*",
+      "!dist/win-*/*"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "extraResources": [
+      {
+        "from": "../adb_bot.py",
+        "to": "runtime/adb_bot.py"
+      },
+      {
+        "from": "../record_touch.py",
+        "to": "runtime/record_touch.py"
+      },
+      {
+        "from": "../plans",
+        "to": "runtime/plans"
+      },
+      {
+        "from": "../image_templates",
+        "to": "runtime/image_templates"
+      },
+      {
+        "from": "vendor/windows/x64",
+        "to": "runtime/windows/x64"
+      }
+    ],
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.utilities"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
