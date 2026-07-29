@@ -1,12 +1,17 @@
 param(
   [string]$Python = "python",
-  [string]$PlatformToolsUrl = "https://dl.google.com/android/repository/platform-tools-latest-windows.zip",
+  [string]$PlatformToolsUrl = "",
   [string]$OutputDirectory = "",
   [switch]$Windows7Legacy
 )
 
 $ErrorActionPreference = "Stop"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
+$defaultPlatformToolsUrl = "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
+$windows7PlatformToolsUrl = "https://dl.google.com/android/repository/platform-tools_r34.0.4-windows.zip"
+if (-not $PlatformToolsUrl) {
+  $PlatformToolsUrl = if ($Windows7Legacy) { $windows7PlatformToolsUrl } else { $defaultPlatformToolsUrl }
+}
 $output = if ($OutputDirectory) {
   [System.IO.Path]::GetFullPath($OutputDirectory)
 } else {

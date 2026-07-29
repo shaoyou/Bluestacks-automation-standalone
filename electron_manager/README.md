@@ -43,7 +43,7 @@ installer on Windows CI or a Windows host for the most reliable native
 packaging and code-signing workflow.
 
 `package:win7` produces a separate Windows 7 SP1 x64 legacy installer and ZIP.
-It uses Electron 22.3.27 and a Python 3.8-based backend; the normal package
+It uses Electron 22.3.27, Platform Tools 34.0.4, and a Python 3.8-based backend; the normal package
 continues to use the current Electron runtime for Windows 10/11. Do not
 distribute the legacy package to Windows 10/11 users unless they specifically
 need it: Electron 22 and Python 3.8 are end-of-life and receive no security
