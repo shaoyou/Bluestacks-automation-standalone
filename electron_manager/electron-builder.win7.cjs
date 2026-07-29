@@ -17,4 +17,7 @@ module.exports = {
     output: "release/win7-legacy",
   },
   extraResources: legacyResources,
+  extraMetadata: {
+    main: "dist-electron/legacy-main.cjs",
+  },
 };
