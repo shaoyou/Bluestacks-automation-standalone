@@ -35,7 +35,7 @@ let mainWindow: BrowserWindow | null = null;
 let bootstrapCancelled = false;
 let bootstrapRunning = false;
 const WINDOWS_RUNTIME_VERSION = "1";
-const RUNTIME_RESOURCE_MIGRATION_VERSION = 3;
+const RUNTIME_RESOURCE_MIGRATION_VERSION = 4;
 const RUNTIME_RESOURCE_MIGRATION_FILES = [
   path.join("plans", "choukaka.json"),
   path.join("image_templates", "role_done.png"),
@@ -45,6 +45,18 @@ function bundledRuntimeRoot(): string {
   return isDevelopment
     ? path.resolve(thisDir, "../../")
     : path.join(process.resourcesPath, "runtime");
+}
+
+function bundledPlansRoot(): string {
+  return isDevelopment
+    ? path.resolve(thisDir, "../default_plans")
+    : path.join(bundledRuntimeRoot(), "plans");
+}
+
+function bundledResourcePath(relativePath: string): string {
+  const parts = relativePath.split(path.sep);
+  if (parts[0] === "plans") return path.join(bundledPlansRoot(), ...parts.slice(1));
+  return path.join(bundledRuntimeRoot(), relativePath);
 }
 
 function copyMissingResources(sourceDir: string, targetDir: string) {
@@ -61,7 +73,7 @@ function copyMissingResources(sourceDir: string, targetDir: string) {
   }
 }
 
-function applyRuntimeResourceMigration(sourceRoot: string, targetRoot: string) {
+function applyRuntimeResourceMigration(targetRoot: string) {
   const marker = path.join(targetRoot, ".bundled-resource-migration-version");
   let appliedVersion = 0;
   try {
@@ -72,7 +84,7 @@ function applyRuntimeResourceMigration(sourceRoot: string, targetRoot: string) {
   if (appliedVersion >= RUNTIME_RESOURCE_MIGRATION_VERSION) return;
 
   for (const relativePath of RUNTIME_RESOURCE_MIGRATION_FILES) {
-    const source = path.join(sourceRoot, relativePath);
+    const source = bundledResourcePath(relativePath);
     const target = path.join(targetRoot, relativePath);
     if (!existsSync(source)) continue;
     mkdirSync(path.dirname(target), { recursive: true });
@@ -91,11 +103,11 @@ function runtimeRoot(): string {
     if (existsSync(sourceFile)) copyFileSync(sourceFile, path.join(target, file));
   }
   for (const dir of ["plans", "image_templates"]) {
-    const sourceDir = path.join(source, dir);
+    const sourceDir = dir === "plans" ? bundledPlansRoot() : path.join(source, dir);
     const targetDir = path.join(target, dir);
     copyMissingResources(sourceDir, targetDir);
   }
-  applyRuntimeResourceMigration(source, target);
+  applyRuntimeResourceMigration(target);
   for (const dir of ["diagnostics", "recording_profiles"]) {
     mkdirSync(path.join(target, dir), { recursive: true });
   }

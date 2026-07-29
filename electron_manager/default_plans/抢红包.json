@@ -1,0 +1,67 @@
+{
+  "actions" : [
+    {
+      "actions" : [
+        {
+          "remark" : "点击左下角红包",
+          "type" : "click",
+          "x" : 92,
+          "y" : 1329
+        },
+        {
+          "remark" : "等待1.2秒",
+          "seconds" : 0.31,
+          "type" : "wait"
+        },
+        {
+          "remark" : "点击开",
+          "type" : "click",
+          "x" : 550,
+          "y" : 900
+        },
+        {
+          "remark" : "等待0.1秒",
+          "seconds" : 0.10000000000000001,
+          "type" : "wait"
+        },
+        {
+          "remark" : "点击开",
+          "type" : "click",
+          "x" : 550,
+          "y" : 900
+        },
+        {
+          "remark" : "等待0.1秒",
+          "seconds" : 0.10000000000000001,
+          "type" : "wait"
+        },
+        {
+          "remark" : "点击开",
+          "type" : "click",
+          "x" : 550,
+          "y" : 900
+        },
+        {
+          "remark" : "等待0.1秒",
+          "seconds" : 0.10000000000000001,
+          "type" : "wait"
+        }
+      ],
+      "count" : -1,
+      "type" : "loop"
+    }
+  ],
+  "jitter_px" : 3,
+  "max_runtime_sec" : 0,
+  "screen_size" : {
+    "height" : 1920,
+    "width" : 1080
+  },
+  "variables" : [
+    {
+      "name" : "WAIT_SHORT",
+      "note" : "无",
+      "value" : " 0.5"
+    }
+  ]
+}

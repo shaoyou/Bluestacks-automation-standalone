@@ -1,7 +1,7 @@
 {
   "name": "bs-manager-cross-platform",
   "private": true,
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Cross-platform BlueStacks automation manager",
   "author": "熊熊乐园小助手",
   "main": "dist-electron/main.js",
@@ -60,7 +60,7 @@
         "to": "runtime/record_touch.py"
       },
       {
-        "from": "../plans",
+        "from": "default_plans",
         "to": "runtime/plans"
       },
       {
