@@ -42,17 +42,40 @@ jobs:
           Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
           ./scripts/build_windows_runtime.ps1 -Python python
 
-      - name: Package Windows installer and ZIP
+      - name: Package Windows 10/11 installer and ZIP
         run: npm run package:win
 
-      - name: List release files
-        shell: pwsh
-        run: Get-ChildItem -Recurse release | Select-Object FullName, Length
-
-      - name: Upload Windows release
+      - name: Upload Windows 10/11 release
         uses: actions/upload-artifact@v4
         with:
-          name: bs-manager-windows-x64-${{ github.run_number }}
+          name: bs-manager-windows-10-11-x64-${{ github.run_number }}
           path: electron_manager/release
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Set up legacy Python for Windows 7
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.8"
+          architecture: x64
+
+      - name: Build Windows 7 legacy automation runtime
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
+          ./scripts/build_windows_runtime.ps1 -Python python -Windows7Legacy -OutputDirectory vendor/windows/win7-x64
+
+      - name: Package Windows 7 SP1 x64 legacy installer and ZIP
+        run: npm run package:win7
+
+      - name: List legacy release files
+        shell: pwsh
+        run: Get-ChildItem -Recurse release/win7-legacy | Select-Object FullName, Length
+
+      - name: Upload Windows 7 legacy release
+        uses: actions/upload-artifact@v4
+        with:
+          name: bs-manager-windows-7-x64-legacy-${{ github.run_number }}
+          path: electron_manager/release/win7-legacy
           if-no-files-found: error
           retention-days: 14

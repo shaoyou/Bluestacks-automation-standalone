@@ -1,7 +1,7 @@
 {
   "name": "bs-manager-cross-platform",
   "private": true,
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Cross-platform BlueStacks automation manager",
   "author": "熊熊乐园小助手",
   "main": "dist-electron/main.js",
@@ -14,7 +14,9 @@
     "package": "npm run build && electron-builder",
     "package:mac": "npm run build && electron-builder --mac",
     "prepackage:win": "node scripts/verify_windows_runtime.mjs",
-    "package:win": "npm run build && electron-builder --win --x64"
+    "package:win": "npm run build && electron-builder --win --x64",
+    "prepackage:win7": "node scripts/verify_windows_runtime.mjs vendor/windows/win7-x64",
+    "package:win7": "npm run build && electron-builder --win --x64 --config electron-builder.win7.cjs"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",
