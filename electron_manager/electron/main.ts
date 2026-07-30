@@ -31,11 +31,12 @@ type EnvironmentState = {
 const thisDir = path.dirname(fileURLToPath(import.meta.url));
 const isDevelopment = !app.isPackaged;
 const tasks = new Map<string, ChildProcess>();
+const taskOwners = new Map<string, number>();
 let mainWindow: BrowserWindow | null = null;
 let bootstrapCancelled = false;
 let bootstrapRunning = false;
 const WINDOWS_RUNTIME_VERSION = "1";
-const RUNTIME_RESOURCE_MIGRATION_VERSION = 4;
+const RUNTIME_RESOURCE_MIGRATION_VERSION = 5;
 const RUNTIME_RESOURCE_MIGRATION_FILES = [
   path.join("plans", "choukaka.json"),
   path.join("image_templates", "role_done.png"),
@@ -146,7 +147,9 @@ function environmentState(): EnvironmentState {
 }
 
 function sendEnvironmentEvent(state: EnvironmentState) {
-  mainWindow?.webContents.send("environment:event", state);
+  for (const window of BrowserWindow.getAllWindows()) {
+    window.webContents.send("environment:event", state);
+  }
 }
 
 function allFiles(directory: string, base = directory): string[] {
@@ -293,10 +296,12 @@ function safePlanPath(name: string): string {
 }
 
 function sendTaskEvent(event: Record<string, unknown>) {
-  mainWindow?.webContents.send("task:event", event);
+  for (const window of BrowserWindow.getAllWindows()) {
+    window.webContents.send("task:event", event);
+  }
 }
 
-function spawnTask(request: TaskRequest) {
+function spawnTask(request: TaskRequest, ownerWebContentsId?: number) {
   if (tasks.has(request.id)) throw new Error("Task is already running");
   const settings = getSettings();
   const windowsEnvironment = environmentState();
@@ -318,6 +323,7 @@ function spawnTask(request: TaskRequest) {
     windowsHide: true,
   });
   tasks.set(request.id, task);
+  if (ownerWebContentsId) taskOwners.set(request.id, ownerWebContentsId);
   sendTaskEvent({ id: request.id, type: "started" });
   sendTaskEvent({ id: request.id, type: "log", text: `$ ${executable} ${args.join(" ")}\n` });
 
@@ -328,10 +334,12 @@ function spawnTask(request: TaskRequest) {
   task.stderr?.on("data", onData);
   task.on("error", (error) => {
     tasks.delete(request.id);
+    taskOwners.delete(request.id);
     sendTaskEvent({ id: request.id, type: "log", text: `${error.message}\n` });
   });
   task.on("exit", (code) => {
     tasks.delete(request.id);
+    taskOwners.delete(request.id);
     sendTaskEvent({ id: request.id, type: "exit", code });
   });
 }
@@ -354,8 +362,17 @@ async function runCommand(command: string, args: string[]) {
   });
 }
 
+function loadRenderer(window: BrowserWindow, mode: "main" | "runner", runnerId?: string, initialPlan?: string) {
+  const query = new URLSearchParams({ mode, ...(runnerId ? { runnerId } : {}), ...(initialPlan ? { plan: initialPlan } : {}) });
+  if (isDevelopment) {
+    void window.loadURL(`${process.env.VITE_DEV_SERVER_URL ?? "http://127.0.0.1:5173"}?${query}`);
+  } else {
+    void window.loadFile(path.join(thisDir, "../dist/index.html"), { query: Object.fromEntries(query) });
+  }
+}
+
 function createWindow() {
-  mainWindow = new BrowserWindow({
+  const window = new BrowserWindow({
     minWidth: 1120,
     minHeight: 720,
     width: 1440,
@@ -369,11 +386,51 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
-  if (isDevelopment) {
-    void mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL ?? "http://127.0.0.1:5173");
-  } else {
-    void mainWindow.loadFile(path.join(thisDir, "../dist/index.html"));
-  }
+  mainWindow = window;
+  window.on("closed", () => {
+    if (mainWindow === window) mainWindow = null;
+  });
+  loadRenderer(window, "main");
+}
+
+function createRunWindow(initialPlan?: string) {
+  const runnerId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const window = new BrowserWindow({
+    minWidth: 760,
+    minHeight: 620,
+    width: 940,
+    height: 780,
+    title: "运行窗口",
+    backgroundColor: "#101417",
+    webPreferences: {
+      preload: path.join(thisDir, "preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  window.on("close", (event) => {
+    const ownedTaskIds = [...taskOwners.entries()]
+      .filter(([, ownerId]) => ownerId === window.webContents.id)
+      .map(([taskId]) => taskId);
+    if (ownedTaskIds.length === 0) return;
+    const choice = dialog.showMessageBoxSync(window, {
+      type: "warning",
+      buttons: ["停止并关闭", "取消"],
+      defaultId: 1,
+      cancelId: 1,
+      message: "脚本正在运行",
+      detail: "关闭窗口会停止该窗口正在运行的脚本。",
+    });
+    if (choice !== 0) {
+      event.preventDefault();
+      return;
+    }
+    for (const taskId of ownedTaskIds) {
+      const task = tasks.get(taskId);
+      if (task) process.platform === "win32" ? task.kill() : task.kill("SIGINT");
+    }
+  });
+  loadRenderer(window, "runner", runnerId, initialPlan);
 }
 
 app.whenReady().then(() => {
@@ -519,7 +576,8 @@ app.whenReady().then(() => {
     return `data:image/png;base64,${result.toString("base64")}`;
   });
 
-  ipcMain.handle("task:start", (_, request: TaskRequest) => spawnTask(request));
+  ipcMain.handle("run-window:open", (_, initialPlan?: string) => createRunWindow(initialPlan));
+  ipcMain.handle("task:start", (event, request: TaskRequest) => spawnTask(request, event.sender.id));
   ipcMain.handle("task:stop", (_, id: string) => {
     const task = tasks.get(id);
     if (!task) return;
@@ -530,6 +588,7 @@ app.whenReady().then(() => {
 
 app.on("window-all-closed", () => {
   for (const task of tasks.values()) task.kill();
+  taskOwners.clear();
   if (process.platform !== "darwin") app.quit();
 });
 

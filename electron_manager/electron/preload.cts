@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld("bsManager", {
   devicesList: (adbPath: string) => ipcRenderer.invoke("adb:list-devices", adbPath),
   adbRun: (adbPath: string, args: string[]) => ipcRenderer.invoke("adb:run", adbPath, args),
   screenshot: (adbPath: string, device: string) => ipcRenderer.invoke("adb:screenshot", adbPath, device),
+  openRunWindow: (initialPlan?: string) => ipcRenderer.invoke("run-window:open", initialPlan),
   startTask: (request: unknown) => ipcRenderer.invoke("task:start", request),
   stopTask: (id: string) => ipcRenderer.invoke("task:stop", id),
   onTaskEvent: (listener: (event: unknown) => void) => {

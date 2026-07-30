@@ -29,6 +29,7 @@
                   "remark": "异常兜底：检查放弃按钮",
                   "save_debug": false,
                   "scales": [
+                    0.75,
                     1
                   ],
                   "template": "../image_templates/role_cancel_phone.png",
@@ -61,6 +62,7 @@
               "remark": "识别图标100金币的抽卡按钮",
               "save_debug": false,
               "scales": [
+                0.75,
                 1
               ],
               "template": "../image_templates/role_done.png",
@@ -98,6 +100,7 @@
                     },
                     "threshold": 0.88,
                     "scales": [
+                      0.75,
                       1
                     ],
                     "max_candidates": 1
@@ -112,6 +115,7 @@
                     },
                     "threshold": 0.9,
                     "scales": [
+                      0.75,
                       1
                     ],
                     "max_candidates": 1
@@ -134,6 +138,7 @@
                       "max_candidates": 1,
                       "save_debug": false,
                       "scales": [
+                        0.75,
                         1
                       ],
                       "then_actions": [
@@ -208,6 +213,7 @@
               "remark": "识别最大倍数并点击",
               "save_debug": false,
               "scales": [
+                0.75,
                 1
               ],
               "template": "../image_templates/role_count_max.png",
@@ -237,6 +243,7 @@
               "remark": "识别最大抽卡按钮",
               "save_debug": false,
               "scales": [
+                0.75,
                 1
               ],
               "then_actions": [
@@ -316,6 +323,7 @@
                     },
                     "threshold": 0.88,
                     "scales": [
+                      0.75,
                       1
                     ],
                     "max_candidates": 1
@@ -330,6 +338,7 @@
                     },
                     "threshold": 0.9,
                     "scales": [
+                      0.75,
                       1
                     ],
                     "max_candidates": 1
@@ -352,6 +361,7 @@
                       "max_candidates": 1,
                       "save_debug": false,
                       "scales": [
+                        0.75,
                         1
                       ],
                       "then_actions": [
@@ -388,6 +398,7 @@
               "remark": "识别图标100金币的抽卡按钮",
               "save_debug": false,
               "scales": [
+                0.75,
                 1
               ],
               "template": "../image_templates/role_done.png",
@@ -415,6 +426,7 @@
                     },
                     "threshold": 0.88,
                     "scales": [
+                      0.75,
                       1
                     ],
                     "max_candidates": 1
@@ -429,6 +441,7 @@
                     },
                     "threshold": 0.9,
                     "scales": [
+                      0.75,
                       1
                     ],
                     "max_candidates": 1
@@ -451,6 +464,7 @@
                       "max_candidates": 1,
                       "save_debug": false,
                       "scales": [
+                        0.75,
                         1
                       ],
                       "then_actions": [

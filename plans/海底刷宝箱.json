@@ -99,8 +99,9 @@
   "variables" : [
     {
       "name" : "refresh_time",
-      "note" : "刷新时间",
-      "value" : "10"
+      "note" : "刷新间隔（秒）",
+      "value" : "14"
     }
   ]
 }
+

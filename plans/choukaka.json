@@ -6,7 +6,7 @@
           "else_actions": [
             {
               "remark": "未识别到目标红卡",
-              "seconds": 0.5,
+              "seconds": 0.2,
               "type": "wait"
             },
             {
@@ -17,7 +17,7 @@
                   "type": "wait"
                 },
                 {
-                  "interval_sec": 0.6,
+                  "interval_sec": 0.3,
                   "max_attempts": 0,
                   "max_candidates": 1,
                   "region": {
@@ -29,9 +29,10 @@
                   "remark": "异常兜底：检查放弃按钮",
                   "save_debug": false,
                   "scales": [
+                    0.75,
                     1
                   ],
-                  "template": "../image_templates/role_cancel.png",
+                  "template": "../image_templates/role_cancel_phone.png",
                   "then_actions": [
                     {
                       "remark": "兜底点击放弃按钮",
@@ -44,12 +45,12 @@
                     }
                   ],
                   "threshold": 0.88,
-                  "timeout_sec": 5,
+                  "timeout_sec": 2,
                   "type": "if_image",
                   "else_actions": []
                 }
               ],
-              "interval_sec": 0.6,
+              "interval_sec": 0.3,
               "max_attempts": 2,
               "max_candidates": 1,
               "region": {
@@ -61,9 +62,10 @@
               "remark": "识别图标100金币的抽卡按钮",
               "save_debug": false,
               "scales": [
+                0.75,
                 1
               ],
-              "template": "../image_templates/role_done_min.png",
+              "template": "../image_templates/role_done.png",
               "then_actions": [
                 {
                   "type": "record_draw_event",
@@ -77,108 +79,84 @@
                 },
                 {
                   "remark": "等待抽卡动画结束",
-                  "seconds": 2,
+                  "seconds": 1.2,
                   "type": "wait"
                 },
                 {
-                  "interval_sec": 0.6,
-                  "max_attempts": 0,
-                  "max_candidates": 1,
-                  "region": {
-                    "height": 72,
-                    "width": 148,
-                    "x": 465,
-                    "y": 1542
-                  },
-                  "remark": "开始识别放弃按钮（延长等待）",
-                  "save_debug": false,
-                  "scales": [
-                    1
-                  ],
-                  "template": "../image_templates/role_cancel.png",
-                  "then_actions": [
-                    {
-                      "remark": "点击放弃按钮",
-                      "type": "click_match"
-                    },
-                    {
-                      "remark": "本次抽卡结束，等待动画结束后开启下一轮",
-                      "seconds": 2,
-                      "type": "wait"
-                    }
-                  ],
+                  "type": "resolve_draw_state",
+                  "remark": "抽卡后判断：下一轮按钮或放弃按钮",
                   "threshold": 0.88,
-                  "timeout_sec": 5,
-                  "type": "if_image",
-                  "else_actions": [
-                    {
-                      "remark": "未识别到放弃按钮",
-                      "seconds": 0.5,
-                      "type": "wait"
+                  "timeout_sec": 2.5,
+                  "interval_sec": 0.2,
+                  "settle_wait_sec": 2,
+                  "cancel_settle_wait_sec": 2,
+                  "next": {
+                      "template": "../image_templates/role_done.png",
+                    "region": {
+                      "height": 149,
+                      "width": 386,
+                      "x": 337,
+                      "y": 1380
                     },
+                    "threshold": 0.88,
+                    "scales": [
+                      0.75,
+                      1
+                    ],
+                    "max_candidates": 1
+                  },
+                  "cancel": {
+                    "template": "../image_templates/role_cancel_phone.png",
+                    "region": {
+                      "height": 72,
+                      "width": 148,
+                      "x": 465,
+                      "y": 1542
+                    },
+                    "threshold": 0.9,
+                    "scales": [
+                      0.75,
+                      1
+                    ],
+                    "max_candidates": 1
+                  },
+                  "fallback_actions": [
                     {
-                      "interval_sec": 0.6,
+                      "type": "if_image",
+                      "remark": "兜底：最后检查放弃按钮",
+                      "template": "../image_templates/role_cancel_phone.png",
+                      "region": {
+                        "height": 72,
+                        "width": 148,
+                        "x": 465,
+                        "y": 1542
+                      },
+                      "threshold": 0.88,
+                      "timeout_sec": 0.8,
+                      "interval_sec": 0.2,
                       "max_attempts": 2,
                       "max_candidates": 1,
-                      "region": {
-                        "height": 149,
-                        "width": 386,
-                        "x": 337,
-                        "y": 1380
-                      },
-                      "remark": "识别图标100金币的抽卡按钮",
                       "save_debug": false,
                       "scales": [
+                        0.75,
                         1
                       ],
-                      "template": "../image_templates/role_done_min.png",
                       "then_actions": [
                         {
-                          "remark": "本次抽卡结束，等待动画结束后开启下一轮",
-                          "seconds": 2,
-                          "type": "wait"
-                        }
-                      ],
-                      "threshold": 0.88,
-                      "timeout_sec": 3,
-                      "type": "if_image",
-                      "else_actions": [
-                        {
-                          "remark": "未识别到100金币抽卡按钮",
-                          "seconds": 0.5,
-                          "type": "wait"
+                          "type": "click_match",
+                          "remark": "兜底点击放弃按钮"
                         },
                         {
-                          "interval_sec": 0.6,
-                          "max_attempts": 0,
-                          "max_candidates": 1,
-                          "region": {
-                            "height": 72,
-                            "width": 148,
-                            "x": 465,
-                            "y": 1542
-                          },
-                          "remark": "异常兜底：检查放弃按钮",
-                          "save_debug": false,
-                          "scales": [
-                            1
-                          ],
-                          "template": "../image_templates/role_cancel.png",
-                          "then_actions": [
-                            {
-                              "remark": "兜底点击放弃按钮",
-                              "type": "click_match"
-                            },
-                            {
-                              "remark": "兜底重置后等待动画结束",
-                              "seconds": 2,
-                              "type": "wait"
-                            }
-                          ],
-                          "threshold": 0.88,
-                          "timeout_sec": 5,
-                          "type": "if_image",
-                          "else_actions": []
+                          "type": "wait",
+                          "seconds": 2,
+                          "remark": "本次抽卡结束，等待动画结束后开启下一轮"
+                        }
+                      ],
+                      "else_actions": [
+                        {
+                          "type": "wait",
+                          "seconds": 0.2,
+                          "remark": "两种抽卡后状态都未识别到，短暂等待"
                         }
                       ]
                     }
@@ -190,39 +168,40 @@
               "type": "if_image"
             }
           ],
-          "interval_sec": 0.6,
-          "max_attempts": 1,
-          "max_candidates": 1,
-          "region": {
-            "height": 657,
-            "width": 972,
-            "x": 55,
-            "y": 549
-          },
-          "remark": "判断是否出现目标红卡",
-          "save_debug": false,
-          "scales": [
-            1
-          ],
-          "templates": [
-            "../image_templates/role_kakaxi.png",
-            "../image_templates/role_libai.png",
-            "../image_templates/role_longsan.png",
-            "../image_templates/role_shengqishi.png",
-            "../image_templates/role_woailuo.png",
-            "../image_templates/role_bosiwangzi.png",
-            "../image_templates/role_lujuren.png",
-            "../image_templates/role_zhizhu.png"
-          ],
-          "then_actions": [
+          "base_ratio_threshold": 0.22,
+          "beam_ratio_threshold": 0.2,
+          "confirm_attempts": 2,
+          "confirm_interval_sec": 0.15,
+          "require_card": true,
+          "regions": [
             {
-              "type": "record_draw_event",
-              "event": "target_hit",
-              "draw_type": "target_red_card",
-              "remark": "记录命中目标红卡"
+              "height": 760,
+              "name": "left",
+              "width": 250,
+              "x": 110,
+              "y": 300
             },
             {
-              "interval_sec": 0.6,
+              "height": 860,
+              "name": "center",
+              "width": 300,
+              "x": 390,
+              "y": 220
+            },
+            {
+              "height": 760,
+              "name": "right",
+              "width": 280,
+              "x": 720,
+              "y": 300
+            }
+          ],
+          "remark": "判断是否出现目标红卡",
+          "save_debug": false,
+          "type": "if_red_light",
+          "then_actions": [
+            {
+              "interval_sec": 0.3,
               "max_attempts": 2,
               "max_candidates": 1,
               "region": {
@@ -234,10 +213,11 @@
               "remark": "识别最大倍数并点击",
               "save_debug": false,
               "scales": [
+                0.75,
                 1
               ],
               "template": "../image_templates/role_count_max.png",
-              "threshold": 0.88,
+              "threshold": 0.7,
               "timeout_sec": 3,
               "type": "find_image_click"
             },
@@ -248,13 +228,10 @@
             },
             {
               "type": "if_image",
-              "templates": [
-                "../image_templates/role_done_max.png",
-                "../image_templates/role_done_300.png"
-              ],
+              "template": "../image_templates/role_done.png",
               "threshold": 0.88,
               "timeout_sec": 3,
-              "interval_sec": 0.6,
+              "interval_sec": 0.3,
               "max_attempts": 2,
               "max_candidates": 1,
               "region": {
@@ -266,6 +243,7 @@
               "remark": "识别最大抽卡按钮",
               "save_debug": false,
               "scales": [
+                0.75,
                 1
               ],
               "then_actions": [
@@ -280,6 +258,7 @@
                   "pair_key": "draw_result",
                   "stage": "before",
                   "label": "max",
+                  "reuse_last_red_light_screenshot": true,
                   "remark": "保存抽卡前截图"
                 },
                 {
@@ -302,84 +281,112 @@
               "remark": "保存抽卡后截图"
             },
             {
+              "type": "resolve_red_draw_result",
+              "role_min_margin": 0.04,
+              "role_thresholds": {
+                "role_shengqishi.png": 0.78
+              },
+              "role_notes": {
+                "role_bosiwangzi.png": "波斯王子",
+                "role_kakaxi.png": "卡卡西",
+                "role_libai.png": "李白",
+                "role_longsan.png": "龙三",
+                "role_lujuren.png": "绿巨人",
+                "role_shengqishi.png": "圣骑士",
+                "role_woailuo.png": "我爱罗",
+                "role_zhizhu.png": "蜘蛛"
+              },
+              "remark": "后台确认本次红卡是否真实抽中"
+            },
+            {
               "else_actions": [
                 {
                   "remark": "未识别到100金币抽卡按钮",
-                  "seconds": 0.5,
+                  "seconds": 0.2,
                   "type": "wait"
                 },
                 {
-                  "else_actions": [
-                    {
-                      "remark": "未识别到图标后的分支",
-                      "seconds": 0.5,
-                      "type": "wait"
+                  "type": "resolve_draw_state",
+                  "remark": "抽卡后判断：下一轮按钮或放弃按钮",
+                  "threshold": 0.88,
+                  "timeout_sec": 2.5,
+                  "interval_sec": 0.2,
+                  "settle_wait_sec": 2,
+                  "cancel_settle_wait_sec": 2,
+                  "next": {
+                      "template": "../image_templates/role_done.png",
+                    "region": {
+                      "height": 149,
+                      "width": 386,
+                      "x": 337,
+                      "y": 1380
                     },
+                    "threshold": 0.88,
+                    "scales": [
+                      0.75,
+                      1
+                    ],
+                    "max_candidates": 1
+                  },
+                  "cancel": {
+                    "template": "../image_templates/role_cancel_phone.png",
+                    "region": {
+                      "height": 72,
+                      "width": 148,
+                      "x": 465,
+                      "y": 1542
+                    },
+                    "threshold": 0.9,
+                    "scales": [
+                      0.75,
+                      1
+                    ],
+                    "max_candidates": 1
+                  },
+                  "fallback_actions": [
                     {
-                      "interval_sec": 0.6,
-                      "max_attempts": 0,
-                      "max_candidates": 1,
+                      "type": "if_image",
+                      "remark": "兜底：最后检查放弃按钮",
+                      "template": "../image_templates/role_cancel_phone.png",
                       "region": {
                         "height": 72,
                         "width": 148,
                         "x": 465,
                         "y": 1542
                       },
-                      "remark": "异常兜底：检查放弃按钮",
+                      "threshold": 0.88,
+                      "timeout_sec": 0.8,
+                      "interval_sec": 0.2,
+                      "max_attempts": 2,
+                      "max_candidates": 1,
                       "save_debug": false,
                       "scales": [
+                        0.75,
                         1
                       ],
-                      "template": "../image_templates/role_cancel.png",
                       "then_actions": [
                         {
-                          "remark": "兜底点击放弃按钮",
-                          "type": "click_match"
+                          "type": "click_match",
+                          "remark": "兜底点击放弃按钮"
                         },
                         {
-                          "remark": "兜底重置后等待动画结束",
+                          "type": "wait",
                           "seconds": 2,
-                          "type": "wait"
+                          "remark": "本次抽卡结束，等待动画结束后开启下一轮"
                         }
                       ],
-                      "threshold": 0.88,
-                      "timeout_sec": 5,
-                      "type": "if_image",
-                      "else_actions": []
+                      "else_actions": [
+                        {
+                          "type": "wait",
+                          "seconds": 0.2,
+                          "remark": "两种抽卡后状态都未识别到，短暂等待"
+                        }
+                      ]
                     }
-                  ],
-                  "interval_sec": 0.6,
-                  "max_attempts": 0,
-                  "max_candidates": 1,
-                  "region": {
-                    "height": 72,
-                    "width": 148,
-                    "x": 465,
-                    "y": 1542
-                  },
-                  "remark": "开始识别放弃按钮（延长等待）",
-                  "save_debug": false,
-                  "scales": [
-                    1
-                  ],
-                  "template": "../image_templates/role_cancel.png",
-                  "then_actions": [
-                    {
-                      "remark": "点击放弃按钮",
-                      "type": "click_match"
-                    },
-                    {
-                      "remark": "本次抽卡结束，等待动画结束后开启下一轮",
-                      "seconds": 2,
-                      "type": "wait"
-                    }
-                  ],
-                  "threshold": 0.88,
-                  "timeout_sec": 5,
-                  "type": "if_image"
+                  ]
                 }
               ],
-              "interval_sec": 0.6,
+              "interval_sec": 0.3,
               "max_attempts": 2,
               "max_candidates": 1,
               "region": {
@@ -391,9 +398,10 @@
               "remark": "识别图标100金币的抽卡按钮",
               "save_debug": false,
               "scales": [
+                0.75,
                 1
               ],
-              "template": "../image_templates/role_done_min.png",
+              "template": "../image_templates/role_done.png",
               "then_actions": [
                 {
                   "remark": "本次抽卡结束，等待动画结束后开启下一轮",
@@ -401,104 +409,80 @@
                   "type": "wait"
                 },
                 {
-                  "interval_sec": 0.6,
-                  "max_attempts": 2,
-                  "max_candidates": 1,
-                  "region": {
-                    "height": 72,
-                    "width": 148,
-                    "x": 465,
-                    "y": 1542
-                  },
-                  "remark": "开始识别放弃按钮",
-                  "save_debug": false,
-                  "scales": [
-                    1
-                  ],
-                  "template": "../image_templates/role_cancel.png",
-                  "then_actions": [
-                    {
-                      "remark": "点击放弃按钮",
-                      "type": "click_match"
-                    },
-                    {
-                      "remark": "本次抽卡结束，等待动画结束后开启下一轮",
-                      "seconds": 2,
-                      "type": "wait"
-                    }
-                  ],
+                  "type": "resolve_draw_state",
+                  "remark": "抽卡后判断：下一轮按钮或放弃按钮",
                   "threshold": 0.88,
-                  "timeout_sec": 2,
-                  "type": "if_image",
-                  "else_actions": [
-                    {
-                      "remark": "未识别到放弃按钮",
-                      "seconds": 0.5,
-                      "type": "wait"
+                  "timeout_sec": 2.5,
+                  "interval_sec": 0.2,
+                  "settle_wait_sec": 2,
+                  "cancel_settle_wait_sec": 2,
+                  "next": {
+                      "template": "../image_templates/role_done.png",
+                    "region": {
+                      "height": 149,
+                      "width": 386,
+                      "x": 337,
+                      "y": 1380
                     },
+                    "threshold": 0.88,
+                    "scales": [
+                      0.75,
+                      1
+                    ],
+                    "max_candidates": 1
+                  },
+                  "cancel": {
+                    "template": "../image_templates/role_cancel_phone.png",
+                    "region": {
+                      "height": 72,
+                      "width": 148,
+                      "x": 465,
+                      "y": 1542
+                    },
+                    "threshold": 0.9,
+                    "scales": [
+                      0.75,
+                      1
+                    ],
+                    "max_candidates": 1
+                  },
+                  "fallback_actions": [
                     {
-                      "interval_sec": 0.6,
+                      "type": "if_image",
+                      "remark": "兜底：最后检查放弃按钮",
+                      "template": "../image_templates/role_cancel_phone.png",
+                      "region": {
+                        "height": 72,
+                        "width": 148,
+                        "x": 465,
+                        "y": 1542
+                      },
+                      "threshold": 0.88,
+                      "timeout_sec": 0.8,
+                      "interval_sec": 0.2,
                       "max_attempts": 2,
                       "max_candidates": 1,
-                      "region": {
-                        "height": 149,
-                        "width": 386,
-                        "x": 337,
-                        "y": 1380
-                      },
-                      "remark": "识别图标100金币的抽卡按钮",
                       "save_debug": false,
                       "scales": [
+                        0.75,
                         1
                       ],
-                      "template": "../image_templates/role_done_min.png",
                       "then_actions": [
                         {
-                          "remark": "本次抽卡结束，等待动画结束后开启下一轮",
-                          "seconds": 2,
-                          "type": "wait"
-                        }
-                      ],
-                      "threshold": 0.88,
-                      "timeout_sec": 3,
-                      "type": "if_image",
-                      "else_actions": [
-                        {
-                          "remark": "未识别到100金币抽卡按钮",
-                          "seconds": 0.5,
-                          "type": "wait"
+                          "type": "click_match",
+                          "remark": "兜底点击放弃按钮"
                         },
                         {
-                          "interval_sec": 0.6,
-                          "max_attempts": 0,
-                          "max_candidates": 1,
-                          "region": {
-                            "height": 72,
-                            "width": 148,
-                            "x": 465,
-                            "y": 1542
-                          },
-                          "remark": "异常兜底：检查放弃按钮",
-                          "save_debug": false,
-                          "scales": [
-                            1
-                          ],
-                          "template": "../image_templates/role_cancel.png",
-                          "then_actions": [
-                            {
-                              "remark": "兜底点击放弃按钮",
-                              "type": "click_match"
-                            },
-                            {
-                              "remark": "兜底重置后等待动画结束",
-                              "seconds": 2,
-                              "type": "wait"
-                            }
-                          ],
-                          "threshold": 0.88,
-                          "timeout_sec": 5,
-                          "type": "if_image",
-                          "else_actions": []
+                          "type": "wait",
+                          "seconds": 2,
+                          "remark": "本次抽卡结束，等待动画结束后开启下一轮"
+                        }
+                      ],
+                      "else_actions": [
+                        {
+                          "type": "wait",
+                          "seconds": 0.2,
+                          "remark": "两种抽卡后状态都未识别到，短暂等待"
                         }
                       ]
                     }
@@ -509,10 +493,7 @@
               "timeout_sec": 3,
               "type": "if_image"
             }
-          ],
-          "threshold": 0.92,
-          "timeout_sec": 8,
-          "type": "if_image"
+          ]
         }
       ],
       "count": -1,

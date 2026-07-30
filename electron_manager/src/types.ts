@@ -54,6 +54,7 @@ declare global {
       devicesList(adbPath: string): Promise<string[]>;
       adbRun(adbPath: string, args: string[]): Promise<{ code: number; text: string }>;
       screenshot(adbPath: string, device: string): Promise<string>;
+      openRunWindow(initialPlan?: string): Promise<void>;
       startTask(request: TaskRequest): Promise<void>;
       stopTask(id: string): Promise<void>;
       onTaskEvent(listener: (event: TaskEvent) => void): () => void;

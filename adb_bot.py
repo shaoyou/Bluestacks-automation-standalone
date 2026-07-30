@@ -10,6 +10,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +22,10 @@ from PIL import Image, ImageDraw, ImageFont
 WM_SIZE_RE = re.compile(r"(\d+)x(\d+)")
 ENV_REF_RE = re.compile(r"\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 LAST_IF_IMAGE_MATCH_KEY = "last_if_image_match"
+LAST_IF_IMAGE_SCREENSHOT_KEY = "last_if_image_screenshot"
+LAST_RED_LIGHT_SCREENSHOT_KEY = "last_red_light_screenshot"
+LAST_SCREENSHOT_PAIR_KEY = "_latest_screenshot_pair"
+BACKGROUND_TASKS_KEY = "_background_tasks"
 
 
 class BotError(RuntimeError):
@@ -42,6 +47,7 @@ class RunContext:
     plan_dir: Path
     runtime_values: Dict[str, Any] = field(default_factory=dict)
     motionevent_supported: Optional[bool] = None
+    stats_lock: threading.RLock = field(default_factory=threading.RLock)
 
 
 @dataclass(frozen=True)
@@ -82,12 +88,82 @@ SCREENSHOT_INDEX_FIELDS = [
     "after_label",
     "after_path",
     "after_saved_at",
+    "composite_path",
+    "composite_saved_at",
 ]
 DRAW_STATS_COUNTS_KEY = "_draw_stats_counts"
 DEFAULT_DRAW_STATS_DIR = Path(__file__).resolve().parent / "diagnostics" / "draw_stats"
 DRAW_STATS_EVENTS_JSONL_SUFFIX = "_events.jsonl"
 DRAW_STATS_SUMMARY_SUFFIX = "_summary.json"
 DRAW_STATS_LATEST_SUMMARY = "latest_summary.json"
+DEFAULT_RED_LIGHT_DEBUG_DIR = Path(__file__).resolve().parent / "diagnostics" / "red_light_debug"
+DEFAULT_RED_LIGHT_REGIONS = [
+    {"name": "left", "x": 110, "y": 300, "width": 250, "height": 760},
+    {"name": "center", "x": 390, "y": 220, "width": 300, "height": 860},
+    {"name": "right", "x": 720, "y": 300, "width": 280, "height": 760},
+]
+DEFAULT_RED_LIGHT_SLOTS = [
+    {
+        "name": "left",
+        "x": 105,
+        "y": 420,
+        "width": 250,
+        "height": 655,
+        "card": {"x": 118, "y": 590, "width": 95, "height": 115},
+        "base": {"x": 105, "y": 930, "width": 250, "height": 145},
+        "beam": {"x": 120, "y": 420, "width": 210, "height": 520},
+    },
+    {
+        "name": "center",
+        "x": 405,
+        "y": 360,
+        "width": 270,
+        "height": 755,
+        "card": {"x": 420, "y": 660, "width": 95, "height": 115},
+        "base": {"x": 405, "y": 970, "width": 270, "height": 145},
+        "beam": {"x": 425, "y": 360, "width": 230, "height": 620},
+    },
+    {
+        "name": "right",
+        "x": 720,
+        "y": 420,
+        "width": 270,
+        "height": 655,
+        "card": {"x": 735, "y": 590, "width": 95, "height": 115},
+        "base": {"x": 720, "y": 930, "width": 270, "height": 145},
+        "beam": {"x": 740, "y": 420, "width": 220, "height": 520},
+    },
+]
+DEFAULT_RED_ROLE_TEMPLATES = [
+    "../image_templates/role_bosiwangzi.png",
+    "../image_templates/role_kakaxi.png",
+    "../image_templates/role_libai.png",
+    "../image_templates/role_longsan.png",
+    "../image_templates/role_lujuren.png",
+    "../image_templates/role_shengqishi.png",
+    "../image_templates/role_woailuo.png",
+    "../image_templates/role_zhizhu.png",
+]
+DEFAULT_RED_ROLE_NOTES = {
+    "role_bosiwangzi.png": "波斯王子",
+    "role_kakaxi.png": "卡卡西",
+    "role_libai.png": "李白",
+    "role_longsan.png": "龙三",
+    "role_lujuren.png": "绿巨人",
+    "role_shengqishi.png": "圣骑士",
+    "role_woailuo.png": "我爱罗",
+    "role_zhizhu.png": "蜘蛛",
+}
+DEFAULT_RED_ROLE_SEARCH_REGIONS = {
+    "left": {"x": 65, "y": 780, "width": 315, "height": 365},
+    "center": {"x": 385, "y": 780, "width": 310, "height": 365},
+    "right": {"x": 705, "y": 780, "width": 315, "height": 365},
+}
+DEFAULT_GREEN_CHECK_REGIONS = {
+    "left": {"x": 80, "y": 760, "width": 300, "height": 380},
+    "center": {"x": 390, "y": 780, "width": 320, "height": 380},
+    "right": {"x": 700, "y": 760, "width": 330, "height": 380},
+}
 
 
 def log(message: str) -> None:
@@ -130,13 +206,28 @@ def resolve_action_template_paths(
             if not raw_path:
                 raise BotError(f"{action_name} templates[{index}] requires non-empty path")
             template_paths.append(resolve_action_file_path(ctx, raw_path))
-        return template_paths
+    else:
+        raw_template = str(action.get("template") or action.get("image") or action.get("path") or "").strip()
+        if not raw_template:
+            raise BotError(f"{action_name} requires non-empty 'template'")
+        template_paths.append(resolve_action_file_path(ctx, raw_template))
 
-    raw_template = str(action.get("template") or action.get("image") or action.get("path") or "").strip()
-    if not raw_template:
-        raise BotError(f"{action_name} requires non-empty 'template'")
-    template_paths.append(resolve_action_file_path(ctx, raw_template))
+    # The original cancel template is text-only and may match other labels. When
+    # available, also try the contextual native screenshot template.
+    if any(path.name == "role_cancel.png" for path in template_paths):
+        contextual_path = resolve_action_file_path(ctx, "../image_templates/role_cancel_phone.png")
+        if contextual_path.exists() and contextual_path not in template_paths:
+            template_paths.insert(0, contextual_path)
     return template_paths
+
+
+def image_search_action(action: Dict[str, Any], template_paths: List[Path]) -> Dict[str, Any]:
+    """Add a wider default region for the contextual cancel-button lookup."""
+    if not any(path.name == "role_cancel.png" for path in template_paths):
+        return action
+    search_action = dict(action)
+    search_action.setdefault("search_padding_ratio", 1.3)
+    return search_action
 
 
 def image_action_target_summary(template_paths: List[Path]) -> str:
@@ -155,6 +246,7 @@ def current_if_image_match(ctx: RunContext) -> Optional[Dict[str, Any]]:
 
 def clear_if_image_match(ctx: RunContext) -> None:
     ctx.runtime_values.pop(LAST_IF_IMAGE_MATCH_KEY, None)
+    ctx.runtime_values.pop(LAST_IF_IMAGE_SCREENSHOT_KEY, None)
 
 
 def _env_name(match: re.Match[str]) -> str:
@@ -235,6 +327,32 @@ def run_cmd(cmd: List[str], check: bool = True) -> subprocess.CompletedProcess[s
     return subprocess.run(cmd, text=True, capture_output=True, check=check)
 
 
+def adb_output_is_transient(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        token in lowered
+        for token in [
+            "device offline",
+            "device not found",
+            "more than one device",
+            "closed",
+            "cannot connect",
+            "failed to check server version",
+            "adb server didn't ack",
+        ]
+    )
+
+
+def recover_adb_server(adb_path: str, device: Optional[str] = None) -> None:
+    if device:
+        run_cmd([adb_path, "connect", device], check=False)
+    run_cmd([adb_path, "kill-server"], check=False)
+    run_cmd([adb_path, "start-server"], check=False)
+    if device:
+        run_cmd([adb_path, "connect", device], check=False)
+    time.sleep(0.6)
+
+
 def build_adb_cmd(ctx: RunContext, extra: List[str]) -> List[str]:
     cmd = [ctx.adb_path]
     if ctx.device:
@@ -256,16 +374,7 @@ def adb_shell(ctx: RunContext, shell_args: List[str]) -> None:
         stderr = (exc.stderr or "").strip()
         stdout = (exc.stdout or "").strip()
         text = f"{stdout}\n{stderr}".strip().lower()
-        transient = any(
-            token in text
-            for token in [
-                "device offline",
-                "device not found",
-                "more than one device",
-                "closed",
-                "cannot connect",
-            ]
-        )
+        transient = adb_output_is_transient(text)
         if transient and ctx.device:
             log("ADB shell failed, try reconnect once ...")
             run_cmd([ctx.adb_path, "connect", ctx.device], check=False)
@@ -276,10 +385,7 @@ def adb_shell(ctx: RunContext, shell_args: List[str]) -> None:
                 retry_stderr = (retry_exc.stderr or "").strip()
                 retry_stdout = (retry_exc.stdout or "").strip()
                 retry_text = f"{retry_stdout}\n{retry_stderr}".strip().lower()
-                retry_transient = any(
-                    token in retry_text
-                    for token in ["device offline", "device not found", "closed", "cannot connect"]
-                )
+                retry_transient = adb_output_is_transient(retry_text)
                 if retry_transient:
                     candidates = [d for d in _list_connected_devices(ctx.adb_path) if d != ctx.device]
                     for candidate in candidates:
@@ -326,6 +432,52 @@ def map_input_point(ctx: RunContext, x: int, y: int) -> Tuple[int, int]:
     mapped_x = max(0, min(ctx.dst_screen_w - 1, mapped_x))
     mapped_y = max(0, min(ctx.dst_screen_h - 1, mapped_y))
     return mapped_x, mapped_y
+
+
+def image_scale_factors(ctx: RunContext, image_size: Tuple[int, int]) -> Tuple[float, float]:
+    width, height = image_size
+    if ctx.src_screen_w <= 0 or ctx.src_screen_h <= 0:
+        return 1.0, 1.0
+    return width / float(ctx.src_screen_w), height / float(ctx.src_screen_h)
+
+
+def map_logical_region(
+    ctx: RunContext,
+    raw_region: Dict[str, Any],
+    image_size: Tuple[int, int],
+    *,
+    name: str,
+    default_width: Optional[int] = None,
+    default_height: Optional[int] = None,
+) -> Dict[str, int]:
+    image_w, image_h = image_size
+    raw_x = int(raw_region.get("x", 0))
+    raw_y = int(raw_region.get("y", 0))
+    raw_w = int(raw_region.get("width", default_width if default_width is not None else 0))
+    raw_h = int(raw_region.get("height", default_height if default_height is not None else 0))
+    if raw_w <= 0 or raw_h <= 0:
+        raise BotError(f"{name} requires positive width and height")
+
+    scale_x, scale_y = image_scale_factors(ctx, image_size)
+    epsilon = 1e-6
+    left = max(0, min(image_w - 1, int(np.floor(raw_x * scale_x + epsilon))))
+    top = max(0, min(image_h - 1, int(np.floor(raw_y * scale_y + epsilon))))
+    right = max(left + 1, min(image_w, int(np.ceil((raw_x + raw_w) * scale_x - epsilon))))
+    bottom = max(top + 1, min(image_h, int(np.ceil((raw_y + raw_h) * scale_y - epsilon))))
+    return {"x": left, "y": top, "width": right - left, "height": bottom - top}
+
+
+def clamp_device_region(raw_region: Dict[str, Any], image_size: Tuple[int, int], *, name: str) -> Dict[str, int]:
+    image_w, image_h = image_size
+    x = max(0, min(image_w - 1, int(raw_region.get("x", 0))))
+    y = max(0, min(image_h - 1, int(raw_region.get("y", 0))))
+    width = int(raw_region.get("width", 0))
+    height = int(raw_region.get("height", 0))
+    if width <= 0 or height <= 0:
+        raise BotError(f"{name} requires positive width and height")
+    width = max(1, min(width, image_w - x))
+    height = max(1, min(height, image_h - y))
+    return {"x": x, "y": y, "width": width, "height": height}
 
 
 def supports_motionevent(ctx: RunContext) -> bool:
@@ -454,7 +606,6 @@ def do_save_screenshot(ctx: RunContext, action: Dict[str, Any]) -> None:
     pair_key = sanitize_file_component(str(action.get("pair_key", "")).strip())
     stage = str(action.get("stage", "single")).strip().lower() or "single"
     label = sanitize_file_component(str(action.get("label", action.get("remark", "capture"))).strip())
-    image = capture_device_screenshot(ctx)
     session_id = screenshot_session_id(ctx)
 
     if pair_key:
@@ -499,6 +650,21 @@ def do_save_screenshot(ctx: RunContext, action: Dict[str, Any]) -> None:
         timestamp = time.strftime("%Y%m%d-%H%M%S")
         filename = f"{session_id}_{timestamp}_{label or 'capture'}"
 
+    image_source = "adb screencap"
+    image = None
+    if stage == "before" and bool_value(action.get("reuse_last_red_light_screenshot"), default=False):
+        cached = ctx.runtime_values.get(LAST_RED_LIGHT_SCREENSHOT_KEY)
+        if isinstance(cached, Image.Image):
+            image = cached.copy()
+            image_source = "confirmed red light screenshot"
+    if image is None and stage == "before" and bool_value(action.get("reuse_last_if_image_screenshot", True), default=True):
+        cached = ctx.runtime_values.get(LAST_IF_IMAGE_SCREENSHOT_KEY)
+        if isinstance(cached, Image.Image):
+            image = cached.copy()
+            image_source = "latest if_image screenshot"
+    if image is None:
+        image = capture_device_screenshot(ctx)
+
     destination = output_dir / f"{filename}.png"
     image.save(destination)
     saved_at = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -514,7 +680,14 @@ def do_save_screenshot(ctx: RunContext, action: Dict[str, Any]) -> None:
             record["after_label"] = label
             record["after_path"] = str(destination)
             record["after_saved_at"] = saved_at
+            if bool_value(action.get("save_composite", True), default=True):
+                composite = save_screenshot_pair_composite(output_dir, record)
+                if composite is not None:
+                    record["composite_path"] = str(composite)
+                    record["composite_saved_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                    log(with_action_remark(f"Saved screenshot pair composite: {composite}", action))
             append_screenshot_index(output_dir, record)
+            ctx.runtime_values[LAST_SCREENSHOT_PAIR_KEY] = dict(record)
         else:
             append_screenshot_index(
                 output_dir,
@@ -529,9 +702,61 @@ def do_save_screenshot(ctx: RunContext, action: Dict[str, Any]) -> None:
                     "after_label": "",
                     "after_path": "",
                     "after_saved_at": "",
+                    "composite_path": "",
+                    "composite_saved_at": "",
                 },
             )
-    log(with_action_remark(f"Saved screenshot: {destination}", action))
+    log(with_action_remark(f"Saved screenshot: {destination} ({image_source})", action))
+
+
+def save_screenshot_pair_composite(output_dir: Path, record: Dict[str, Any]) -> Optional[Path]:
+    before_path = Path(str(record.get("before_path", "")))
+    after_path = Path(str(record.get("after_path", "")))
+    if not before_path.exists() or not after_path.exists():
+        return None
+
+    try:
+        before = Image.open(before_path).convert("RGB")
+        after = Image.open(after_path).convert("RGB")
+    except Exception as exc:
+        log(f"Skipped screenshot pair composite: failed to load pair images: {exc}")
+        return None
+
+    target_h = min(before.height, after.height)
+    if before.height != target_h:
+        before = before.resize((int(before.width * target_h / before.height), target_h), Image.Resampling.LANCZOS)
+    if after.height != target_h:
+        after = after.resize((int(after.width * target_h / after.height), target_h), Image.Resampling.LANCZOS)
+
+    header_h = 86
+    gutter = 10
+    width = before.width + after.width + gutter
+    height = header_h + target_h
+    canvas = Image.new("RGB", (width, height), (245, 247, 250))
+    draw = ImageDraw.Draw(canvas)
+    font = ImageFont.load_default()
+    pair_prefix = str(record.get("pair_prefix") or "pair")
+    title = f"{pair_prefix}  before -> after"
+    subtitle = (
+        f"before: {record.get('before_saved_at', '')}    "
+        f"after: {record.get('after_saved_at', '')}"
+    )
+    draw.text((12, 12), title, fill=(20, 24, 31), font=font)
+    draw.text((12, 34), subtitle, fill=(72, 79, 90), font=font)
+    draw.text((12, 62), "before", fill=(20, 24, 31), font=font)
+    draw.text((before.width + gutter + 12, 62), "after", fill=(20, 24, 31), font=font)
+    canvas.paste(before, (0, header_h))
+    canvas.paste(after, (before.width + gutter, header_h))
+
+    composite_dir = output_dir / "comparisons"
+    composite_dir.mkdir(parents=True, exist_ok=True)
+    composite_path = composite_dir / f"{sanitize_file_component(pair_prefix)}_comparison.png"
+    try:
+        canvas.save(composite_path)
+    except Exception as exc:
+        log(f"Skipped screenshot pair composite: failed to save image: {exc}")
+        return None
+    return composite_path
 
 
 def append_screenshot_index(output_dir: Path, record: Dict[str, Any]) -> None:
@@ -561,14 +786,34 @@ def draw_stats_output_dir(ctx: RunContext, action: Dict[str, Any]) -> Path:
     return path
 
 
-def draw_stats_counts(ctx: RunContext) -> Dict[str, int]:
+def draw_stats_counts(ctx: RunContext) -> Dict[str, Any]:
     counts = ctx.runtime_values.get(DRAW_STATS_COUNTS_KEY)
     if not isinstance(counts, dict):
-        counts = {"draw_started": 0, "target_hit": 0}
+        counts = {"draw_started": 0, "target_seen": 0, "target_hit": 0, "role_hit_counts": {}}
         ctx.runtime_values[DRAW_STATS_COUNTS_KEY] = counts
     counts.setdefault("draw_started", 0)
+    counts.setdefault("target_seen", 0)
     counts.setdefault("target_hit", 0)
+    if not isinstance(counts.get("role_hit_counts"), dict):
+        counts["role_hit_counts"] = {}
     return counts
+
+
+def red_role_notes(action: Dict[str, Any]) -> Dict[str, str]:
+    notes = dict(DEFAULT_RED_ROLE_NOTES)
+    raw_notes = action.get("role_notes")
+    if isinstance(raw_notes, dict):
+        for key, value in raw_notes.items():
+            name = Path(str(key)).name
+            note = str(value).strip()
+            if name and note:
+                notes[name] = note
+    return notes
+
+
+def role_note_for_template(template_name: str, action: Dict[str, Any]) -> str:
+    name = Path(str(template_name)).name
+    return red_role_notes(action).get(name, "")
 
 
 def write_draw_stats_summary(output_dir: Path, summary: Dict[str, Any]) -> None:
@@ -586,17 +831,72 @@ def append_draw_stats_event(output_dir: Path, session_id: str, record: Dict[str,
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def record_draw_stats_event(
+    ctx: RunContext,
+    action: Dict[str, Any],
+    event: str,
+    draw_type: str,
+    matched_template: str = "",
+    matched_center: Optional[Dict[str, Optional[int]]] = None,
+    extra_fields: Optional[Dict[str, Any]] = None,
+) -> None:
+    session_id = screenshot_session_id(ctx)
+    output_dir = draw_stats_output_dir(ctx, action)
+    counts = draw_stats_counts(ctx)
+    with ctx.stats_lock:
+        if event == "draw_started":
+            counts["draw_started"] += 1
+        elif event == "target_seen":
+            counts["target_seen"] += 1
+        elif event == "target_hit":
+            counts["target_hit"] += 1
+            if matched_template:
+                role_hit_counts = counts.setdefault("role_hit_counts", {})
+                if isinstance(role_hit_counts, dict):
+                    role_hit_counts[matched_template] = int(role_hit_counts.get(matched_template, 0)) + 1
+
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        matched_role_note = role_note_for_template(matched_template, action) if matched_template else ""
+        event_record: Dict[str, Any] = {
+            "timestamp": now,
+            "session_id": session_id,
+            "event": event,
+            "draw_type": draw_type,
+            "matched_template": matched_template,
+            "matched_role_note": matched_role_note,
+            "matched_center": matched_center or {"x": None, "y": None},
+            "draw_started_count": int(counts["draw_started"]),
+            "target_seen_count": int(counts["target_seen"]),
+            "target_hit_count": int(counts["target_hit"]),
+        }
+        if extra_fields:
+            event_record.update(extra_fields)
+        append_draw_stats_event(output_dir, session_id, event_record)
+
+        summary = {
+            "session_id": session_id,
+            "updated_at": now,
+            "draw_started_count": int(counts["draw_started"]),
+            "target_seen_count": int(counts["target_seen"]),
+            "target_hit_count": int(counts["target_hit"]),
+            "latest_event": event,
+            "latest_draw_type": draw_type,
+            "latest_matched_template": matched_template,
+            "latest_matched_role_note": matched_role_note,
+            "role_hit_counts": counts.get("role_hit_counts", {}),
+            "role_notes": red_role_notes(action),
+            "events_path": str(output_dir / f"{session_id}{DRAW_STATS_EVENTS_JSONL_SUFFIX}"),
+        }
+        if extra_fields:
+            summary.update({f"latest_{key}": value for key, value in extra_fields.items()})
+        write_draw_stats_summary(output_dir, summary)
+
+
 def do_record_draw_event(ctx: RunContext, action: Dict[str, Any]) -> None:
     event = str(action.get("event", "")).strip().lower()
     if event not in {"draw_started", "target_hit"}:
         raise BotError("record_draw_event 'event' must be 'draw_started' or 'target_hit'")
 
-    session_id = screenshot_session_id(ctx)
-    output_dir = draw_stats_output_dir(ctx, action)
-    counts = draw_stats_counts(ctx)
-    counts[event] += 1
-
-    now = time.strftime("%Y-%m-%d %H:%M:%S")
     match_info = current_if_image_match(ctx) or {}
     draw_type = str(action.get("draw_type", "")).strip().lower()
     matched_template = str(match_info.get("template_name", ""))
@@ -604,30 +904,8 @@ def do_record_draw_event(ctx: RunContext, action: Dict[str, Any]) -> None:
         "x": int(match_info.get("center_x", 0)) if "center_x" in match_info else None,
         "y": int(match_info.get("center_y", 0)) if "center_y" in match_info else None,
     }
-
-    event_record = {
-        "timestamp": now,
-        "session_id": session_id,
-        "event": event,
-        "draw_type": draw_type,
-        "matched_template": matched_template,
-        "matched_center": matched_center,
-        "draw_started_count": int(counts["draw_started"]),
-        "target_hit_count": int(counts["target_hit"]),
-    }
-    append_draw_stats_event(output_dir, session_id, event_record)
-
-    summary = {
-        "session_id": session_id,
-        "updated_at": now,
-        "draw_started_count": int(counts["draw_started"]),
-        "target_hit_count": int(counts["target_hit"]),
-        "latest_event": event,
-        "latest_draw_type": draw_type,
-        "latest_matched_template": matched_template,
-        "events_path": str(output_dir / f"{session_id}{DRAW_STATS_EVENTS_JSONL_SUFFIX}"),
-    }
-    write_draw_stats_summary(output_dir, summary)
+    record_draw_stats_event(ctx, action, event, draw_type, matched_template, matched_center)
+    counts = draw_stats_counts(ctx)
     extra = f" draw_type={draw_type}" if draw_type else ""
     target = f" matched_template={matched_template}" if matched_template else ""
     log(with_action_remark(
@@ -662,6 +940,217 @@ def image_match_debug_dir(ctx: RunContext, action: Dict[str, Any]) -> Path:
     return path
 
 
+def red_light_debug_dir(ctx: RunContext, action: Dict[str, Any]) -> Path:
+    raw_dir = str(action.get("debug_dir", "")).strip()
+    if raw_dir:
+        path = resolve_action_file_path(ctx, raw_dir)
+    else:
+        path = DEFAULT_RED_LIGHT_DEBUG_DIR
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def resolve_red_light_regions(ctx: RunContext, action: Dict[str, Any], image_size: Tuple[int, int]) -> List[Dict[str, int]]:
+    raw_regions = action.get("regions", DEFAULT_RED_LIGHT_REGIONS)
+    if not isinstance(raw_regions, list) or not raw_regions:
+        raise BotError("if_red_light 'regions' must be a non-empty array")
+
+    regions: List[Dict[str, int]] = []
+    for index, raw_region in enumerate(raw_regions):
+        if not isinstance(raw_region, dict):
+            raise BotError("if_red_light each region must be an object")
+        resolved = map_logical_region(
+            ctx,
+            raw_region,
+            image_size,
+            name="if_red_light region",
+        )
+        regions.append({
+            "name": str(raw_region.get("name") or f"region_{index + 1}"),
+            **resolved,
+        })
+    return regions
+
+
+def resolve_red_light_part(
+    ctx: RunContext,
+    raw_part: Dict[str, Any],
+    image_size: Tuple[int, int],
+    name: str,
+) -> Dict[str, int]:
+    return map_logical_region(ctx, raw_part, image_size, name=f"if_red_light slot part '{name}'")
+
+
+def resolve_red_light_slots(ctx: RunContext, action: Dict[str, Any], image_size: Tuple[int, int]) -> List[Dict[str, Any]]:
+    raw_slots = action.get("slots", DEFAULT_RED_LIGHT_SLOTS)
+    if not isinstance(raw_slots, list) or not raw_slots:
+        raise BotError("if_red_light 'slots' must be a non-empty array")
+
+    slots: List[Dict[str, Any]] = []
+    for index, raw_slot in enumerate(raw_slots):
+        if not isinstance(raw_slot, dict):
+            raise BotError("if_red_light each slot must be an object")
+        name = str(raw_slot.get("name") or f"slot_{index + 1}")
+        slot = resolve_red_light_part(ctx, raw_slot, image_size, name)
+        for part_name in ["card", "base", "beam"]:
+            raw_part = raw_slot.get(part_name)
+            if not isinstance(raw_part, dict):
+                raise BotError(f"if_red_light slot '{name}' requires '{part_name}' object")
+            slot[part_name] = resolve_red_light_part(ctx, raw_part, image_size, f"{name}.{part_name}")
+        slot["name"] = name
+        slots.append(slot)
+    return slots
+
+
+def red_pixel_mask(crop: np.ndarray, action: Dict[str, Any]) -> np.ndarray:
+    r = crop[:, :, 0]
+    g = crop[:, :, 1]
+    b = crop[:, :, 2]
+    max_channel = crop.max(axis=2)
+    min_channel = crop.min(axis=2)
+    saturation = (max_channel - min_channel) / np.maximum(max_channel, 1.0)
+    min_red = float(action.get("min_red", 130))
+    dominance_rg = float(action.get("dominance_rg", 1.7))
+    dominance_rb = float(action.get("dominance_rb", 1.35))
+    min_saturation = float(action.get("min_saturation", 0.45))
+    return (
+        (r >= min_red)
+        & (r >= g * dominance_rg)
+        & (r >= b * dominance_rb)
+        & (saturation >= min_saturation)
+    )
+
+
+def red_part_ratio(rgb: np.ndarray, part: Dict[str, int], action: Dict[str, Any]) -> Tuple[float, int, int]:
+    x = int(part["x"])
+    y = int(part["y"])
+    w = int(part["width"])
+    h = int(part["height"])
+    crop = rgb[y : y + h, x : x + w]
+    mask = red_pixel_mask(crop, action)
+    red_pixels = int(mask.sum())
+    area = int(mask.size)
+    return float(red_pixels / max(area, 1)), red_pixels, area
+
+
+def analyze_red_light_regions(
+    ctx: RunContext,
+    screenshot: Image.Image,
+    action: Dict[str, Any],
+) -> Tuple[bool, List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    rgb = np.asarray(screenshot.convert("RGB"), dtype=np.float32)
+    slots = resolve_red_light_slots(ctx, action, screenshot.size)
+    base_threshold = float(action.get("base_ratio_threshold", 0.22))
+    beam_threshold = float(action.get("beam_ratio_threshold", 0.20))
+    card_threshold = float(action.get("card_ratio_threshold", 0.18))
+    require_card = bool_value(action.get("require_card"), default=True)
+
+    results: List[Dict[str, Any]] = []
+    best: Optional[Dict[str, Any]] = None
+    for slot in slots:
+        card_ratio, card_pixels, card_area = red_part_ratio(rgb, slot["card"], action)
+        base_ratio, base_pixels, base_area = red_part_ratio(rgb, slot["base"], action)
+        beam_ratio, beam_pixels, beam_area = red_part_ratio(rgb, slot["beam"], action)
+        matched = (
+            base_ratio >= base_threshold
+            and beam_ratio >= beam_threshold
+            and (not require_card or card_ratio >= card_threshold)
+        )
+        ratio = min(base_ratio / max(base_threshold, 1e-6), beam_ratio / max(beam_threshold, 1e-6))
+        item = {
+            **{key: slot[key] for key in ["name", "x", "y", "width", "height"]},
+            "ratio": ratio,
+            "card_ratio": card_ratio,
+            "card_red_pixels": card_pixels,
+            "card_area": card_area,
+            "base_ratio": base_ratio,
+            "base_red_pixels": base_pixels,
+            "base_area": base_area,
+            "beam_ratio": beam_ratio,
+            "beam_red_pixels": beam_pixels,
+            "beam_area": beam_area,
+            "matched": matched,
+        }
+        results.append(item)
+        if matched and (best is None or not bool(best["matched"]) or ratio > float(best["ratio"])):
+            best = item
+        elif best is None or (not bool(best["matched"]) and ratio > float(best["ratio"])):
+            best = item
+
+    return any(bool(item["matched"]) for item in results), results, best
+
+
+def red_light_matched_slot_names(results: List[Dict[str, Any]]) -> set:
+    return {
+        str(item.get("name", ""))
+        for item in results
+        if bool(item.get("matched")) and str(item.get("name", ""))
+    }
+
+
+def best_red_light_result(
+    results: List[Dict[str, Any]],
+    allowed_slots: Optional[set] = None,
+) -> Optional[Dict[str, Any]]:
+    candidates = [
+        item
+        for item in results
+        if allowed_slots is None or str(item.get("name", "")) in allowed_slots
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: float(item.get("ratio", 0.0)))
+
+
+def save_red_light_debug_assets(
+    ctx: RunContext,
+    screenshot: Image.Image,
+    action: Dict[str, Any],
+    matched: bool,
+    results: List[Dict[str, Any]],
+    best: Optional[Dict[str, Any]],
+) -> Dict[str, Path]:
+    debug_dir = red_light_debug_dir(ctx, action)
+    stamp = time.strftime("%Y%m%d-%H%M%S") + f"-{int((time.time() % 1) * 1000):03d}"
+    status = "matched" if matched else "not_matched"
+    overlay_path = debug_dir / f"{stamp}_{status}_overlay.png"
+    meta_path = debug_dir / f"{stamp}_{status}_meta.json"
+
+    overlay = screenshot.convert("RGB").copy()
+    draw = ImageDraw.Draw(overlay)
+    font = ImageFont.load_default()
+    for item in results:
+        x = int(item["x"])
+        y = int(item["y"])
+        right = x + int(item["width"])
+        bottom = y + int(item["height"])
+        color = (255, 64, 64) if item["matched"] else (80, 160, 255)
+        draw.rectangle((x, y, right, bottom), outline=color, width=4)
+        label = f"{item['name']} red={item['ratio']:.3f}"
+        draw.rectangle((x, max(0, y - 22), x + 132, y), fill=(0, 0, 0))
+        draw.text((x + 4, max(0, y - 18)), label, fill=(255, 255, 255), font=font)
+
+    overlay.save(overlay_path)
+    metadata = {
+        "matched": matched,
+        "threshold": {
+            "base_ratio_threshold": float(action.get("base_ratio_threshold", 0.22)),
+            "beam_ratio_threshold": float(action.get("beam_ratio_threshold", 0.20)),
+            "card_ratio_threshold": float(action.get("card_ratio_threshold", 0.18)),
+            "require_card": bool_value(action.get("require_card"), default=True),
+            "min_red": float(action.get("min_red", 130)),
+            "dominance_rg": float(action.get("dominance_rg", 1.7)),
+            "dominance_rb": float(action.get("dominance_rb", 1.35)),
+            "min_saturation": float(action.get("min_saturation", 0.45)),
+        },
+        "best": best,
+        "regions": results,
+        "overlay_path": str(overlay_path),
+    }
+    meta_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"overlay": overlay_path, "meta": meta_path}
+
+
 def draw_crosshair(draw: ImageDraw.ImageDraw, x: int, y: int, color: Tuple[int, int, int], radius: int = 14) -> None:
     draw.line((x - radius, y, x + radius, y), fill=color, width=3)
     draw.line((x, y - radius, x, y + radius), fill=color, width=3)
@@ -691,12 +1180,21 @@ def save_image_match_debug_assets(
 
     region = action.get("region")
     if isinstance(region, dict):
-        x = int(region.get("x", 0))
-        y = int(region.get("y", 0))
-        w = int(region.get("width", 0))
-        h = int(region.get("height", 0))
-        if w > 0 and h > 0:
-            draw.rectangle((x, y, x + w, y + h), outline=(80, 140, 255), width=3)
+        try:
+            resolved = (
+                clamp_device_region(region, screenshot.size, name="image search region")
+                if bool_value(action.get("region_is_device_coordinates"))
+                else map_logical_region(ctx, region, screenshot.size, name="image search region")
+            )
+            x = resolved["x"]
+            y = resolved["y"]
+            draw.rectangle(
+                (x, y, x + resolved["width"], y + resolved["height"]),
+                outline=(80, 140, 255),
+                width=3,
+            )
+        except BotError:
+            pass
 
     crop_saved = False
     if match is not None:
@@ -809,22 +1307,80 @@ def resolve_action_file_path(ctx: RunContext, raw_path: str) -> Path:
     return (ctx.plan_dir / candidate).resolve()
 
 
-def resolve_search_region(action: Dict[str, Any], image_size: Tuple[int, int]) -> Tuple[int, int, int, int]:
+def resolve_search_region(ctx: RunContext, action: Dict[str, Any], image_size: Tuple[int, int]) -> Tuple[int, int, int, int]:
     width, height = image_size
     region = action.get("region")
     if not isinstance(region, dict):
         return (0, 0, width, height)
-    x = max(0, int(region.get("x", 0)))
-    y = max(0, int(region.get("y", 0)))
-    w = int(region.get("width", width - x))
-    h = int(region.get("height", height - y))
-    w = max(1, min(w, width - x))
-    h = max(1, min(h, height - y))
-    return (x, y, x + w, y + h)
+    if bool_value(action.get("region_is_device_coordinates")):
+        resolved = clamp_device_region(region, image_size, name="image search region")
+    else:
+        resolved = map_logical_region(
+            ctx,
+            region,
+            image_size,
+            name="image search region",
+            default_width=ctx.src_screen_w,
+            default_height=ctx.src_screen_h,
+        )
+    x = resolved["x"]
+    y = resolved["y"]
+    return (x, y, x + resolved["width"], y + resolved["height"])
 
 
-def prepare_search_image(screenshot: Image.Image, action: Dict[str, Any]) -> PreparedSearchImage:
-    crop_box = resolve_search_region(action, screenshot.size)
+def required_template_search_size(
+    ctx: RunContext,
+    template_paths: List[Path],
+    action: Dict[str, Any],
+) -> Tuple[int, int]:
+    scale_x, scale_y = image_scale_factors(ctx, (ctx.dst_screen_w, ctx.dst_screen_h))
+    maximum_scale = max(build_template_scale_factors(action), default=1.0)
+    required_w = 1
+    required_h = 1
+    for template_path in template_paths:
+        template_w, template_h = load_template_image(template_path).size
+        required_w = max(required_w, int(np.ceil(template_w * scale_x * maximum_scale)))
+        required_h = max(required_h, int(np.ceil(template_h * scale_y * maximum_scale)))
+    return required_w, required_h
+
+
+def expand_search_crop(
+    crop_box: Tuple[int, int, int, int],
+    minimum_size: Tuple[int, int],
+    image_size: Tuple[int, int],
+) -> Tuple[int, int, int, int]:
+    left, top, right, bottom = crop_box
+    image_w, image_h = image_size
+    required_w, required_h = minimum_size
+    target_w = min(image_w, max(right - left, required_w))
+    target_h = min(image_h, max(bottom - top, required_h))
+    center_x = (left + right) / 2.0
+    center_y = (top + bottom) / 2.0
+    new_left = max(0, min(image_w - target_w, int(round(center_x - target_w / 2.0))))
+    new_top = max(0, min(image_h - target_h, int(round(center_y - target_h / 2.0))))
+    return (new_left, new_top, new_left + target_w, new_top + target_h)
+
+
+def prepare_search_image(
+    ctx: RunContext,
+    screenshot: Image.Image,
+    action: Dict[str, Any],
+    minimum_size: Optional[Tuple[int, int]] = None,
+) -> PreparedSearchImage:
+    crop_box = resolve_search_region(ctx, action, screenshot.size)
+    if minimum_size is not None:
+        crop_box = expand_search_crop(crop_box, minimum_size, screenshot.size)
+    screen_size_changed = (ctx.src_screen_w, ctx.src_screen_h) != (ctx.dst_screen_w, ctx.dst_screen_h)
+    default_padding_ratio = 0.08 if screen_size_changed else 0.0
+    padding_ratio = max(0.0, float(action.get("search_padding_ratio", default_padding_ratio)))
+    if padding_ratio > 0:
+        crop_w = crop_box[2] - crop_box[0]
+        crop_h = crop_box[3] - crop_box[1]
+        padded_size = (
+            int(np.ceil(crop_w * (1.0 + padding_ratio * 2.0))),
+            int(np.ceil(crop_h * (1.0 + padding_ratio * 2.0))),
+        )
+        crop_box = expand_search_crop(crop_box, padded_size, screenshot.size)
     cropped = screenshot.crop(crop_box)
     return PreparedSearchImage(
         crop_box=crop_box,
@@ -905,28 +1461,36 @@ def prepare_template_variant(variant: Image.Image, scale: float) -> PreparedTemp
 
 
 def build_template_variants(
+    ctx: RunContext,
     template: Image.Image,
     action: Dict[str, Any],
     search_size: Tuple[int, int],
 ) -> List[Tuple[float, Image.Image]]:
     search_w, search_h = search_size
     base_w, base_h = template.size
+    scale_x, scale_y = image_scale_factors(ctx, (ctx.dst_screen_w, ctx.dst_screen_h))
     resample = Image.Resampling.LANCZOS
     variants: List[Tuple[float, Image.Image]] = []
     seen_sizes: set[Tuple[int, int]] = set()
+    coordinate_variants = [(scale_x, scale_y)]
+    if not (abs(scale_x - 1.0) < 1e-6 and abs(scale_y - 1.0) < 1e-6):
+        # Some user-added templates were captured on the current device rather
+        # than the plan's logical reference screen. Keep that native-size option.
+        coordinate_variants.append((1.0, 1.0))
     for scale in build_template_scale_factors(action):
-        target_w = max(1, int(round(base_w * scale)))
-        target_h = max(1, int(round(base_h * scale)))
-        if target_w > search_w or target_h > search_h:
-            continue
-        size = (target_w, target_h)
-        if size in seen_sizes:
-            continue
-        seen_sizes.add(size)
-        if size == template.size:
-            variants.append((scale, template))
-        else:
-            variants.append((scale, template.resize(size, resample=resample)))
+        for coordinate_scale_x, coordinate_scale_y in coordinate_variants:
+            target_w = max(1, int(round(base_w * coordinate_scale_x * scale)))
+            target_h = max(1, int(round(base_h * coordinate_scale_y * scale)))
+            if target_w > search_w or target_h > search_h:
+                continue
+            size = (target_w, target_h)
+            if size in seen_sizes:
+                continue
+            seen_sizes.add(size)
+            if size == template.size:
+                variants.append((scale, template))
+            else:
+                variants.append((scale, template.resize(size, resample=resample)))
     if not variants:
         raise BotError(
             f"Template image is larger than search region across all scales: template={base_w}x{base_h}, "
@@ -937,12 +1501,14 @@ def build_template_variants(
 
 
 def get_prepared_template_variants(
+    ctx: RunContext,
     template_path: Path,
     action: Dict[str, Any],
     search_size: Tuple[int, int],
 ) -> List[PreparedTemplateVariant]:
     cache_identity = template_cache_identity(template_path)
     scale_key = tuple(build_template_scale_factors(action))
+    template_scale_x, template_scale_y = image_scale_factors(ctx, (ctx.dst_screen_w, ctx.dst_screen_h))
     cache_key = (
         cache_identity[0],
         cache_identity[1],
@@ -950,13 +1516,15 @@ def get_prepared_template_variants(
         search_size[0],
         search_size[1],
         scale_key,
+        round(template_scale_x, 6),
+        round(template_scale_y, 6),
     )
     cached = _TEMPLATE_VARIANT_CACHE.get(cache_key)
     if cached is not None:
         return cached
 
     template = load_template_image(template_path)
-    variants = build_template_variants(template, action, search_size)
+    variants = build_template_variants(ctx, template, action, search_size)
     prepared = [prepare_template_variant(variant, scale) for scale, variant in variants]
     _TEMPLATE_VARIANT_CACHE[cache_key] = prepared
     return prepared
@@ -1239,6 +1807,8 @@ def perform_find_image(
     save_debug = settings["save_debug"]
     preview_only = settings["preview_only"]
     log_template_progress = action.get("templates") is not None
+    search_action = image_search_action(action, template_paths)
+    minimum_template_size = required_template_search_size(ctx, template_paths, search_action)
     if ctx.dry_run:
         attempt_text = f" max_attempts={max_attempts}" if max_attempts > 0 else ""
         log(
@@ -1270,20 +1840,20 @@ def perform_find_image(
         check_stop(ctx)
         attempt += 1
         screenshot = capture_device_screenshot(ctx)
-        search = prepare_search_image(screenshot, action)
+        search = prepare_search_image(ctx, screenshot, search_action, minimum_size=minimum_template_size)
         search_size = (search.gray.shape[1], search.gray.shape[0])
         matched_template_path: Optional[Path] = None
         matched_template_candidate: Optional[Dict[str, float]] = None
 
         template_total = len(template_paths)
         for template_index, template_path in enumerate(template_paths, start=1):
-            prepared_variants = get_prepared_template_variants(template_path, action, search_size)
+            prepared_variants = get_prepared_template_variants(ctx, template_path, search_action, search_size)
             match, candidate_best = find_image_match(
                 search=search,
                 template_variants=prepared_variants,
                 threshold=threshold,
                 index=index,
-                action=action,
+                action=search_action,
             )
             if candidate_best is not None and candidate_best["similarity"] >= best_similarity:
                 best_similarity = candidate_best["similarity"]
@@ -1340,6 +1910,7 @@ def perform_find_image(
                 "dry_run": False,
                 "debug_paths": debug_paths,
                 "attempt": attempt,
+                "screenshot": screenshot.copy(),
             }
         attempts_exhausted = max_attempts > 0 and attempt >= max_attempts
         timed_out = time.time() >= deadline
@@ -1476,6 +2047,9 @@ def remember_if_image_match(ctx: RunContext, action: Dict[str, Any], result: Dic
     match = result.get("match")
     if not isinstance(match, dict):
         return
+    screenshot = result.get("screenshot")
+    if isinstance(screenshot, Image.Image):
+        ctx.runtime_values[LAST_IF_IMAGE_SCREENSHOT_KEY] = screenshot.copy()
 
     raw_center_x = int(round(float(match.get("x", 0)) + float(match.get("width", 0)) / 2.0))
     raw_center_y = int(round(float(match.get("y", 0)) + float(match.get("height", 0)) / 2.0))
@@ -1528,6 +2102,602 @@ def execute_if_image(ctx: RunContext, action: Dict[str, Any]) -> None:
     else:
         log(with_action_remark(f"if_image did not match '{template_label}', execute else_actions", action))
         execute_actions(ctx, else_actions)
+
+
+def remember_if_red_light_match(
+    ctx: RunContext,
+    screenshot: Image.Image,
+    result: Dict[str, Any],
+) -> None:
+    clear_if_image_match(ctx)
+    if not result.get("matched"):
+        return
+    best = result.get("best")
+    if not isinstance(best, dict):
+        return
+    ctx.runtime_values[LAST_IF_IMAGE_SCREENSHOT_KEY] = screenshot.copy()
+    center_x = int(round(float(best.get("x", 0)) + float(best.get("width", 0)) / 2.0))
+    center_y = int(round(float(best.get("y", 0)) + float(best.get("height", 0)) / 2.0))
+    ctx.runtime_values[LAST_IF_IMAGE_MATCH_KEY] = {
+        "template_name": f"red_light:{best.get('name', 'unknown')}",
+        "template_path": "",
+        "center_x": center_x,
+        "center_y": center_y,
+        "match_center_x": center_x,
+        "match_center_y": center_y,
+        "x": int(round(float(best.get("x", 0)))),
+        "y": int(round(float(best.get("y", 0)))),
+        "width": int(round(float(best.get("width", 0)))),
+        "height": int(round(float(best.get("height", 0)))),
+        "similarity": float(best.get("ratio", 0.0)),
+    }
+
+
+def execute_if_red_light(ctx: RunContext, action: Dict[str, Any]) -> None:
+    clear_if_image_match(ctx)
+    ctx.runtime_values.pop(LAST_RED_LIGHT_SCREENSHOT_KEY, None)
+    then_actions = action.get("then_actions", [])
+    else_actions = action.get("else_actions", [])
+    if not isinstance(then_actions, list):
+        raise BotError("if_red_light 'then_actions' must be an array")
+    if not isinstance(else_actions, list):
+        raise BotError("if_red_light 'else_actions' must be an array")
+
+    if ctx.dry_run:
+        log(
+            with_action_remark(
+                "[DRY-RUN] if_red_light checks red spotlight regions "
+                f"base_threshold={float(action.get('base_ratio_threshold', 0.22)):.3f} "
+                f"beam_threshold={float(action.get('beam_ratio_threshold', 0.20)):.3f}",
+                action,
+            )
+        )
+        return
+
+    screenshot = capture_device_screenshot(ctx)
+    matched, results, best = analyze_red_light_regions(ctx, screenshot, action)
+    confirm_attempts = max(1, int(action.get("confirm_attempts", 1)))
+    confirm_interval_sec = max(0.0, float(action.get("confirm_interval_sec", 0.15)))
+    confirmed_slots = red_light_matched_slot_names(results)
+    confirmation = {
+        "attempts_required": confirm_attempts,
+        "attempts_completed": 1,
+        "interval_sec": confirm_interval_sec,
+        "initial_slots": sorted(confirmed_slots),
+        "confirmed_slots": sorted(confirmed_slots),
+    }
+
+    if matched and confirm_attempts > 1:
+        for _ in range(1, confirm_attempts):
+            if confirm_interval_sec > 0:
+                time.sleep(confirm_interval_sec)
+            check_stop(ctx)
+            confirmation_screenshot = capture_device_screenshot(ctx)
+            confirmation_matched, confirmation_results, _ = analyze_red_light_regions(
+                ctx, confirmation_screenshot, action
+            )
+            confirmation["attempts_completed"] += 1
+            current_slots = red_light_matched_slot_names(confirmation_results) if confirmation_matched else set()
+            confirmed_slots &= current_slots
+            confirmation["confirmed_slots"] = sorted(confirmed_slots)
+            screenshot = confirmation_screenshot
+            results = confirmation_results
+            if not confirmed_slots:
+                matched = False
+                best = best_red_light_result(results)
+                break
+
+        if confirmed_slots:
+            matched = True
+            best = best_red_light_result(results, confirmed_slots)
+
+    if matched:
+        ctx.runtime_values[LAST_RED_LIGHT_SCREENSHOT_KEY] = screenshot.copy()
+
+    save_debug = bool_value(action.get("save_debug", True), default=True)
+    if save_debug:
+        debug_paths = save_red_light_debug_assets(ctx, screenshot, action, matched, results, best)
+        log(f"Red light debug overlay: {debug_paths['overlay']}")
+        log(f"Red light debug meta: {debug_paths['meta']}")
+
+    best_label = "none"
+    if best is not None:
+        best_label = (
+            f"{best['name']} score={float(best['ratio']):.3f} "
+            f"base={float(best['base_ratio']):.3f} beam={float(best['beam_ratio']):.3f} "
+            f"card={float(best['card_ratio']):.3f}"
+        )
+    summary = ", ".join(
+        f"{item['name']}[base={float(item['base_ratio']):.3f},beam={float(item['beam_ratio']):.3f},card={float(item['card_ratio']):.3f}]"
+        for item in results
+    )
+    result = {
+        "matched": matched,
+        "regions": results,
+        "best": best,
+        "confirmation": confirmation,
+    }
+    remember_if_red_light_match(ctx, screenshot, result)
+    if matched:
+        record_draw_stats_event(
+            ctx,
+            action,
+            "target_seen",
+            "target_red_card",
+            matched_template=f"red_light:{best.get('name', 'unknown')}" if isinstance(best, dict) else "red_light",
+            matched_center={
+                "x": int(round(float(best.get("x", 0)) + float(best.get("width", 0)) / 2.0)) if isinstance(best, dict) else None,
+                "y": int(round(float(best.get("y", 0)) + float(best.get("height", 0)) / 2.0)) if isinstance(best, dict) else None,
+            },
+            extra_fields={
+                "red_light_regions": results,
+                "red_light_confirmation": confirmation,
+            },
+        )
+        log(
+            with_action_remark(
+                f"if_red_light matched ({best_label}; confirmed_slots={confirmation['confirmed_slots']}; {summary}), "
+                "execute then_actions",
+                action,
+            )
+        )
+        execute_actions(ctx, then_actions)
+    else:
+        log(
+            with_action_remark(
+                f"if_red_light did not match ({best_label}; confirmed_slots={confirmation['confirmed_slots']}; {summary}), "
+                "execute else_actions",
+                action,
+            )
+        )
+        execute_actions(ctx, else_actions)
+
+
+def red_role_template_paths(ctx: RunContext, action: Dict[str, Any]) -> List[Path]:
+    raw_templates = action.get("role_templates", DEFAULT_RED_ROLE_TEMPLATES)
+    if not isinstance(raw_templates, list) or not raw_templates:
+        raise BotError("resolve_red_draw_result 'role_templates' must be a non-empty array")
+    return [resolve_action_file_path(ctx, str(item)) for item in raw_templates]
+
+
+def resolve_named_region(
+    ctx: RunContext,
+    raw_regions: Dict[str, Dict[str, int]],
+    slot_name: str,
+    image_size: Tuple[int, int],
+) -> Dict[str, int]:
+    raw = raw_regions.get(slot_name)
+    if not isinstance(raw, dict):
+        raise BotError(f"Missing region for slot '{slot_name}'")
+    return resolve_red_light_part(ctx, raw, image_size, slot_name)
+
+
+def match_red_role_in_slot(
+    ctx: RunContext,
+    before: Image.Image,
+    action: Dict[str, Any],
+    slot_name: str,
+) -> Dict[str, Any]:
+    region = resolve_named_region(ctx, DEFAULT_RED_ROLE_SEARCH_REGIONS, slot_name, before.size)
+    template_paths = red_role_template_paths(ctx, action)
+    search_action = {
+        "region": region,
+        "region_is_device_coordinates": True,
+        "scales": action.get("role_scales", [0.9, 1.0]),
+        "max_candidates": 1,
+    }
+    minimum_template_size = required_template_search_size(ctx, template_paths, search_action)
+    search = prepare_search_image(ctx, before, search_action, minimum_size=minimum_template_size)
+    search_size = (search.gray.shape[1], search.gray.shape[0])
+    best_template: Optional[Path] = None
+    best_match: Optional[Dict[str, float]] = None
+    second_best_similarity = 0.0
+    for template_path in template_paths:
+        try:
+            variants = get_prepared_template_variants(ctx, template_path, search_action, search_size)
+        except BotError:
+            continue
+        _, candidate = find_image_match(search, variants, 0.0, 0, search_action)
+        if candidate is None:
+            continue
+        candidate_similarity = float(candidate.get("similarity", 0.0))
+        if best_match is None or candidate_similarity > float(best_match.get("similarity", 0.0)):
+            if best_match is not None:
+                second_best_similarity = float(best_match.get("similarity", 0.0))
+            best_template = template_path
+            best_match = candidate
+        elif candidate_similarity > second_best_similarity:
+            second_best_similarity = candidate_similarity
+
+    similarity = float(best_match.get("similarity", 0.0)) if best_match is not None else 0.0
+    role_thresholds = action.get("role_thresholds", {})
+    if not isinstance(role_thresholds, dict):
+        raise BotError("resolve_red_draw_result 'role_thresholds' must be an object")
+    threshold = float(role_thresholds.get(best_template.name, action.get("role_threshold", 0.82))) if best_template else float(
+        action.get("role_threshold", 0.82)
+    )
+    min_margin = float(action.get("role_min_margin", 0.0))
+    confidence_margin = similarity - second_best_similarity
+    role_name = (
+        best_template.name
+        if best_template is not None and similarity >= threshold and confidence_margin >= min_margin
+        else "unknown_red_role"
+    )
+    center = {"x": None, "y": None}
+    if best_match is not None:
+        center = {
+            "x": int(round(float(best_match.get("x", 0)) + float(best_match.get("width", 0)) / 2.0)),
+            "y": int(round(float(best_match.get("y", 0)) + float(best_match.get("height", 0)) / 2.0)),
+        }
+    return {
+        "slot": slot_name,
+        "role": role_name,
+        "similarity": similarity,
+        "threshold": threshold,
+        "second_best_similarity": second_best_similarity,
+        "confidence_margin": confidence_margin,
+        "center": center,
+    }
+
+
+def green_mask_components(mask: np.ndarray, min_pixels: int) -> List[Dict[str, int]]:
+    height, width = mask.shape
+    visited = np.zeros_like(mask, dtype=bool)
+    components: List[Dict[str, int]] = []
+    for y, x in zip(*np.where(mask)):
+        if visited[y, x]:
+            continue
+        stack = [(int(y), int(x))]
+        visited[y, x] = True
+        pixels = 0
+        left = right = int(x)
+        top = bottom = int(y)
+        while stack:
+            current_y, current_x = stack.pop()
+            pixels += 1
+            left = min(left, current_x)
+            right = max(right, current_x)
+            top = min(top, current_y)
+            bottom = max(bottom, current_y)
+            for next_y, next_x in (
+                (current_y - 1, current_x),
+                (current_y + 1, current_x),
+                (current_y, current_x - 1),
+                (current_y, current_x + 1),
+            ):
+                if (
+                    0 <= next_y < height
+                    and 0 <= next_x < width
+                    and mask[next_y, next_x]
+                    and not visited[next_y, next_x]
+                ):
+                    visited[next_y, next_x] = True
+                    stack.append((next_y, next_x))
+        if pixels >= min_pixels:
+            components.append(
+                {
+                    "pixels": pixels,
+                    "x": left,
+                    "y": top,
+                    "width": right - left + 1,
+                    "height": bottom - top + 1,
+                }
+            )
+    return components
+
+
+def green_check_score(ctx: RunContext, after: Image.Image, action: Dict[str, Any], slot_name: str) -> Dict[str, Any]:
+    region = resolve_named_region(ctx, DEFAULT_GREEN_CHECK_REGIONS, slot_name, after.size)
+    rgb = np.asarray(after.convert("RGB"), dtype=np.float32)
+    x = int(region["x"])
+    y = int(region["y"])
+    w = int(region["width"])
+    h = int(region["height"])
+    crop = rgb[y : y + h, x : x + w]
+    r = crop[:, :, 0]
+    g = crop[:, :, 1]
+    b = crop[:, :, 2]
+    mask = (g > 120) & (g > r * 1.25) & (g > b * 1.2) & ((g - r) > 35) & ((g - b) > 30)
+    scale_x, scale_y = image_scale_factors(ctx, after.size)
+    min_scale = min(scale_x, scale_y)
+    min_component_pixels = int(action.get("green_check_component_min_pixels", 800) * min_scale * min_scale)
+    min_width = int(action.get("green_check_min_width", 50) * scale_x)
+    max_width = int(action.get("green_check_max_width", 85) * scale_x)
+    min_height = int(action.get("green_check_min_height", 30) * scale_y)
+    max_height = int(action.get("green_check_max_height", 62) * scale_y)
+    components = green_mask_components(mask, max(1, min_component_pixels))
+    tick_components = [
+        component
+        for component in components
+        if min_width <= component["width"] <= max_width
+        and min_height <= component["height"] <= max_height
+    ]
+    best = max(tick_components, key=lambda component: component["pixels"]) if tick_components else None
+    pixels = int(best["pixels"]) if best is not None else 0
+    ratio = float(pixels / max(int(mask.size), 1))
+    return {
+        "slot": slot_name,
+        "green_pixels": pixels,
+        "green_ratio": ratio,
+        "component": best,
+    }
+
+
+def detect_green_check_slot(ctx: RunContext, after: Image.Image, action: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    scores = [green_check_score(ctx, after, action, slot) for slot in ["left", "center", "right"]]
+    scores.sort(key=lambda item: int(item["green_pixels"]), reverse=True)
+    best = scores[0] if scores else None
+    if best is None:
+        return None
+    min_pixels = int(action.get("green_check_min_pixels", 800))
+    min_ratio = float(action.get("green_check_min_ratio", 0.006))
+    if int(best["green_pixels"]) >= min_pixels and float(best["green_ratio"]) >= min_ratio:
+        return best
+    return None
+
+
+def detect_cancel_in_after(ctx: RunContext, after: Image.Image, action: Dict[str, Any]) -> bool:
+    raw_template = str(action.get("cancel_template", "../image_templates/role_cancel.png"))
+    template_path = resolve_action_file_path(ctx, raw_template)
+    search_action = {
+        "region": action.get("cancel_region", {"x": 465, "y": 1542, "width": 148, "height": 72}),
+        "scales": action.get("cancel_scales", [1.0]),
+        "max_candidates": 1,
+    }
+    minimum_template_size = required_template_search_size(ctx, [template_path], search_action)
+    search = prepare_search_image(ctx, after, search_action, minimum_size=minimum_template_size)
+    search_size = (search.gray.shape[1], search.gray.shape[0])
+    variants = get_prepared_template_variants(ctx, template_path, search_action, search_size)
+    match, _ = find_image_match(
+        search,
+        variants,
+        float(action.get("cancel_threshold", 0.85)),
+        0,
+        search_action,
+    )
+    return match is not None
+
+
+def analyze_red_draw_result(ctx: RunContext, action: Dict[str, Any], pair_record: Dict[str, Any]) -> Dict[str, Any]:
+    before_path = Path(str(pair_record.get("before_path", "")))
+    after_path = Path(str(pair_record.get("after_path", "")))
+    before = Image.open(before_path).convert("RGB")
+    after = Image.open(after_path).convert("RGB")
+
+    matched, red_results, _ = analyze_red_light_regions(ctx, before, action)
+    candidates: List[Dict[str, Any]] = []
+    for item in red_results:
+        if bool(item.get("matched")):
+            candidates.append(match_red_role_in_slot(ctx, before, action, str(item.get("name", ""))))
+
+    green_slot = detect_green_check_slot(ctx, after, action)
+    cancel_present = detect_cancel_in_after(ctx, after, action)
+    pool_state = "stayed" if green_slot is not None or cancel_present else "refreshed"
+    result = "miss"
+    drawn_role = ""
+    drawn_slot = str(green_slot.get("slot")) if green_slot is not None else ""
+    hit_candidate: Optional[Dict[str, Any]] = None
+
+    if pool_state == "stayed":
+        if drawn_slot:
+            for candidate in candidates:
+                if candidate.get("slot") == drawn_slot:
+                    hit_candidate = candidate
+                    break
+        if hit_candidate is not None:
+            result = "hit"
+            drawn_role = str(hit_candidate.get("role", "unknown_red_role"))
+        else:
+            result = "miss"
+    elif candidates:
+        if len(candidates) == 1:
+            hit_candidate = candidates[0]
+            result = "hit"
+            drawn_role = str(hit_candidate.get("role", "unknown_red_role"))
+            drawn_slot = str(hit_candidate.get("slot", ""))
+        else:
+            result = "hit_unknown"
+            drawn_role = "unknown_red_role"
+
+    return {
+        "pair_prefix": str(pair_record.get("pair_prefix", "")),
+        "before_path": str(before_path),
+        "after_path": str(after_path),
+        "red_light_matched": matched,
+        "red_candidates": candidates,
+        "pool_state": pool_state,
+        "green_check": green_slot,
+        "cancel_present": cancel_present,
+        "drawn_slot": drawn_slot,
+        "drawn_role": drawn_role,
+        "result": result,
+    }
+
+
+def red_draw_result_worker(ctx: RunContext, action: Dict[str, Any], pair_record: Dict[str, Any]) -> None:
+    try:
+        result = analyze_red_draw_result(ctx, action, pair_record)
+        event = "target_hit" if result["result"] in {"hit", "hit_unknown"} else "target_miss"
+        matched_template = str(result.get("drawn_role") or "")
+        matched_center = {"x": None, "y": None}
+        for candidate in result.get("red_candidates", []):
+            if candidate.get("slot") == result.get("drawn_slot"):
+                center = candidate.get("center")
+                if isinstance(center, dict):
+                    matched_center = {
+                        "x": center.get("x") if isinstance(center.get("x"), int) else None,
+                        "y": center.get("y") if isinstance(center.get("y"), int) else None,
+                    }
+                break
+        record_draw_stats_event(
+            ctx,
+            action,
+            event,
+            "red_draw_result",
+            matched_template=matched_template,
+            matched_center=matched_center,
+            extra_fields={
+                "red_draw_result": result["result"],
+                "red_candidates": result["red_candidates"],
+                "pool_state": result["pool_state"],
+                "green_check": result["green_check"],
+                "cancel_present": result["cancel_present"],
+                "pair_prefix": result["pair_prefix"],
+            },
+        )
+        log(
+            with_action_remark(
+                f"Resolved red draw result in background: result={result['result']} "
+                f"drawn_role={matched_template or 'none'} pool_state={result['pool_state']} "
+                f"candidates={[item.get('role') for item in result['red_candidates']]}",
+                action,
+            )
+        )
+    except Exception as exc:
+        log(with_action_remark(f"resolve_red_draw_result background failed: {exc}", action))
+
+
+def do_resolve_red_draw_result(ctx: RunContext, action: Dict[str, Any]) -> None:
+    if ctx.dry_run:
+        log(with_action_remark("[DRY-RUN] resolve_red_draw_result skipped", action))
+        return
+    pair_record = ctx.runtime_values.get(LAST_SCREENSHOT_PAIR_KEY)
+    if not isinstance(pair_record, dict):
+        log(with_action_remark("resolve_red_draw_result skipped: no latest screenshot pair", action))
+        return
+    thread = threading.Thread(
+        target=red_draw_result_worker,
+        args=(ctx, dict(action), dict(pair_record)),
+        name=f"red-draw-result-{pair_record.get('pair_prefix', 'latest')}",
+        daemon=True,
+    )
+    tasks = ctx.runtime_values.setdefault(BACKGROUND_TASKS_KEY, [])
+    if isinstance(tasks, list):
+        tasks.append(thread)
+    thread.start()
+    log(with_action_remark(f"resolve_red_draw_result scheduled for {pair_record.get('pair_prefix', 'latest')}", action))
+
+
+def resolve_draw_state_target(
+    ctx: RunContext,
+    screenshot: Image.Image,
+    parent_action: Dict[str, Any],
+    target_config: Dict[str, Any],
+    default_threshold: float,
+) -> Tuple[Optional[Dict[str, float]], Optional[Dict[str, float]], Path]:
+    target_action = dict(parent_action)
+    target_action.update(target_config)
+    template_paths = resolve_action_template_paths(ctx, target_action, "resolve_draw_state")
+    search_action = image_search_action(target_action, template_paths)
+    minimum_template_size = required_template_search_size(ctx, template_paths, search_action)
+    search = prepare_search_image(ctx, screenshot, search_action, minimum_size=minimum_template_size)
+    search_size = (search.gray.shape[1], search.gray.shape[0])
+    threshold = float(target_action.get("threshold", default_threshold))
+    best_match: Optional[Dict[str, float]] = None
+    best_template_path = template_paths[0]
+    for template_path in template_paths:
+        prepared_variants = get_prepared_template_variants(ctx, template_path, search_action, search_size)
+        match, candidate_best = find_image_match(
+            search=search,
+            template_variants=prepared_variants,
+            threshold=threshold,
+            index=int(target_action.get("index", 0)),
+            action=search_action,
+        )
+        if candidate_best is not None and (
+            best_match is None or candidate_best["similarity"] > best_match["similarity"]
+        ):
+            best_match = candidate_best
+            best_template_path = template_path
+        if match is not None:
+            return match, candidate_best, template_path
+    return None, best_match, best_template_path
+
+
+def do_resolve_draw_state(ctx: RunContext, action: Dict[str, Any]) -> None:
+    next_config = action.get("next")
+    cancel_config = action.get("cancel")
+    if not isinstance(next_config, dict) or not isinstance(cancel_config, dict):
+        raise BotError("resolve_draw_state requires 'next' and 'cancel' objects")
+
+    threshold = float(action.get("threshold", 0.88))
+    timeout_sec = float(action.get("timeout_sec", 2.5))
+    interval_sec = float(action.get("interval_sec", 0.2))
+    settle_wait_sec = float(action.get("settle_wait_sec", 2.0))
+    cancel_settle_wait_sec = float(action.get("cancel_settle_wait_sec", settle_wait_sec))
+    fallback_actions = action.get("fallback_actions", [])
+    if not isinstance(fallback_actions, list):
+        raise BotError("resolve_draw_state 'fallback_actions' must be an array")
+
+    if ctx.dry_run:
+        log(
+            with_action_remark(
+                f"[DRY-RUN] resolve_draw_state timeout={timeout_sec:.1f}s interval={interval_sec:.1f}s",
+                action,
+            )
+        )
+        return
+
+    deadline = time.time() + max(0.0, timeout_sec)
+    attempt = 0
+    best_next = 0.0
+    best_cancel = 0.0
+    while True:
+        check_stop(ctx)
+        attempt += 1
+        screenshot = capture_device_screenshot(ctx)
+
+        next_match, next_best, next_template = resolve_draw_state_target(
+            ctx, screenshot, action, next_config, threshold
+        )
+        if next_best is not None:
+            best_next = max(best_next, float(next_best.get("similarity", 0.0)))
+
+        cancel_match, cancel_best, cancel_template = resolve_draw_state_target(
+            ctx, screenshot, action, cancel_config, threshold
+        )
+        if cancel_best is not None:
+            best_cancel = max(best_cancel, float(cancel_best.get("similarity", 0.0)))
+
+        if next_match is not None:
+            cancel_score = float(cancel_best.get("similarity", 0.0)) if cancel_best is not None else 0.0
+            log(
+                with_action_remark(
+                    f"resolve_draw_state detected next round '{next_template.name}' on attempt {attempt} "
+                    f"(next {next_match['similarity']:.3f}, cancel best {cancel_score:.3f})",
+                    action,
+                )
+            )
+            do_wait({"seconds": settle_wait_sec, "remark": "本次抽卡结束，等待动画结束后开启下一轮"})
+            return
+
+        if cancel_match is not None:
+            next_score = float(next_best.get("similarity", 0.0)) if next_best is not None else 0.0
+            center_x = int(round(cancel_match["x"] + cancel_match["width"] / 2.0))
+            center_y = int(round(cancel_match["y"] + cancel_match["height"] / 2.0))
+            log(
+                with_action_remark(
+                    f"resolve_draw_state detected cancel '{cancel_template.name}' on attempt {attempt} "
+                    f"(cancel {cancel_match['similarity']:.3f}, next best {next_score:.3f}), click cancel",
+                    action,
+                )
+            )
+            x, y = tap_absolute(ctx, center_x, center_y)
+            log(with_action_remark(f"Click draw-state cancel '{cancel_template.name}' at ({x}, {y})", action))
+            do_wait({"seconds": cancel_settle_wait_sec, "remark": "本次抽卡结束，等待动画结束后开启下一轮"})
+            return
+
+        if time.time() >= deadline:
+            log(
+                with_action_remark(
+                    f"resolve_draw_state timed out after {timeout_sec:.1f}s "
+                    f"(best next {best_next:.3f}, best cancel {best_cancel:.3f}), execute fallback_actions",
+                    action,
+                )
+            )
+            execute_actions(ctx, fallback_actions)
+            return
+        time.sleep(max(0.1, interval_sec))
 
 
 def do_swipe(ctx: RunContext, action: Dict[str, Any]) -> None:
@@ -1689,6 +2859,12 @@ def execute_action(ctx: RunContext, action: Dict[str, Any]) -> None:
         do_find_text_click(ctx, action)
     elif action_type == "if_image":
         execute_if_image(ctx, action)
+    elif action_type == "if_red_light":
+        execute_if_red_light(ctx, action)
+    elif action_type == "resolve_red_draw_result":
+        do_resolve_red_draw_result(ctx, action)
+    elif action_type == "resolve_draw_state":
+        do_resolve_draw_state(ctx, action)
     elif action_type == "swipe":
         do_swipe(ctx, action)
     elif action_type == "trace":
@@ -1719,6 +2895,23 @@ def execute_action(ctx: RunContext, action: Dict[str, Any]) -> None:
 def execute_actions(ctx: RunContext, actions: List[Dict[str, Any]]) -> None:
     for action in actions:
         execute_action(ctx, action)
+
+
+def wait_background_tasks(ctx: RunContext, timeout_sec: float = 2.0) -> None:
+    tasks = ctx.runtime_values.get(BACKGROUND_TASKS_KEY)
+    if not isinstance(tasks, list) or not tasks:
+        return
+    deadline = time.time() + max(0.0, timeout_sec)
+    for thread in list(tasks):
+        if not isinstance(thread, threading.Thread) or not thread.is_alive():
+            continue
+        remain = deadline - time.time()
+        if remain <= 0:
+            break
+        thread.join(remain)
+    alive = [thread.name for thread in tasks if isinstance(thread, threading.Thread) and thread.is_alive()]
+    if alive:
+        log(f"Background task(s) still running: {', '.join(alive)}")
 
 
 def _list_connected_devices(adb_path: str) -> List[str]:
@@ -1790,16 +2983,30 @@ def load_plan(path: Path) -> Dict[str, Any]:
 
 
 def get_device_screen_size(adb_path: str, device: Optional[str]) -> Tuple[int, int]:
-    cmd = [adb_path]
-    if device:
-        cmd += ["-s", device]
-    cmd += ["shell", "wm", "size"]
-    result = run_cmd(cmd, check=False)
-    text = f"{result.stdout}\n{result.stderr}"
-    match = WM_SIZE_RE.search(text)
-    if not match:
-        raise BotError(f"Cannot parse device screen size from adb output:\n{text.strip()}")
-    return int(match.group(1)), int(match.group(2))
+    active_device = device
+    last_text = ""
+    recovered = False
+    for attempt in range(5):
+        cmd = [adb_path]
+        if active_device:
+            cmd += ["-s", active_device]
+        cmd += ["shell", "wm", "size"]
+        result = run_cmd(cmd, check=False)
+        text = f"{result.stdout}\n{result.stderr}"
+        last_text = text
+        match = WM_SIZE_RE.search(text)
+        if match:
+            return int(match.group(1)), int(match.group(2))
+
+        if adb_output_is_transient(text) and not recovered:
+            log("ADB screen size probe failed, restart adb server and retry ...")
+            recover_adb_server(adb_path, active_device)
+            active_device = ensure_device_connected(adb_path, active_device)
+            recovered = True
+        elif attempt < 4:
+            time.sleep(0.3)
+
+    raise BotError(f"Cannot parse device screen size from adb output:\n{last_text.strip()}")
 
 
 def main() -> int:
@@ -1868,6 +3075,7 @@ def main() -> int:
         execute_actions(ctx, actions)
     except KeyboardInterrupt:
         log("Bot stopped")
+    wait_background_tasks(ctx)
     log("Bot exit")
     return 0
 

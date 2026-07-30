@@ -173,16 +173,40 @@ def restart_adb_server(adb: str) -> None:
     time.sleep(0.6)
 
 
+def adb_output_is_transient(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        token in lowered
+        for token in [
+            "device offline",
+            "device not found",
+            "more than one device",
+            "closed",
+            "cannot connect",
+            "failed to check server version",
+            "adb server didn't ack",
+        ]
+    )
+
+
 def get_screen_size(adb: str, device: Optional[str]) -> Tuple[int, int]:
     last_text = ""
-    for _ in range(3):
+    recovered = False
+    for attempt in range(5):
         result = run_cmd(adb_cmd(adb, device, ["shell", "wm", "size"]), check=False)
         text = f"{result.stdout}\n{result.stderr}"
         last_text = text
         m = WM_SIZE_RE.search(text)
         if m:
             return int(m.group(1)), int(m.group(2))
-        time.sleep(0.2)
+
+        if adb_output_is_transient(text) and not recovered:
+            restart_adb_server(adb)
+            if device:
+                run_cmd([adb, "connect", device], check=False)
+            recovered = True
+        elif attempt < 4:
+            time.sleep(0.3)
     raise RecorderError(f"Cannot parse wm size output:\n{last_text}")
 
 
