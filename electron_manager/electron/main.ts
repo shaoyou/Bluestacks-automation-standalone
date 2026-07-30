@@ -35,7 +35,7 @@ const taskOwners = new Map<string, number>();
 let mainWindow: BrowserWindow | null = null;
 let bootstrapCancelled = false;
 let bootstrapRunning = false;
-const WINDOWS_RUNTIME_VERSION = "1";
+const WINDOWS_RUNTIME_VERSION = "2";
 const RUNTIME_RESOURCE_MIGRATION_VERSION = 5;
 const RUNTIME_RESOURCE_MIGRATION_FILES = [
   path.join("plans", "choukaka.json"),
