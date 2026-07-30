@@ -43,7 +43,26 @@ jobs:
           ./scripts/build_windows_runtime.ps1 -Python python
 
       - name: Package Windows 10/11 installer and ZIP
-        run: npm run package:win
+        id: package-modern
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          npm run package:win *>&1 | Tee-Object -FilePath package-windows-10-11.log
+          exit $LASTEXITCODE
+
+      - name: Upload Windows 10/11 packaging log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bs-manager-windows-10-11-package-log-${{ github.run_number }}
+          path: electron_manager/package-windows-10-11.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Stop when Windows 10/11 packaging fails
+        if: steps.package-modern.outcome == 'failure'
+        shell: pwsh
+        run: exit 1
 
       - name: Upload Windows 10/11 release
         uses: actions/upload-artifact@v4
