@@ -86,6 +86,13 @@ jobs:
           Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
           ./scripts/build_windows_runtime.ps1 -Python python -Windows7Legacy -OutputDirectory vendor/windows/win7-x64
 
+      - name: Smoke test Windows 7 legacy automation runtime
+        shell: pwsh
+        run: |
+          ./vendor/windows/win7-x64/adb_bot.exe --help
+          ./vendor/windows/win7-x64/record_touch.exe --help
+          ./vendor/windows/win7-x64/adb.exe version
+
       - name: Package Windows 7 SP1 x64 legacy installer and ZIP
         run: npm run package:win7
 
