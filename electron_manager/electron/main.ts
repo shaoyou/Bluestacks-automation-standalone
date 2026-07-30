@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { ChildProcess, spawn } from "node:child_process";
 import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, copyFileSync, writeFileSync } from "node:fs";
-import { copyFile, rename } from "node:fs/promises";
+import { copyFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,7 +36,7 @@ const taskOwners = new Map<string, number>();
 let mainWindow: BrowserWindow | null = null;
 let bootstrapCancelled = false;
 let bootstrapRunning = false;
-const WINDOWS_RUNTIME_VERSION = "2";
+const WINDOWS_RUNTIME_VERSION = "3";
 const RUNTIME_RESOURCE_MIGRATION_VERSION = 5;
 const RUNTIME_RESOURCE_MIGRATION_FILES = [
   path.join("plans", "choukaka.json"),
@@ -161,6 +161,42 @@ function allFiles(directory: string, base = directory): string[] {
   });
 }
 
+function waitForWindowsFileRelease(milliseconds: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function deployStagedWindowsTools(stagingRoot: string, targetRoot: string, files: string[]) {
+  const existingAdb = path.join(targetRoot, "adb.exe");
+  if (existsSync(existingAdb)) {
+    // An old adb server can keep its executable and DLLs locked on Windows 7.
+    await runCommand(existingAdb, ["kill-server"]);
+    await waitForWindowsFileRelease(300);
+  }
+
+  for (let index = 0; index < files.length; index += 1) {
+    const relative = files[index];
+    const source = path.join(stagingRoot, relative);
+    const target = path.join(targetRoot, relative);
+    mkdirSync(path.dirname(target), { recursive: true });
+
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      try {
+        await copyFile(source, target);
+        lastError = undefined;
+        break;
+      } catch (error) {
+        lastError = error;
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES") break;
+        await waitForWindowsFileRelease(250 * (attempt + 1));
+      }
+    }
+    if (lastError) throw new Error(`无法更新内置组件 ${relative}: ${String(lastError)}`);
+    sendEnvironmentEvent({ required: true, ready: false, phase: "running", progress: 90 + Math.round((index + 1) / files.length * 8), message: `正在更新 ${relative}` });
+  }
+}
+
 async function bootstrapWindowsEnvironment(): Promise<EnvironmentState> {
   if (!requiresWindowsBootstrap()) return environmentState();
   if (bootstrapRunning) throw new Error("环境初始化正在进行");
@@ -194,8 +230,9 @@ async function bootstrapWindowsEnvironment(): Promise<EnvironmentState> {
       rmSync(stagingRoot, { recursive: true, force: true });
       return { required: true, ready: false, phase: "cancelled", progress: 0, message: "已取消环境准备" };
     }
-    rmSync(targetRoot, { recursive: true, force: true });
-    await rename(stagingRoot, targetRoot);
+    await deployStagedWindowsTools(stagingRoot, targetRoot, files);
+    writeFileSync(path.join(targetRoot, ".runtime-version"), WINDOWS_RUNTIME_VERSION, "utf8");
+    rmSync(stagingRoot, { recursive: true, force: true });
     bootstrapRunning = false;
     const ready = environmentState();
     sendEnvironmentEvent(ready);
