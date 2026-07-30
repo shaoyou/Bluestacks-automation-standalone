@@ -8,7 +8,7 @@ import {
   Radio,
   Settings2,
 } from "lucide-react";
-import type { AppSettings, EnvironmentState, TaskEvent } from "./types";
+import type { AppSettings, EnvironmentState, LicenseStatus, TaskEvent } from "./types";
 import { appendPlanAction, type Page, type PickedCoordinate, type SharedProps } from "./app/shared";
 import { EnvironmentSetup } from "./components/layout";
 import { ScriptsPage, RunnerPage } from "./pages/ScriptsRunnerPage";
@@ -48,6 +48,7 @@ export function App() {
   const [pickedCoordinates, setPickedCoordinates] = useState<PickedCoordinate[]>([]);
   const [devices, setDevices] = useState<string[]>([]);
   const [environment, setEnvironment] = useState<EnvironmentState | null>(null);
+  const [license, setLicense] = useState<LicenseStatus | null>(null);
 
   const bootstrapEnvironment = async () => {
     setEnvironment((current) => current ? { ...current, phase: "running", progress: 0, message: "正在准备运行环境" } : current);
@@ -82,16 +83,18 @@ export function App() {
   useEffect(() => {
     void (async () => {
       try {
-        const [state, savedSettings, names, environmentState] = await Promise.all([
+        const [state, savedSettings, names, environmentState, licenseState] = await Promise.all([
           window.bsManager.runtimeState(),
           window.bsManager.settingsGet(),
           window.bsManager.plansList(),
           window.bsManager.environmentState(),
+          window.bsManager.licenseGet(),
         ]);
         setRuntime(state);
         setSettings(savedSettings);
         setPlans(names);
         setEnvironment(environmentState);
+        setLicense(licenseState);
         if (names[0]) await loadPlan(names[0]);
         setNotice("运行环境已就绪");
         if (environmentState.required && !environmentState.ready) void bootstrapEnvironment();
@@ -175,7 +178,8 @@ export function App() {
   const startTask = async (id: string, args: string[]) => {
     try {
       setLogs((current) => ({ ...current, [id]: "" }));
-      await window.bsManager.startTask({ id, kind: id.includes("recorder") ? "recorder" : id.includes("diagnostic") ? "diagnostic" : "runner", args });
+      const kind = id === "draw" ? "draw" : id.includes("recorder") ? "recorder" : id.includes("diagnostic") ? "diagnostic" : "runner";
+      await window.bsManager.startTask({ id, kind, args });
     } catch (error) {
       setNotice(`无法启动: ${String(error)}`);
     }
@@ -195,10 +199,27 @@ export function App() {
   };
 
   const clearTaskLog = (id: string) => setLogs((current) => ({ ...current, [id]: "" }));
+  const activateLicense = async (code: string) => {
+    try {
+      const status = await window.bsManager.licenseActivate(code);
+      setLicense(status);
+      setNotice(status.message);
+    } catch (error) {
+      setNotice(`激活失败: ${String(error)}`);
+    }
+  };
+  const clearLicense = async () => {
+    const status = await window.bsManager.licenseClear();
+    setLicense(status);
+    setNotice("已移除本机专业版授权");
+  };
 
   const context = {
     settings,
     setSettings,
+    license,
+    activateLicense,
+    clearLicense,
     runtime,
     plans,
     activePlan,

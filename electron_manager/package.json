@@ -16,7 +16,10 @@
     "prepackage:win": "node scripts/verify_windows_runtime.mjs",
     "package:win": "npm run build && electron-builder --win --x64",
     "prepackage:win7": "node scripts/verify_windows_runtime.mjs vendor/windows/win7-x64",
-    "package:win7": "npm run build && electron-builder --win --x64 --config electron-builder.win7.cjs"
+    "package:win7": "npm run build && electron-builder --win --x64 --config electron-builder.win7.cjs",
+    "license:keygen": "node scripts/license.mjs keygen",
+    "license:issue": "node scripts/license.mjs issue",
+    "license:issue:local": "node scripts/issue-local-license.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",

@@ -1,4 +1,4 @@
-import type { AppSettings } from "../types";
+import type { AppSettings, LicenseStatus } from "../types";
 
 export type Page = "scripts" | "runner" | "draw" | "recorder" | "calibration" | "diagnostics" | "settings";
 export type PickedCoordinate = { x: number; y: number; device: string; capturedAt: string };
@@ -8,6 +8,9 @@ export type RunnerSelection = { plan: string; device: string; profitPerCycle: st
 export type SharedProps = {
   settings: AppSettings;
   setSettings: (settings: AppSettings) => void;
+  license: LicenseStatus | null;
+  activateLicense: (code: string) => Promise<void>;
+  clearLicense: () => Promise<void>;
   runtime: { root: string; plansDir: string; templatesDir: string } | null;
   plans: string[];
   activePlan: string | null;

@@ -5,6 +5,7 @@ import { copyFile, rename } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { activateLicense, clearLicense, getLicenseStatus } from "./license.js";
 
 type Settings = {
   adbPath: string;
@@ -14,7 +15,7 @@ type Settings = {
 
 type TaskRequest = {
   id: string;
-  kind: "runner" | "recorder" | "clickPicker" | "diagnostic";
+  kind: "runner" | "draw" | "recorder" | "clickPicker" | "diagnostic";
   args: string[];
   cwd?: string;
 };
@@ -301,8 +302,21 @@ function sendTaskEvent(event: Record<string, unknown>) {
   }
 }
 
+function assertRunnerCapacity() {
+  const license = getLicenseStatus();
+  const activeRunners = [...tasks.keys()].filter((id) => id.startsWith("runner-")).length;
+  if (activeRunners >= license.maxConcurrentRunners) {
+    throw new Error(
+      license.tier === "pro"
+        ? `专业版当前最多可同时运行 ${license.maxConcurrentRunners} 个任务`
+        : "免费版仅支持同时运行 1 个任务，请在设置中激活专业版",
+    );
+  }
+}
+
 function spawnTask(request: TaskRequest, ownerWebContentsId?: number) {
   if (tasks.has(request.id)) throw new Error("Task is already running");
+  if (request.kind === "runner") assertRunnerCapacity();
   const settings = getSettings();
   const windowsEnvironment = environmentState();
   if (windowsEnvironment.required && !windowsEnvironment.ready) throw new Error("Windows 运行环境尚未准备完成");
@@ -448,6 +462,9 @@ app.whenReady().then(() => {
   });
   ipcMain.handle("settings:get", () => getSettings());
   ipcMain.handle("settings:save", (_, settings: Settings) => saveSettings(settings));
+  ipcMain.handle("license:get", () => getLicenseStatus());
+  ipcMain.handle("license:activate", (_, code: string) => activateLicense(String(code || "")));
+  ipcMain.handle("license:clear", () => clearLicense());
 
   ipcMain.handle("plans:list", () =>
     readdirSync(path.join(runtimeRoot(), "plans"))
@@ -576,7 +593,10 @@ app.whenReady().then(() => {
     return `data:image/png;base64,${result.toString("base64")}`;
   });
 
-  ipcMain.handle("run-window:open", (_, initialPlan?: string) => createRunWindow(initialPlan));
+  ipcMain.handle("run-window:open", (_, initialPlan?: string) => {
+    if (getLicenseStatus().tier !== "pro") throw new Error("多开运行需要专业版，请在设置中输入激活码");
+    createRunWindow(initialPlan);
+  });
   ipcMain.handle("task:start", (event, request: TaskRequest) => spawnTask(request, event.sender.id));
   ipcMain.handle("task:stop", (_, id: string) => {
     const task = tasks.get(id);

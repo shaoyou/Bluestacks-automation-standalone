@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Activity, CircleStop, Crosshair, FolderOpen, MonitorSmartphone, Radio, RefreshCw, Save, SlidersHorizontal, SquareDashedMousePointer, Trash2 } from "lucide-react";
+import { Activity, Check, CircleStop, Copy, Crosshair, FolderOpen, KeyRound, MonitorSmartphone, Radio, RefreshCw, Save, SlidersHorizontal, SquareDashedMousePointer, Trash2 } from "lucide-react";
 import { LogPanel, PageHeading, Toggle } from "../components/layout";
 import type { SharedProps } from "../app/shared";
 
@@ -66,5 +66,20 @@ export function DiagnosticsPage(props: SharedProps) {
 
 export function SettingsPage(props: SharedProps) {
   const save = async () => { const saved = await window.bsManager.settingsSave(props.settings); props.setSettings(saved); props.setNotice("设置已保存"); };
-  return <div className="page"><PageHeading title="环境设置" detail="配置跨平台运行时使用的 ADB 与 Python 可执行文件。" /><div className="settings-stack"><section className="panel form-panel"><label>ADB 可执行文件<input value={props.settings.adbPath} onChange={(event) => props.setSettings({ ...props.settings, adbPath: event.target.value })} /></label><label>Python 可执行文件<input value={props.settings.pythonPath} onChange={(event) => props.setSettings({ ...props.settings, pythonPath: event.target.value })} /></label><p className="field-note">Windows 可以填 `adb.exe` / `python.exe` 或完整路径；macOS 可填 `adb` / `python3`。</p><button className="button primary" onClick={() => void save()}><Save size={16} />保存设置</button></section><section className="panel path-panel"><span className="eyebrow">用户运行目录</span><code>{props.runtime?.root ?? "加载中..."}</code><p>脚本、模板、录制配置和诊断数据都存放在这里；应用升级不会覆盖用户创建的计划文件。</p><button className="button secondary" onClick={() => void window.bsManager.templatesList().then(() => props.setNotice("模板目录可通过系统文件管理器查看"))}><FolderOpen size={16} />检查模板</button></section></div></div>;
+  const [code, setCode] = useState("");
+  const [copied, setCopied] = useState(false);
+  const license = props.license;
+  const isPro = license?.tier === "pro" && license.valid;
+  const copyInstallId = async () => {
+    if (!license?.installId) return;
+    try {
+      await navigator.clipboard.writeText(license.installId);
+      setCopied(true);
+      props.setNotice("安装 ID 已复制");
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch (error) {
+      props.setNotice(`复制安装 ID 失败: ${String(error)}`);
+    }
+  };
+  return <div className="page"><PageHeading title="环境设置" detail="配置跨平台运行时使用的 ADB 与 Python 可执行文件。" /><div className="settings-stack"><section className="panel form-panel"><label>ADB 可执行文件<input value={props.settings.adbPath} onChange={(event) => props.setSettings({ ...props.settings, adbPath: event.target.value })} /></label><label>Python 可执行文件<input value={props.settings.pythonPath} onChange={(event) => props.setSettings({ ...props.settings, pythonPath: event.target.value })} /></label><p className="field-note">Windows 可以填 `adb.exe` / `python.exe` 或完整路径；macOS 可填 `adb` / `python3`。</p><button className="button primary" onClick={() => void save()}><Save size={16} />保存设置</button></section><section className="panel form-panel"><div className="panel-title"><span>专业版授权</span><span className={`run-state ${isPro ? "live" : ""}`}>{isPro ? "专业版" : "免费版"}</span></div><p className="field-note">{license?.message ?? "正在读取授权状态..."}</p><label>安装 ID<div className="inline-input-action"><input readOnly value={license?.installId ?? ""} /><button className="icon-button" title="复制安装 ID" disabled={!license?.installId} onClick={() => void copyInstallId()}>{copied ? <Check size={15} /> : <Copy size={15} />}</button></div>{copied && <small className="copy-success">已复制</small>}</label>{!isPro ? <><label>激活码<textarea className="license-code-input" value={code} placeholder="粘贴专业版激活码" onChange={(event) => setCode(event.target.value)} /></label><button className="button primary" disabled={!code.trim()} onClick={() => void props.activateLicense(code)}><KeyRound size={16} />激活专业版</button></> : <><p className="field-note">最多可同时运行 {license?.maxConcurrentRunners ?? 3} 个自动化任务。</p><button className="button quiet danger" onClick={() => void props.clearLicense()}><Trash2 size={15} />移除本机授权</button></>}</section><section className="panel path-panel"><span className="eyebrow">用户运行目录</span><code>{props.runtime?.root ?? "加载中..."}</code><p>脚本、模板、录制配置和诊断数据都存放在这里；应用升级不会覆盖用户创建的计划文件。</p><button className="button secondary" onClick={() => void window.bsManager.templatesList().then(() => props.setNotice("模板目录可通过系统文件管理器查看"))}><FolderOpen size={16} />检查模板</button></section></div></div>;
 }

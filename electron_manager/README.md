@@ -51,6 +51,59 @@ updates. A real Windows 7 SP1 x64 device remains required for final acceptance
 testing. The target must have the current Visual C++ runtime and Windows updates
 needed by the bundled Android Platform Tools.
 
+## Professional edition activation
+
+Free installs may run one automation task at a time. A Professional edition
+license unlocks separate runner windows and defaults to three concurrent
+runner tasks.
+
+Before publishing the first Professional edition build, generate the signing
+key once:
+
+```sh
+npm run license:keygen
+```
+
+This writes the compact-code Ed25519 private key to
+`.local/license-ed25519-private-key.pem`, retains the legacy RSA key at
+`.local/license-private-key.pem`, and updates `electron/license-public-key.ts`.
+Keep both private keys outside version control and back them up securely. The
+generated public keys are compiled into the application, so package a new build
+after key generation.
+
+For manual fulfillment, have the customer copy the installation ID from
+Settings > Professional edition, then issue a code:
+
+```sh
+npm run license:issue -- \
+  --install-id "customer-installation-id" \
+  --expires 2027-07-30 \
+  --max-runners 3
+```
+
+The default is the compact `P2-xxxxx-xxxxx-...` format, typically around 140
+characters including grouping. The `--expires` option is optional for a
+perpetual license. Send the resulting single-line activation code to the
+customer. The app verifies its signature, installation ID, expiration date, and
+runner limit locally before storing it.
+
+Existing long RSA activation codes remain supported. Use
+`--format legacy` only when a customer is using an older application build.
+
+For the usual one-month manual license, use the local wrapper. It prompts for
+the installation ID when no argument is provided, echoes the user ID, and
+prints a compact activation code:
+
+```sh
+npm run license:issue:local
+```
+
+You can also supply the installation ID and optional concurrent-runner limit:
+
+```sh
+npm run license:issue:local -- "customer-installation-id" 3
+```
+
 ### Self-contained Windows package
 
 Build the Windows runtime on a Windows x64 machine or Windows CI before creating

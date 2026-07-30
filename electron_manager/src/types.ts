@@ -4,7 +4,7 @@ export type AppSettings = {
   language: "zh" | "en";
 };
 
-export type TaskKind = "runner" | "recorder" | "clickPicker" | "diagnostic";
+export type TaskKind = "runner" | "draw" | "recorder" | "clickPicker" | "diagnostic";
 
 export type TaskEvent = {
   id: string;
@@ -29,6 +29,15 @@ export type EnvironmentState = {
   error?: string;
 };
 
+export type LicenseStatus = {
+  installId: string;
+  tier: "free" | "pro";
+  valid: boolean;
+  maxConcurrentRunners: number;
+  expiresAt?: string;
+  message: string;
+};
+
 declare global {
   interface Window {
     bsManager: {
@@ -38,6 +47,9 @@ declare global {
       environmentCancel(): Promise<void>;
       settingsGet(): Promise<AppSettings>;
       settingsSave(settings: AppSettings): Promise<AppSettings>;
+      licenseGet(): Promise<LicenseStatus>;
+      licenseActivate(code: string): Promise<LicenseStatus>;
+      licenseClear(): Promise<LicenseStatus>;
       plansList(): Promise<string[]>;
       plansRead(name: string): Promise<string>;
       plansSave(name: string, text: string): Promise<void>;
