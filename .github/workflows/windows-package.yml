@@ -95,6 +95,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: bs-manager-windows-7-x64-legacy-${{ github.run_number }}
-          path: electron_manager/release/win7-legacy
+          path: |
+            electron_manager/release/win7-legacy/*.exe
+            electron_manager/release/win7-legacy/*.zip
           if-no-files-found: error
           retention-days: 14

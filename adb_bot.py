@@ -74,7 +74,18 @@ _TEMPLATE_VARIANT_CACHE: Dict[Tuple[str, int, int, int, int, Tuple[float, ...]],
 SCREENSHOT_SESSION_KEY = "_save_screenshot_session_id"
 SCREENSHOT_COUNTERS_KEY = "_save_screenshot_pair_counters"
 SCREENSHOT_ACTIVE_KEY = "_save_screenshot_active_pairs"
-DEFAULT_RESULT_SCREENSHOT_DIR = Path(__file__).resolve().parent / "diagnostics" / "draw_result_pairs"
+
+
+def runtime_data_root() -> Path:
+    # PyInstaller one-file apps run from a temporary _MEI directory. On Windows 7,
+    # resolving that virtual path can fail, and diagnostics must outlive the process.
+    if getattr(sys, "frozen", False):
+        return Path.cwd()
+    return Path(__file__).parent
+
+
+RUNTIME_DATA_ROOT = runtime_data_root()
+DEFAULT_RESULT_SCREENSHOT_DIR = RUNTIME_DATA_ROOT / "diagnostics" / "draw_result_pairs"
 SCREENSHOT_INDEX_CSV = "index.csv"
 SCREENSHOT_INDEX_JSONL = "index.jsonl"
 SCREENSHOT_INDEX_FIELDS = [
@@ -92,11 +103,11 @@ SCREENSHOT_INDEX_FIELDS = [
     "composite_saved_at",
 ]
 DRAW_STATS_COUNTS_KEY = "_draw_stats_counts"
-DEFAULT_DRAW_STATS_DIR = Path(__file__).resolve().parent / "diagnostics" / "draw_stats"
+DEFAULT_DRAW_STATS_DIR = RUNTIME_DATA_ROOT / "diagnostics" / "draw_stats"
 DRAW_STATS_EVENTS_JSONL_SUFFIX = "_events.jsonl"
 DRAW_STATS_SUMMARY_SUFFIX = "_summary.json"
 DRAW_STATS_LATEST_SUMMARY = "latest_summary.json"
-DEFAULT_RED_LIGHT_DEBUG_DIR = Path(__file__).resolve().parent / "diagnostics" / "red_light_debug"
+DEFAULT_RED_LIGHT_DEBUG_DIR = RUNTIME_DATA_ROOT / "diagnostics" / "red_light_debug"
 DEFAULT_RED_LIGHT_REGIONS = [
     {"name": "left", "x": 110, "y": 300, "width": 250, "height": 760},
     {"name": "center", "x": 390, "y": 220, "width": 300, "height": 860},
@@ -935,7 +946,7 @@ def image_match_debug_dir(ctx: RunContext, action: Dict[str, Any]) -> Path:
     if raw_dir:
         path = resolve_action_file_path(ctx, raw_dir)
     else:
-        path = Path(__file__).resolve().parent / "diagnostics" / "image_match_debug"
+        path = RUNTIME_DATA_ROOT / "diagnostics" / "image_match_debug"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
