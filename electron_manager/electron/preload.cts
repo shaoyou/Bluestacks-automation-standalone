@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld("bsManager", {
   plansCreate: (name: string) => ipcRenderer.invoke("plans:create", name),
   plansDelete: (name: string) => ipcRenderer.invoke("plans:delete", name),
   templatesList: () => ipcRenderer.invoke("templates:list"),
+  templatesOpenFolder: () => ipcRenderer.invoke("templates:open-folder"),
   templatesImport: () => ipcRenderer.invoke("templates:import"),
   templatesSaveCapture: (name: string, dataUrl: string) => ipcRenderer.invoke("templates:save-capture", name, dataUrl),
   drawListSessions: () => ipcRenderer.invoke("draw:list-sessions"),

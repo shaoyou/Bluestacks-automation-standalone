@@ -56,6 +56,7 @@ declare global {
       plansCreate(name: string): Promise<string>;
       plansDelete(name: string): Promise<void>;
       templatesList(): Promise<string[]>;
+      templatesOpenFolder(): Promise<void>;
       templatesImport(): Promise<string | null>;
       templatesSaveCapture(name: string, dataUrl: string): Promise<string>;
       drawListSessions(): Promise<Array<{ file: string; summary: Record<string, unknown> }>>;

@@ -33,11 +33,12 @@ const thisDir = path.dirname(fileURLToPath(import.meta.url));
 const isDevelopment = !app.isPackaged;
 const tasks = new Map<string, ChildProcess>();
 const taskOwners = new Map<string, number>();
+const runnerWindows = new Set<number>();
 let mainWindow: BrowserWindow | null = null;
 let bootstrapCancelled = false;
 let bootstrapRunning = false;
 const WINDOWS_RUNTIME_VERSION = "5";
-const RUNTIME_RESOURCE_MIGRATION_VERSION = 5;
+const RUNTIME_RESOURCE_MIGRATION_VERSION = 6;
 const RUNTIME_RESOURCE_MIGRATION_FILES = [
   path.join("plans", "choukaka.json"),
   path.join("image_templates", "role_done.png"),
@@ -416,7 +417,7 @@ async function runCommand(command: string, args: string[]) {
 function loadRenderer(window: BrowserWindow, mode: "main" | "runner", runnerId?: string, initialPlan?: string) {
   const query = new URLSearchParams({ mode, ...(runnerId ? { runnerId } : {}), ...(initialPlan ? { plan: initialPlan } : {}) });
   if (isDevelopment) {
-    void window.loadURL(`${process.env.VITE_DEV_SERVER_URL ?? "http://127.0.0.1:5173"}?${query}`);
+    void window.loadURL(`${process.env.VITE_DEV_SERVER_URL ?? "http://localhost:5173"}?${query}`);
   } else {
     void window.loadFile(path.join(thisDir, "../dist/index.html"), { query: Object.fromEntries(query) });
   }
@@ -459,6 +460,7 @@ function createRunWindow(initialPlan?: string) {
       nodeIntegration: false,
     },
   });
+  runnerWindows.add(window.id);
   window.on("close", (event) => {
     const ownedTaskIds = [...taskOwners.entries()]
       .filter(([, ownerId]) => ownerId === window.webContents.id)
@@ -480,6 +482,9 @@ function createRunWindow(initialPlan?: string) {
       const task = tasks.get(taskId);
       if (task) process.platform === "win32" ? task.kill() : task.kill("SIGINT");
     }
+  });
+  window.on("closed", () => {
+    runnerWindows.delete(window.id);
   });
   loadRenderer(window, "runner", runnerId, initialPlan);
 }
@@ -527,6 +532,11 @@ app.whenReady().then(() => {
       .filter((name) => /\.(png|jpe?g|webp)$/i.test(name))
       .sort(),
   );
+  ipcMain.handle("templates:open-folder", async () => {
+    const directory = path.join(runtimeRoot(), "image_templates");
+    const error = await shell.openPath(directory);
+    if (error) throw new Error(error);
+  });
   ipcMain.handle("templates:import", async () => {
     const result = await dialog.showOpenDialog(mainWindow!, {
       properties: ["openFile"],
@@ -631,7 +641,12 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle("run-window:open", (_, initialPlan?: string) => {
-    if (getLicenseStatus().tier !== "pro") throw new Error("多开运行需要专业版，请在设置中输入激活码");
+    const license = getLicenseStatus();
+    if (license.tier !== "pro") throw new Error("多开运行需要专业版，请在设置中输入激活码");
+    const maxAdditionalWindows = Math.max(0, license.maxConcurrentRunners - 1);
+    if (runnerWindows.size >= maxAdditionalWindows) {
+      throw new Error(`专业版最多可额外打开 ${maxAdditionalWindows} 个运行窗口`);
+    }
     createRunWindow(initialPlan);
   });
   ipcMain.handle("task:start", (event, request: TaskRequest) => spawnTask(request, event.sender.id));

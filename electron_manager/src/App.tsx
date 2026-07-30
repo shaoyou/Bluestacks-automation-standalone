@@ -10,15 +10,15 @@ import {
 } from "lucide-react";
 import type { AppSettings, EnvironmentState, LicenseStatus, TaskEvent } from "./types";
 import { appendPlanAction, type Page, type PickedCoordinate, type SharedProps } from "./app/shared";
-import { EnvironmentSetup } from "./components/layout";
+import { EnvironmentSetup, LicenseActivationDialog } from "./components/layout";
 import { ScriptsPage, RunnerPage } from "./pages/ScriptsRunnerPage";
 import { CalibrationPage, DiagnosticsPage, RecorderPage, SettingsPage } from "./pages/DevicePages";
 import { DrawPage } from "./pages/DrawPage";
 
 const navItems: { id: Page; label: string; icon: typeof Code2 }[] = [
-  { id: "scripts", label: "脚本", icon: Code2 },
   { id: "runner", label: "运行", icon: Play },
   { id: "draw", label: "抽卡", icon: Activity },
+  { id: "scripts", label: "脚本", icon: Code2 },
   { id: "recorder", label: "录制", icon: Radio },
   { id: "calibration", label: "标定", icon: Crosshair },
   { id: "diagnostics", label: "诊断", icon: Activity },
@@ -35,7 +35,7 @@ export function App() {
   const windowMode = query.get("mode") === "runner" ? "runner" : "main";
   const runnerId = query.get("runnerId") || "main";
   const initialRunnerPlan = query.get("plan") || "";
-  const [page, setPage] = useState<Page>(windowMode === "runner" ? "runner" : "draw");
+  const [page, setPage] = useState<Page>("runner");
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [runtime, setRuntime] = useState<{ root: string; plansDir: string; templatesDir: string } | null>(null);
   const [plans, setPlans] = useState<string[]>([]);
@@ -49,6 +49,8 @@ export function App() {
   const [devices, setDevices] = useState<string[]>([]);
   const [environment, setEnvironment] = useState<EnvironmentState | null>(null);
   const [license, setLicense] = useState<LicenseStatus | null>(null);
+  const [activationOpen, setActivationOpen] = useState(false);
+  const [activationError, setActivationError] = useState("");
 
   const bootstrapEnvironment = async () => {
     setEnvironment((current) => current ? { ...current, phase: "running", progress: 0, message: "正在准备运行环境" } : current);
@@ -200,18 +202,27 @@ export function App() {
 
   const clearTaskLog = (id: string) => setLogs((current) => ({ ...current, [id]: "" }));
   const activateLicense = async (code: string) => {
+    setActivationError("");
     try {
       const status = await window.bsManager.licenseActivate(code);
       setLicense(status);
       setNotice(status.message);
+      return true;
     } catch (error) {
-      setNotice(`激活失败: ${String(error)}`);
+      const message = `激活失败: ${String(error)}`;
+      setNotice(message);
+      setActivationError(message);
+      return false;
     }
   };
   const clearLicense = async () => {
     const status = await window.bsManager.licenseClear();
     setLicense(status);
     setNotice("已移除本机专业版授权");
+  };
+  const openLicenseActivation = () => {
+    setActivationError("");
+    setActivationOpen(true);
   };
 
   const context = {
@@ -220,6 +231,7 @@ export function App() {
     license,
     activateLicense,
     clearLicense,
+    openLicenseActivation,
     runtime,
     plans,
     activePlan,
@@ -253,7 +265,8 @@ export function App() {
   }
 
   return (
-    <main className="app-shell">
+    <>
+      <main className="app-shell">
       <aside className="sidebar">
         <div className="brand"><Bot size={23} /> <span>熊熊乐园小助手</span></div>
         <nav>
@@ -274,6 +287,8 @@ export function App() {
         {page === "diagnostics" && <DiagnosticsPage {...context} />}
         {page === "settings" && <SettingsPage {...context} />}
       </section>
-    </main>
+      </main>
+      {activationOpen && <LicenseActivationDialog onActivate={activateLicense} error={activationError} onClose={() => setActivationOpen(false)} />}
+    </>
   );
 }

@@ -24,6 +24,64 @@ function actionRemark(type: string, label: string) {
   return `${type}: ${label}`;
 }
 
+function actionsBounds(source: string) {
+  const match = /"actions"\s*:\s*\[/.exec(source);
+  if (!match || match.index === undefined) return null;
+  const start = match.index + match[0].lastIndexOf("[");
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  for (let index = start; index < source.length; index += 1) {
+    const character = source[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === "\"") quoted = false;
+      continue;
+    }
+    if (character === "\"") quoted = true;
+    else if (character === "[") depth += 1;
+    else if (character === "]") {
+      depth -= 1;
+      if (depth === 0) return { start, end: index };
+    }
+  }
+  return null;
+}
+
+function cursorIsInArray(source: string, cursor: number) {
+  const stack: string[] = [];
+  let quoted = false;
+  let escaped = false;
+  for (let index = 0; index < cursor; index += 1) {
+    const character = source[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === "\"") quoted = false;
+      continue;
+    }
+    if (character === "\"") quoted = true;
+    else if (character === "{" || character === "[") stack.push(character);
+    else if (character === "}" || character === "]") stack.pop();
+  }
+  return stack.at(-1) === "[";
+}
+
+function insertActionAtCursor(source: string, cursor: number, action: Record<string, unknown>) {
+  const bounds = actionsBounds(source);
+  if (!bounds || cursor < bounds.start + 1 || cursor > bounds.end || !cursorIsInArray(source, cursor)) return null;
+  const before = source.slice(bounds.start + 1, cursor).match(/\S(?=\s*$)/)?.[0] ?? "";
+  const after = source.slice(cursor, bounds.end).match(/\S/)?.[0] ?? "";
+  const lineStart = source.lastIndexOf("\n", cursor - 1) + 1;
+  const indent = source.slice(lineStart, cursor).match(/^[\t ]*/)?.[0] ?? "  ";
+  const formattedAction = JSON.stringify(action, null, 2).split("\n").map((line) => `${indent}${line}`).join("\n");
+  const prefix = before && before !== "[" && before !== "," ? "," : "";
+  const suffix = after && after !== "]" && after !== "," ? "," : "";
+  const insertion = `${prefix}\n${formattedAction}${suffix}${after && after !== "]" ? `\n${indent}` : ""}`;
+  return { source: `${source.slice(0, cursor)}${insertion}${source.slice(cursor)}`, cursor: cursor + insertion.length };
+}
+
 function ScreenshotSelector({
   image,
   mode,
@@ -107,8 +165,11 @@ export function ScriptsPage(props: SharedProps) {
   const [wheelAngle, setWheelAngle] = useState("0");
   const [wheelTurns, setWheelTurns] = useState<WheelTurn[]>([]);
   const turnCounter = useRef(0);
+  const editorRef = useRef<HTMLTextAreaElement>(null);
+  const editorSelection = useRef({ start: 0, end: 0 });
   useEffect(() => { void window.bsManager.templatesList().then(setTemplates); }, []);
   useEffect(() => { if (!editorDevice && props.devices.length === 1) setEditorDevice(props.devices[0]); }, [editorDevice, props.devices]);
+  useEffect(() => { editorSelection.current = { start: 0, end: 0 }; }, [props.activePlan]);
   useEffect(() => {
     try {
       const raw = (JSON.parse(props.source) as { variables?: unknown }).variables;
@@ -126,7 +187,18 @@ export function ScriptsPage(props: SharedProps) {
     catch (error) { props.setNotice(`刷新失败: ${String(error)}`); }
   };
   const numeric = numberValue;
-  const append = (action: Record<string, unknown>) => props.insertAction(action);
+  const append = (action: Record<string, unknown>) => {
+    if (!props.activePlan) return props.setNotice("请先选择计划文件");
+    const insertion = insertActionAtCursor(props.source, editorSelection.current.start, action);
+    if (!insertion) return props.setNotice("请将光标放在 actions 数组内，再插入动作");
+    props.setSource(insertion.source);
+    props.setNotice("动作已插入当前光标位置，请保存");
+    editorSelection.current = { start: insertion.cursor, end: insertion.cursor };
+    window.requestAnimationFrame(() => {
+      editorRef.current?.focus();
+      editorRef.current?.setSelectionRange(insertion.cursor, insertion.cursor);
+    });
+  };
   const imageSearchRegion = region ?? { x: 0, y: 0, width: captureSize.width, height: captureSize.height };
   const insertImage = (kind: "find_image" | "find_image_click" | "if_image") => {
     if (!quickTemplate) return props.setNotice("请先选择图像模板");
@@ -217,7 +289,7 @@ export function ScriptsPage(props: SharedProps) {
     <PageHeading title="脚本工作区" detail="编辑 JSON 计划，并从设备取点、裁图和生成常用自动化动作。"><button className="button secondary" onClick={props.createPlan}><Plus size={16} />新建</button><button className="button secondary" onClick={() => void props.refreshDevices()}><RefreshCw size={16} />刷新设备</button>{props.running[debugTaskId] ? <button className="button danger" onClick={() => void window.bsManager.stopTask(debugTaskId)}><CircleStop size={16} />停止调试</button> : <button className="button secondary" disabled={!props.activePlan || dirty} onClick={debug}><Play size={16} />调试运行</button>}<button className="button primary" disabled={!props.activePlan || !dirty} onClick={() => void props.savePlan()}><Save size={16} />保存</button></PageHeading>
     <div className="script-layout">
       <section className="plan-list panel"><div className="panel-title"><span>计划文件</span><button className="icon-button" title="刷新" onClick={() => void refresh()}><RefreshCw size={15} /></button></div><div className="plan-scroll">{props.plans.map((name) => <button key={name} className={`plan-item ${name === props.activePlan ? "selected" : ""}`} onClick={() => void props.loadPlan(name)}><FileCode2 size={16} /><span>{name}</span></button>)}</div><div className="list-footer"><button className="button quiet danger" disabled={!props.activePlan} onClick={() => void props.deletePlan()}><Trash2 size={15} />删除</button></div></section>
-      <section className="editor-column"><div className="editor-toolbar"><div><span className="eyebrow">JSON 计划</span><strong>{props.activePlan ?? "未选择计划"}</strong>{dirty && <span className="dirty-mark">未保存</span>}</div><button className="button quiet" onClick={() => void window.bsManager.templatesImport().then(async (value) => { if (value) { setTemplates(await window.bsManager.templatesList()); props.setNotice(`模板已导入: ${value}`); } })}><Upload size={15} />导入模板</button></div><textarea className="code-editor" aria-label="脚本 JSON 编辑器" spellCheck={false} value={props.source} onChange={(event) => { props.setSource(event.target.value); props.setNotice("正在编辑"); }} /></section>
+      <section className="editor-column"><div className="editor-toolbar"><div><span className="eyebrow">JSON 计划</span><strong>{props.activePlan ?? "未选择计划"}</strong>{dirty && <span className="dirty-mark">未保存</span>}</div><button className="button quiet" onClick={() => void window.bsManager.templatesImport().then(async (value) => { if (value) { setTemplates(await window.bsManager.templatesList()); props.setNotice(`模板已导入: ${value}`); } })}><Upload size={15} />导入模板</button></div><textarea ref={editorRef} className="code-editor" aria-label="脚本 JSON 编辑器" spellCheck={false} value={props.source} onSelect={(event) => { editorSelection.current = { start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd }; }} onBlur={(event) => { editorSelection.current = { start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd }; }} onChange={(event) => { editorSelection.current = { start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd }; props.setSource(event.target.value); props.setNotice("正在编辑"); }} /></section>
       <aside className="inspector">
         <section className="panel script-device-panel"><div className="panel-title"><span>编辑设备</span><span className={`run-state ${props.running[debugTaskId] ? "live" : ""}`}>{props.running[debugTaskId] ? "调试中" : "待命"}</span></div><div><select aria-label="编辑设备" value={editorDevice} onChange={(event) => setEditorDevice(event.target.value)}><option value="">选择设备</option>{props.devices.map((device) => <option key={device}>{device}</option>)}</select><div className="picker-actions">{!props.running["click-picker"] ? <button className="button secondary" onClick={startPicker}><Crosshair size={15} />开始取点</button> : <button className="button danger" onClick={() => void window.bsManager.stopTask("click-picker")}><CircleStop size={15} />停止取点</button>}<button className="button quiet" disabled={!props.pickedCoordinates.length} onClick={() => props.setPickedCoordinates([])}><Trash2 size={14} />清空</button></div>{props.pickedCoordinates.length > 0 && <div className="coordinate-list">{props.pickedCoordinates.map((point, index) => <div key={`${point.capturedAt}-${index}`}><code>x={point.x}, y={point.y}</code><span><button className="icon-button" title="插入点击" onClick={() => append({ type: "click", x: point.x, y: point.y, remark: `点击(${point.x},${point.y})` })}><Plus size={14} /></button><button className="icon-button" title="设为摇杆中心" onClick={() => { setWheelCenterX(String(point.x)); setWheelBottomInset(String(Math.max(0, captureSize.height - point.y))); }}><Crosshair size={14} /></button><button className="icon-button" title="复制坐标" onClick={() => void navigator.clipboard.writeText(`x=${point.x}, y=${point.y}`)}><Copy size={14} /></button></span></div>)}</div>}</div></section>
         <section className="panel"><div className="panel-title"><span>运行变量</span><button className="icon-button" title="添加变量" onClick={() => setVariables([...variables, { name: "", value: "", note: "" }])}><Plus size={15} /></button></div><div className="variables">{variables.length === 0 && <p className="empty-note">此计划暂无变量。</p>}{variables.map((item, index) => <div className="variable-row" key={`${item.name}-${index}`}><input aria-label="变量名" value={item.name} placeholder="NAME" onChange={(event) => setVariables(variables.map((v, i) => i === index ? { ...v, name: event.target.value } : v))} /><input aria-label="变量值" value={item.value} placeholder="value" onChange={(event) => setVariables(variables.map((v, i) => i === index ? { ...v, value: event.target.value } : v))} /><input aria-label="变量备注" value={item.note} placeholder="备注" onChange={(event) => setVariables(variables.map((v, i) => i === index ? { ...v, note: event.target.value } : v))} /><button className="icon-button" title="删除变量" onClick={() => setVariables(variables.filter((_, i) => i !== index))}><Trash2 size={14} /></button></div>)}</div><button className="button secondary full" onClick={applyVariables}><Save size={15} />应用变量</button></section>
@@ -261,7 +333,7 @@ export function RunnerPage(props: SharedProps & { runnerId?: string; initialPlan
   const updateSelection = (next: Partial<RunnerSelection>) => setSelection((current) => ({ ...current, ...next }));
   const updateVariable = (index: number, key: "value" | "note", value: string) => setVariables(variables.map((variable, variableIndex) => variableIndex === index ? { ...variable, [key]: value } : variable));
   return <div className={`page runner-page ${props.standalone ? "runner-page-standalone" : ""}`}>
-    <PageHeading title={props.standalone ? "运行窗口" : "运行中心"} detail={props.standalone ? "此窗口的计划、设备、变量和日志均独立运行。" : "当前页面内置一个运行器；专业版可继续打开多个独立运行窗口并行执行。"}><button className="button secondary" onClick={() => void props.refreshDevices()}><RefreshCw size={16} />刷新设备</button>{!props.standalone && <button className="button primary" onClick={() => { if (!canMultiRun) { props.setNotice("多开运行需要专业版，请到设置页输入激活码"); return; } void window.bsManager.openRunWindow(selection.plan).catch((error) => props.setNotice(`无法打开运行窗口: ${String(error)}`)); }}>{canMultiRun ? <PanelsTopLeft size={16} /> : <LockKeyhole size={16} />}{canMultiRun ? "多开运行" : "专业版多开"}</button>}</PageHeading>
+    <PageHeading title={props.standalone ? "运行窗口" : "运行中心"} detail={props.standalone ? "此窗口的计划、设备、变量和日志均独立运行。" : "当前页面内置一个运行器；专业版可继续打开多个独立运行窗口并行执行。"}><button className="button secondary" onClick={() => void props.refreshDevices()}><RefreshCw size={16} />刷新设备</button>{!props.standalone && <button className="button primary" onClick={() => { if (!canMultiRun) { props.openLicenseActivation(); return; } void window.bsManager.openRunWindow(selection.plan).catch((error) => props.setNotice(`无法打开运行窗口: ${String(error)}`)); }}>{canMultiRun ? <PanelsTopLeft size={16} /> : <LockKeyhole size={16} />}{canMultiRun ? "多开运行" : "专业版多开"}</button>}</PageHeading>
     <div className="device-strip panel"><MonitorSmartphone size={18} /><strong>已发现 {props.devices.length} 个设备</strong><span>{props.devices.join("  ·  ") || "请检查 ADB 路径、模拟器或 USB 调试连接"}</span></div>
     <section className="runner-card panel"><div className="runner-header"><div><span className="eyebrow">自动化进程</span><h2>{props.standalone ? `运行窗口 ${runnerId.slice(-6)}` : "内置运行器"}</h2></div><span className={`run-state ${running ? "live" : ""}`}>{running ? "运行中" : "待命"}</span></div><div className="runner-fields"><label>计划<select value={selection.plan} onChange={(event) => updateSelection({ plan: event.target.value })}>{props.plans.map((name) => <option key={name}>{name}</option>)}</select></label><label>设备<input list={`runner-devices-${runnerId}`} value={selection.device} placeholder="使用计划默认设备" onChange={(event) => updateSelection({ device: event.target.value })} /><datalist id={`runner-devices-${runnerId}`}>{props.devices.map((name) => <option key={name} value={name} />)}</datalist></label></div><div className="runner-actions">{!running ? <button className="button primary" disabled={!selection.plan} onClick={start}><Play size={16} />启动</button> : <button className="button danger" onClick={() => void window.bsManager.stopTask(taskId)}><CircleStop size={16} />停止</button>}<button className="button quiet" onClick={() => props.clearTaskLog(taskId)}><Trash2 size={15} />清日志</button><button className="icon-button" title="复制日志" onClick={() => void navigator.clipboard.writeText(rawLog)}><Copy size={16} /></button></div><div className="runner-metrics"><span>循环 {cycles || "--"}</span><span>点击 {clicks}</span><span className={errors ? "metric-error" : ""}>错误 {errors}</span><label className="runner-profit">单次收益<input value={selection.profitPerCycle} onChange={(event) => updateSelection({ profitPerCycle: event.target.value })} /></label><span>预期 {expectedProfit}</span><Toggle label="实时输出" checked={selection.showRealtimeLogs} onChange={(showRealtimeLogs) => updateSelection({ showRealtimeLogs })} /></div><section className="runner-variables"><div className="panel-title"><span>运行变量</span><button className="button quiet" onClick={() => void saveVariables()}><Save size={15} />保存变量</button></div>{variables.length ? <div className="runner-variable-list">{variables.map((variable, index) => <div key={`${variable.name}-${index}`}><strong>{variable.name}</strong><input aria-label={`${variable.name} 的值`} value={variable.value} onChange={(event) => updateVariable(index, "value", event.target.value)} onBlur={() => void saveVariables(variables)} /><input aria-label={`${variable.name} 的备注`} value={variable.note} placeholder="备注" onChange={(event) => updateVariable(index, "note", event.target.value)} onBlur={() => void saveVariables(variables)} /></div>)}</div> : <p className="empty-note padded-note">此计划暂无运行变量。</p>}</section><pre className="log-output">{log || "等待运行日志..."}</pre></section>
   </div>;

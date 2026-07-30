@@ -9,8 +9,9 @@ export type SharedProps = {
   settings: AppSettings;
   setSettings: (settings: AppSettings) => void;
   license: LicenseStatus | null;
-  activateLicense: (code: string) => Promise<void>;
+  activateLicense: (code: string) => Promise<boolean>;
   clearLicense: () => Promise<void>;
+  openLicenseActivation: () => void;
   runtime: { root: string; plansDir: string; templatesDir: string } | null;
   plans: string[];
   activePlan: string | null;

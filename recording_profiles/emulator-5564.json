@@ -1,0 +1,11 @@
+{
+  "tap_distance_px": 20.0,
+  "tap_duration_sec": 0.4,
+  "min_swipe_duration_sec": 0.18,
+  "merge_gap_sec": 0.5,
+  "merge_distance_px": 14.0,
+  "continuation_gap_sec": 1.45,
+  "continuation_distance_px": 16.0,
+  "continuation_span_px": 40.0,
+  "continuation_duration_ms": 700.0
+}

@@ -32,7 +32,10 @@
                     0.75,
                     1
                   ],
-                  "template": "../image_templates/role_cancel_phone.png",
+                  "templates": [
+                    "../image_templates/role_cancel.png",
+                    "../image_templates/role_cancel_phone.png"
+                  ],
                   "then_actions": [
                     {
                       "remark": "兜底点击放弃按钮",
@@ -106,7 +109,10 @@
                     "max_candidates": 1
                   },
                   "cancel": {
-                    "template": "../image_templates/role_cancel_phone.png",
+                    "templates": [
+                      "../image_templates/role_cancel.png",
+                      "../image_templates/role_cancel_phone.png"
+                    ],
                     "region": {
                       "height": 72,
                       "width": 148,
@@ -124,7 +130,10 @@
                     {
                       "type": "if_image",
                       "remark": "兜底：最后检查放弃按钮",
-                      "template": "../image_templates/role_cancel_phone.png",
+                      "templates": [
+                        "../image_templates/role_cancel.png",
+                        "../image_templates/role_cancel_phone.png"
+                      ],
                       "region": {
                         "height": 72,
                         "width": 148,
@@ -329,7 +338,10 @@
                     "max_candidates": 1
                   },
                   "cancel": {
-                    "template": "../image_templates/role_cancel_phone.png",
+                    "templates": [
+                      "../image_templates/role_cancel.png",
+                      "../image_templates/role_cancel_phone.png"
+                    ],
                     "region": {
                       "height": 72,
                       "width": 148,
@@ -347,7 +359,10 @@
                     {
                       "type": "if_image",
                       "remark": "兜底：最后检查放弃按钮",
-                      "template": "../image_templates/role_cancel_phone.png",
+                      "templates": [
+                        "../image_templates/role_cancel.png",
+                        "../image_templates/role_cancel_phone.png"
+                      ],
                       "region": {
                         "height": 72,
                         "width": 148,
@@ -432,7 +447,10 @@
                     "max_candidates": 1
                   },
                   "cancel": {
-                    "template": "../image_templates/role_cancel_phone.png",
+                    "templates": [
+                      "../image_templates/role_cancel.png",
+                      "../image_templates/role_cancel_phone.png"
+                    ],
                     "region": {
                       "height": 72,
                       "width": 148,
@@ -450,7 +468,10 @@
                     {
                       "type": "if_image",
                       "remark": "兜底：最后检查放弃按钮",
-                      "template": "../image_templates/role_cancel_phone.png",
+                      "templates": [
+                        "../image_templates/role_cancel.png",
+                        "../image_templates/role_cancel_phone.png"
+                      ],
                       "region": {
                         "height": 72,
                         "width": 148,
