@@ -267,6 +267,16 @@ function resolveExecutable(rawPath: string, fallback: string): string {
   return resolved;
 }
 
+function resolveAdbExecutable(rawPath: string): string {
+  const requested = (rawPath || "").trim();
+  if (requiresWindowsBootstrap() && (!requested || requested === "adb" || requested === "adb.exe")) {
+    const bundled = path.join(installedWindowsToolsRoot(), "adb.exe");
+    if (!existsSync(bundled)) throw new Error(`内置 ADB 不存在: ${bundled}`);
+    return bundled;
+  }
+  return resolveExecutable(requested, process.platform === "win32" ? "adb.exe" : "adb");
+}
+
 function saveSettings(settings: Settings): Settings {
   writeFileSync(
     path.join(app.getPath("userData"), "settings.json"),
@@ -330,7 +340,7 @@ async function runCommand(command: string, args: string[]) {
   return new Promise<{ code: number; text: string }>((resolve) => {
     let executable: string;
     try {
-      executable = resolveExecutable(command, process.platform === "win32" ? "adb.exe" : "adb");
+      executable = resolveAdbExecutable(command);
     } catch (error) {
       resolve({ code: -1, text: String(error) });
       return;
@@ -496,7 +506,7 @@ app.whenReady().then(() => {
   });
   ipcMain.handle("adb:run", (_, adbPath: string, args: string[]) => runCommand(adbPath || getSettings().adbPath, args));
   ipcMain.handle("adb:screenshot", async (_, adbPath: string, device: string) => {
-    const executable = resolveExecutable(adbPath, process.platform === "win32" ? "adb.exe" : "adb");
+    const executable = resolveAdbExecutable(adbPath || getSettings().adbPath);
     const result = await new Promise<Buffer>((resolve, reject) => {
       const proc = spawn(executable, ["-s", device, "exec-out", "screencap", "-p"], { windowsHide: true, env: runtimeEnvironment() });
       const chunks: Buffer[] = [];
