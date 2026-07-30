@@ -81,7 +81,7 @@ SPARSE_ABS_IDLE_SPLIT_SEC = 0.55
 
 
 def run_cmd(cmd: List[str], check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, text=True, capture_output=True, check=check)
+    return subprocess.run(cmd, text=True, encoding="utf-8", errors="replace", capture_output=True, check=check)
 
 
 def normalize_profile(raw: Optional[Dict[str, object]]) -> Dict[str, float]:
@@ -597,7 +597,7 @@ def record_gestures(
     on_gesture_raw_captured: Optional[Callable[[Gesture, str, List[str]], None]] = None,
 ) -> Tuple[List[Gesture], str]:
     cmd = adb_cmd(adb, device, ["shell", "getevent", "-lt"])
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1)
     assert proc.stdout is not None
 
     selected_dev: Optional[str] = forced_event_dev if forced_event_dev else None

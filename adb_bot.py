@@ -337,7 +337,7 @@ def resolve_plan_env_value(value: Any, path: str = "plan", variables: Optional[D
 
 
 def run_cmd(cmd: List[str], check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, text=True, capture_output=True, check=check)
+    return subprocess.run(cmd, text=True, encoding="utf-8", errors="replace", capture_output=True, check=check)
 
 
 def adb_output_is_transient(text: str) -> bool:
