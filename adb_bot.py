@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import datetime as dt
 import io
 import json
 import os
@@ -38,6 +39,10 @@ class BotError(RuntimeError):
 class RunContext:
     adb_path: str
     device: Optional[str]
+    user_id: str
+    source_id: str
+    source_name: str
+    source_file: Optional[Path]
     dry_run: bool
     jitter: int
     stop_at: Optional[float]
@@ -90,7 +95,13 @@ RUNTIME_DATA_ROOT = runtime_data_root()
 DEFAULT_RESULT_SCREENSHOT_DIR = RUNTIME_DATA_ROOT / "diagnostics" / "draw_result_pairs"
 SCREENSHOT_INDEX_CSV = "index.csv"
 SCREENSHOT_INDEX_JSONL = "index.jsonl"
+DEFAULT_SCREEN_WIDTH = 1080
+DEFAULT_SCREEN_HEIGHT = 1920
 SCREENSHOT_INDEX_FIELDS = [
+    "device",
+    "user_id",
+    "source_id",
+    "source_name",
     "session_id",
     "pair_key",
     "pair_index",
@@ -334,6 +345,57 @@ def resolve_plan_env_value(value: Any, path: str = "plan", variables: Optional[D
     if isinstance(value, str):
         return resolve_plan_env_string(value, path, variables)
     return value
+
+
+def skip_magnifier_actions(actions: List[Any]) -> List[Any]:
+    """Replace the magnifier gate with its confirmation flow when explicitly requested."""
+    updated: List[Any] = []
+    for action in actions:
+        if not isinstance(action, dict):
+            updated.append(action)
+            continue
+        action_type = str(action.get("type", "")).strip().lower()
+        template = str(action.get("template", "")).replace("\\", "/").rsplit("/", 1)[-1]
+        if action_type == "if_image" and template == "bl_baoxiaoxing.png":
+            then_actions = action.get("then_actions")
+            if isinstance(then_actions, list):
+                confirmation = next(
+                    (
+                        nested
+                        for nested in then_actions
+                        if isinstance(nested, dict) and str(nested.get("type", "")).strip().lower() == "if_image"
+                    ),
+                    None,
+                )
+                if confirmation is not None:
+                    updated.append(skip_magnifier_actions([confirmation])[0])
+                    continue
+        cloned = dict(action)
+        for key in ("actions", "then_actions", "else_actions"):
+            nested = cloned.get(key)
+            if isinstance(nested, list):
+                cloned[key] = skip_magnifier_actions(nested)
+        updated.append(cloned)
+    return updated
+
+
+def current_chest_capture_actions(actions: List[Any]) -> List[Dict[str, Any]]:
+    """Extract the standard chest result capture action for a one-off save."""
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        if (
+            str(action.get("type", "")).strip().lower() == "save_screenshot"
+            and str(action.get("pair_key", "")).strip() == "chest_result"
+        ):
+            return [dict(action)]
+        for key in ("actions", "then_actions", "else_actions"):
+            nested = action.get(key)
+            if isinstance(nested, list):
+                capture_actions = current_chest_capture_actions(nested)
+                if capture_actions:
+                    return capture_actions
+    return []
 
 
 def run_cmd(cmd: List[str], check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -605,9 +667,32 @@ def screenshot_session_id(ctx: RunContext) -> str:
     current = ctx.runtime_values.get(SCREENSHOT_SESSION_KEY)
     if isinstance(current, str) and current:
         return current
-    value = time.strftime("%Y%m%d-%H%M%S")
+    # Include microseconds and the worker PID so simultaneous chest windows
+    # cannot overwrite each other's screenshot files.
+    value = f"{dt.datetime.now().strftime('%Y%m%d-%H%M%S-%f')}-{os.getpid()}"
     ctx.runtime_values[SCREENSHOT_SESSION_KEY] = value
     return value
+
+
+def active_chest_source(ctx: RunContext) -> Dict[str, str]:
+    source = {
+        "source_id": ctx.source_id,
+        "source_name": ctx.source_name,
+    }
+    if not ctx.source_file or not ctx.source_file.exists():
+        return source
+    try:
+        value = json.loads(ctx.source_file.read_text(encoding="utf-8"))
+        if isinstance(value, dict):
+            source_id = str(value.get("source_id", "")).strip()
+            source_name = str(value.get("source_name", "")).strip()
+            if source_id:
+                source["source_id"] = source_id
+            if source_name:
+                source["source_name"] = source_name
+    except (OSError, json.JSONDecodeError):
+        pass
+    return source
 
 
 def do_save_screenshot(ctx: RunContext, action: Dict[str, Any]) -> None:
@@ -620,6 +705,7 @@ def do_save_screenshot(ctx: RunContext, action: Dict[str, Any]) -> None:
     stage = str(action.get("stage", "single")).strip().lower() or "single"
     label = sanitize_file_component(str(action.get("label", action.get("remark", "capture"))).strip())
     session_id = screenshot_session_id(ctx)
+    source = active_chest_source(ctx)
 
     if pair_key:
         counters = ctx.runtime_values.setdefault(SCREENSHOT_COUNTERS_KEY, {})
@@ -636,6 +722,9 @@ def do_save_screenshot(ctx: RunContext, action: Dict[str, Any]) -> None:
             counters[pair_key] = next_index
             pair_prefix = f"{session_id}_{pair_key}_{next_index:04d}"
             active_pairs[pair_key] = {
+                "device": ctx.device or "",
+                "user_id": ctx.user_id,
+                **source,
                 "session_id": session_id,
                 "pair_key": pair_key,
                 "pair_index": next_index,
@@ -706,6 +795,9 @@ def do_save_screenshot(ctx: RunContext, action: Dict[str, Any]) -> None:
                 output_dir,
                 {
                     "session_id": session_id,
+                    "device": ctx.device or "",
+                    "user_id": ctx.user_id,
+                    **source,
                     "pair_key": pair_key,
                     "pair_index": next_index,
                     "pair_prefix": pair_prefix,
@@ -720,6 +812,16 @@ def do_save_screenshot(ctx: RunContext, action: Dict[str, Any]) -> None:
                 },
             )
     log(with_action_remark(f"Saved screenshot: {destination} ({image_source})", action))
+    if bool_value(action.get("analyze_chest_items"), default=False):
+        try:
+            from chest_analyzer import analyze_results
+            summary = analyze_results(output_dir)
+            log(with_action_remark(
+                f"Chest item analysis: {summary['analyzed']} new, {summary['events']} total, {summary['unknown_items']} pending labels",
+                action,
+            ))
+        except Exception as error:
+            log(with_action_remark(f"Chest item analysis failed: {error}", action))
 
 
 def save_screenshot_pair_composite(output_dir: Path, record: Dict[str, Any]) -> Optional[Path]:
@@ -1591,7 +1693,9 @@ def find_image_match(
     search_gray = search.gray
     evaluated: List[Dict[str, float]] = []
     wanted = max(index + 1, int(action.get("max_candidates", 8)))
-    per_scale_peaks = max(4, min(16, wanted * 2))
+    # Allow plans to widen the candidate pool for small templates that have
+    # many high-shape false positives before color scoring distinguishes them.
+    per_scale_peaks = max(4, min(128, wanted * 2))
     for variant in template_variants:
         sum_i = fft_correlate2d_valid(search_gray, variant.weights)
         sum_i2 = fft_correlate2d_valid(search_gray * search_gray, variant.weights)
@@ -1627,7 +1731,22 @@ def find_image_match(
 
     evaluated.sort(key=lambda item: item["similarity"], reverse=True)
     best_match = evaluated[0] if evaluated else None
-    qualified = [item for item in evaluated if item["similarity"] >= threshold]
+    min_color_similarity = action.get("min_color_similarity")
+    try:
+        min_color_similarity = (
+            float(min_color_similarity) if min_color_similarity is not None else None
+        )
+    except (TypeError, ValueError):
+        raise BotError("min_color_similarity must be a number when provided")
+    qualified = [
+        item
+        for item in evaluated
+        if item["similarity"] >= threshold
+        and (
+            min_color_similarity is None
+            or item["color_similarity"] >= min_color_similarity
+        )
+    ]
     if 0 <= index < len(qualified):
         return qualified[index], best_match
     return None, best_match
@@ -2810,6 +2929,12 @@ def do_wait(action: Dict[str, Any]) -> None:
     time.sleep(seconds)
 
 
+def do_log_action(action: Dict[str, Any]) -> None:
+    message = str(action.get("message") or action.get("remark") or "").strip()
+    if message:
+        log(f"[Log] {message}")
+
+
 def execute_patrol(ctx: RunContext, action: Dict[str, Any]) -> None:
     frm = action["from"]
     to = action["to"]
@@ -2882,6 +3007,8 @@ def execute_action(ctx: RunContext, action: Dict[str, Any]) -> None:
         do_swipe(ctx, action)
     elif action_type == "trace":
         do_trace(ctx, action)
+    elif action_type == "log":
+        do_log_action(action)
     elif action_type == "wait":
         do_wait(action)
     elif action_type == "sequence":
@@ -2906,7 +3033,12 @@ def execute_action(ctx: RunContext, action: Dict[str, Any]) -> None:
 
 
 def execute_actions(ctx: RunContext, actions: List[Dict[str, Any]]) -> None:
-    for action in actions:
+    for index, action in enumerate(actions):
+        if not isinstance(action, dict):
+            raise BotError(
+                f"Invalid action at index {index}: expected an object, got {type(action).__name__}. "
+                "Remove any extra nested [] around actions."
+            )
         execute_action(ctx, action)
 
 
@@ -3026,6 +3158,21 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="BlueStacks ADB automation bot")
     parser.add_argument("--plan", required=True, help="Path to plan JSON file")
     parser.add_argument("--device", help="ADB device serial, e.g. 127.0.0.1:5555")
+    parser.add_argument("--user-id", default="default", help="Chest user identifier")
+    parser.add_argument("--source-id", default="", help="Chest source identifier")
+    parser.add_argument("--source-name", default="", help="Chest source display name")
+    parser.add_argument("--source-file", help="Optional JSON file used to switch the active chest source")
+    temporary_mode = parser.add_mutually_exclusive_group()
+    temporary_mode.add_argument(
+        "--skip-magnifier",
+        action="store_true",
+        help="Temporarily skip the magnifier button and enter the confirmation flow directly",
+    )
+    temporary_mode.add_argument(
+        "--capture-current-chest",
+        action="store_true",
+        help="Immediately save the current chest item list without image matching or taps",
+    )
     parser.add_argument("--adb", default="adb", help="ADB binary path")
     parser.add_argument("--dry-run", action="store_true", help="Print actions without executing")
     parser.add_argument("--max-runtime-sec", type=int, default=0, help="Stop after N seconds (0 means unlimited)")
@@ -3047,9 +3194,8 @@ def main() -> int:
         src_screen_w = int(screen_cfg.get("width", 1080))
         src_screen_h = int(screen_cfg.get("height", 1920))
     else:
-        # Backward-compatible behavior for old plans: no implicit scaling.
-        src_screen_w = -1
-        src_screen_h = -1
+        src_screen_w = DEFAULT_SCREEN_WIDTH
+        src_screen_h = DEFAULT_SCREEN_HEIGHT
     dst_screen_w = -1
     dst_screen_h = -1
 
@@ -3057,14 +3203,17 @@ def main() -> int:
         device = ensure_device_connected(args.adb, device)
         dst_screen_w, dst_screen_h = get_device_screen_size(args.adb, device)
         if not has_screen_cfg:
-            src_screen_w, src_screen_h = dst_screen_w, dst_screen_h
+            src_screen_w, src_screen_h = DEFAULT_SCREEN_WIDTH, DEFAULT_SCREEN_HEIGHT
     elif not has_screen_cfg:
-        src_screen_w, src_screen_h = 1080, 1920
-        dst_screen_w, dst_screen_h = 1080, 1920
+        dst_screen_w, dst_screen_h = DEFAULT_SCREEN_WIDTH, DEFAULT_SCREEN_HEIGHT
 
     ctx = RunContext(
         adb_path=args.adb,
         device=device,
+        user_id=str(args.user_id or "default"),
+        source_id=str(args.source_id or ""),
+        source_name=str(args.source_name or ""),
+        source_file=Path(args.source_file).expanduser().resolve() if args.source_file else None,
         dry_run=args.dry_run,
         jitter=jitter,
         stop_at=stop_at,
@@ -3079,6 +3228,14 @@ def main() -> int:
     actions = plan.get("actions")
     if not isinstance(actions, list):
         raise BotError("Plan must contain an 'actions' array")
+    if args.skip_magnifier:
+        actions = skip_magnifier_actions(actions)
+        log("Temporary override enabled: skip magnifier detection")
+    elif args.capture_current_chest:
+        actions = current_chest_capture_actions(actions)
+        if not actions:
+            raise BotError("Plan does not contain a chest_result save_screenshot action")
+        log("Temporary override enabled: save current chest items immediately")
 
     log("Bot start")
     log(f"Config jitter_px={ctx.jitter}")

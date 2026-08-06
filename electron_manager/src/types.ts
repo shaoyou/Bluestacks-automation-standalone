@@ -4,7 +4,7 @@ export type AppSettings = {
   language: "zh" | "en";
 };
 
-export type TaskKind = "runner" | "draw" | "recorder" | "clickPicker" | "diagnostic";
+export type TaskKind = "runner" | "draw" | "chest" | "recorder" | "clickPicker" | "diagnostic";
 
 export type TaskEvent = {
   id: string;
@@ -38,6 +38,16 @@ export type LicenseStatus = {
   message: string;
 };
 
+export type UpdateState = {
+  currentVersion: string;
+  supported: boolean;
+  phase: "idle" | "checking" | "available" | "not-available" | "downloading" | "downloaded" | "error" | "unsupported";
+  message: string;
+  version?: string;
+  progress?: number;
+  releaseNotes?: string;
+};
+
 declare global {
   interface Window {
     bsManager: {
@@ -47,6 +57,10 @@ declare global {
       environmentCancel(): Promise<void>;
       settingsGet(): Promise<AppSettings>;
       settingsSave(settings: AppSettings): Promise<AppSettings>;
+      updateState(): Promise<UpdateState>;
+      updateCheck(): Promise<UpdateState>;
+      updateDownload(): Promise<UpdateState>;
+      updateInstall(): Promise<void>;
       licenseGet(): Promise<LicenseStatus>;
       licenseActivate(code: string): Promise<LicenseStatus>;
       licenseClear(): Promise<LicenseStatus>;
@@ -64,14 +78,38 @@ declare global {
       drawScreenshotPairs(sessionId: string): Promise<Array<Record<string, unknown>>>;
       drawImage(filePath: string): Promise<string | null>;
       drawOpenScreenshots(): Promise<void>;
+      chestListDays(device?: string, userId?: string): Promise<Array<{ day: string; count: number; latestAt: string }>>;
+      chestScreenshots(day: string, device?: string, userId?: string): Promise<Array<Record<string, unknown>>>;
+      chestItemEvents(day: string, device?: string, userId?: string): Promise<Array<Record<string, unknown>>>;
+      chestItemSummary(day: string, device?: string, userId?: string): Promise<Array<Record<string, unknown>>>;
+      chestSummaryRange(endDay: string, range: string, device?: string, userId?: string, startDay?: string): Promise<{ items: Array<Record<string, unknown>>; boxCount: number; startDay?: string; endDay?: string }>;
+      chestExportReport(endDay: string, range: string, device?: string, userId?: string, startDay?: string): Promise<{ file: string; boxCount: number }>;
+      chestSyncExport(userId?: string): Promise<{ canceled: boolean; file?: string; events: number; icons: number }>;
+      chestSyncImport(userId?: string): Promise<{ canceled: boolean; imported: number; skipped: number; icons: number }>;
+      chestOpenReportDirectory(): Promise<void>;
+      chestSetActiveSource(userId: string, taskId: string, sourceId: string, sourceName: string): Promise<{ sourceFile: string; sourceId: string; sourceName: string }>;
+      chestUsers(): Promise<Array<{ id: string; name: string; createdAt: string }>>;
+      chestCreateUser(name: string): Promise<{ id: string; name: string; createdAt: string }>;
+      chestRenameUser(userId: string, name: string): Promise<{ id: string; name: string; createdAt: string }>;
+      chestReanalyze(day?: string, userId?: string): Promise<Record<string, unknown>>;
+      chestUnlabeledItems(): Promise<Array<{ itemId: string; name: string; labeled: boolean; weight?: number | null; cropPath: string; occurrences: number }>>;
+      chestLabelItem(itemId: string, name: string): Promise<Record<string, unknown>>;
+      chestSetItemWeight(itemId: string, weight: number | null): Promise<Record<string, unknown>>;
+      chestCorrectEvent(screenshotPath: string, corrections: Array<{ slot: number; itemName?: string | null; quantity: number | null }>, metadata?: { userId: string; sourceId: string; sourceName: string }): Promise<Record<string, unknown>>;
+      chestDeleteEvent(screenshotPath: string): Promise<Record<string, unknown>>;
+      chestDeleteItem(itemId: string): Promise<Record<string, unknown>>;
+      chestImage(filePath: string): Promise<string | null>;
+      chestOpenScreenshots(): Promise<void>;
       devicesList(adbPath: string): Promise<string[]>;
       adbRun(adbPath: string, args: string[]): Promise<{ code: number; text: string }>;
       screenshot(adbPath: string, device: string): Promise<string>;
       openRunWindow(initialPlan?: string): Promise<void>;
+      openChestWindow(initialPlan?: string, userId?: string, sourceId?: string, sourceName?: string): Promise<void>;
       startTask(request: TaskRequest): Promise<void>;
       stopTask(id: string): Promise<void>;
       onTaskEvent(listener: (event: TaskEvent) => void): () => void;
       onEnvironmentEvent(listener: (event: EnvironmentState) => void): () => void;
+      onUpdateEvent(listener: (event: UpdateState) => void): () => void;
     };
   }
 }

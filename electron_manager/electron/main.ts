@@ -1,11 +1,15 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import electronUpdater from "electron-updater";
 import { ChildProcess, spawn } from "node:child_process";
-import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, copyFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, copyFileSync, renameSync, writeFileSync, unlinkSync } from "node:fs";
 import { copyFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { activateLicense, clearLicense, getLicenseStatus } from "./license.js";
+
+const { autoUpdater } = electronUpdater;
 
 type Settings = {
   adbPath: string;
@@ -15,7 +19,7 @@ type Settings = {
 
 type TaskRequest = {
   id: string;
-  kind: "runner" | "draw" | "recorder" | "clickPicker" | "diagnostic";
+  kind: "runner" | "draw" | "chest" | "recorder" | "clickPicker" | "diagnostic";
   args: string[];
   cwd?: string;
 };
@@ -29,18 +33,44 @@ type EnvironmentState = {
   error?: string;
 };
 
+type UpdateState = {
+  currentVersion: string;
+  supported: boolean;
+  phase: "idle" | "checking" | "available" | "not-available" | "downloading" | "downloaded" | "error" | "unsupported";
+  message: string;
+  version?: string;
+  progress?: number;
+  releaseNotes?: string;
+};
+
 const thisDir = path.dirname(fileURLToPath(import.meta.url));
 const isDevelopment = !app.isPackaged;
 const tasks = new Map<string, ChildProcess>();
 const taskOwners = new Map<string, number>();
 const runnerWindows = new Set<number>();
 let mainWindow: BrowserWindow | null = null;
+let isQuitting = false;
 let bootstrapCancelled = false;
 let bootstrapRunning = false;
+const isLegacyWindowsBuild = process.platform === "win32" && app.getName().includes("Win7");
+const supportsAutoUpdatePlatform = process.platform === "win32" || process.platform === "darwin";
+let updateState: UpdateState = {
+  currentVersion: app.getVersion(),
+  supported: app.isPackaged && supportsAutoUpdatePlatform && !isLegacyWindowsBuild,
+  phase: app.isPackaged && supportsAutoUpdatePlatform && !isLegacyWindowsBuild ? "idle" : "unsupported",
+  message: app.isPackaged
+    ? isLegacyWindowsBuild
+      ? "Windows 7 兼容版暂不支持自动更新"
+      : supportsAutoUpdatePlatform
+        ? "尚未检查更新"
+        : "当前平台暂不支持自动更新"
+    : "开发环境不检查更新",
+};
 const WINDOWS_RUNTIME_VERSION = "5";
-const RUNTIME_RESOURCE_MIGRATION_VERSION = 6;
+const RUNTIME_RESOURCE_MIGRATION_VERSION = 23;
 const RUNTIME_RESOURCE_MIGRATION_FILES = [
   path.join("plans", "choukaka.json"),
+  path.join("plans", "开宝箱截图.json"),
   path.join("image_templates", "role_done.png"),
 ];
 
@@ -91,9 +121,15 @@ function applyRuntimeResourceMigration(targetRoot: string) {
     const target = path.join(targetRoot, relativePath);
     if (!existsSync(source)) continue;
     mkdirSync(path.dirname(target), { recursive: true });
-    copyFileSync(source, target);
+    copyFileAtomic(source, target);
   }
   writeFileSync(marker, String(RUNTIME_RESOURCE_MIGRATION_VERSION), "utf8");
+}
+
+function copyFileAtomic(source: string, target: string) {
+  const temporary = `${target}.tmp-${process.pid}`;
+  copyFileSync(source, temporary);
+  renameSync(temporary, target);
 }
 
 function runtimeRoot(): string {
@@ -101,9 +137,9 @@ function runtimeRoot(): string {
   const source = bundledRuntimeRoot();
   mkdirSync(target, { recursive: true });
 
-  for (const file of ["adb_bot.py", "record_touch.py"]) {
+  for (const file of ["adb_bot.py", "record_touch.py", "chest_analyzer.py"]) {
     const sourceFile = path.join(source, file);
-    if (existsSync(sourceFile)) copyFileSync(sourceFile, path.join(target, file));
+    if (existsSync(sourceFile)) copyFileAtomic(sourceFile, path.join(target, file));
   }
   for (const dir of ["plans", "image_templates"]) {
     const sourceDir = dir === "plans" ? bundledPlansRoot() : path.join(source, dir);
@@ -152,6 +188,78 @@ function sendEnvironmentEvent(state: EnvironmentState) {
   for (const window of BrowserWindow.getAllWindows()) {
     window.webContents.send("environment:event", state);
   }
+}
+
+function sendUpdateEvent(state: UpdateState) {
+  updateState = state;
+  for (const window of BrowserWindow.getAllWindows()) {
+    window.webContents.send("update:event", state);
+  }
+}
+
+function updateReleaseNotes(notes: string | Array<{ note?: string | null }> | null | undefined) {
+  if (!notes) return undefined;
+  if (typeof notes === "string") return notes;
+  return notes.map((item) => item.note).filter(Boolean).join("\n");
+}
+
+function initializeAutoUpdater() {
+  if (!updateState.supported) return;
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false;
+  autoUpdater.on("checking-for-update", () => {
+    sendUpdateEvent({ ...updateState, phase: "checking", message: "正在检查更新" });
+  });
+  autoUpdater.on("update-available", (info) => {
+    sendUpdateEvent({
+      ...updateState,
+      phase: "available",
+      message: `发现新版本 ${info.version}`,
+      version: info.version,
+      releaseNotes: updateReleaseNotes(info.releaseNotes),
+    });
+  });
+  autoUpdater.on("update-not-available", () => {
+    sendUpdateEvent({ ...updateState, phase: "not-available", message: "当前已是最新版本", version: undefined, progress: undefined, releaseNotes: undefined });
+  });
+  autoUpdater.on("download-progress", (progress) => {
+    sendUpdateEvent({
+      ...updateState,
+      phase: "downloading",
+      message: `正在下载更新 ${Math.round(progress.percent)}%`,
+      progress: Math.round(progress.percent),
+    });
+  });
+  autoUpdater.on("update-downloaded", (info) => {
+    sendUpdateEvent({
+      ...updateState,
+      phase: "downloaded",
+      message: `版本 ${info.version} 已下载，重启后安装`,
+      version: info.version,
+      progress: 100,
+      releaseNotes: updateReleaseNotes(info.releaseNotes),
+    });
+  });
+  autoUpdater.on("error", (error) => {
+    sendUpdateEvent({ ...updateState, phase: "error", message: `更新失败: ${error.message}`, progress: undefined });
+  });
+}
+
+async function checkForUpdates() {
+  if (!updateState.supported) return updateState;
+  try {
+    await autoUpdater.checkForUpdates();
+  } catch (error) {
+    sendUpdateEvent({ ...updateState, phase: "error", message: `检查更新失败: ${String(error)}`, progress: undefined });
+  }
+  return updateState;
+}
+
+async function downloadUpdate() {
+  if (!updateState.supported) return updateState;
+  if (updateState.phase !== "available") throw new Error("当前没有可下载的更新");
+  await autoUpdater.downloadUpdate();
+  return updateState;
 }
 
 function allFiles(directory: string, base = directory): string[] {
@@ -414,8 +522,8 @@ async function runCommand(command: string, args: string[]) {
   });
 }
 
-function loadRenderer(window: BrowserWindow, mode: "main" | "runner", runnerId?: string, initialPlan?: string) {
-  const query = new URLSearchParams({ mode, ...(runnerId ? { runnerId } : {}), ...(initialPlan ? { plan: initialPlan } : {}) });
+function loadRenderer(window: BrowserWindow, mode: "main" | "runner" | "chest", runnerId?: string, initialPlan?: string, userId?: string, sourceId?: string, sourceName?: string) {
+  const query = new URLSearchParams({ mode, ...(runnerId ? { runnerId } : {}), ...(initialPlan ? { plan: initialPlan } : {}), ...(userId ? { userId } : {}), ...(sourceId ? { sourceId } : {}), ...(sourceName ? { sourceName } : {}) });
   if (isDevelopment) {
     void window.loadURL(`${process.env.VITE_DEV_SERVER_URL ?? "http://localhost:5173"}?${query}`);
   } else {
@@ -439,20 +547,25 @@ function createWindow() {
     },
   });
   mainWindow = window;
+  window.on("close", (event) => {
+    if (process.platform !== "darwin" || isQuitting) return;
+    event.preventDefault();
+    window.hide();
+  });
   window.on("closed", () => {
     if (mainWindow === window) mainWindow = null;
   });
   loadRenderer(window, "main");
 }
 
-function createRunWindow(initialPlan?: string) {
+function createRunWindow(initialPlan?: string, mode: "runner" | "chest" = "runner", userId = "default", sourceId = "", sourceName = "") {
   const runnerId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const window = new BrowserWindow({
     minWidth: 760,
     minHeight: 620,
     width: 940,
     height: 780,
-    title: "运行窗口",
+    title: mode === "chest" ? "开宝箱窗口" : "运行窗口",
     backgroundColor: "#101417",
     webPreferences: {
       preload: path.join(thisDir, "preload.cjs"),
@@ -486,12 +599,17 @@ function createRunWindow(initialPlan?: string) {
   window.on("closed", () => {
     runnerWindows.delete(window.id);
   });
-  loadRenderer(window, "runner", runnerId, initialPlan);
+  loadRenderer(window, mode, runnerId, initialPlan, userId, sourceId, sourceName);
 }
 
 app.whenReady().then(() => {
   runtimeRoot();
+  migrateLegacyChestSources();
   createWindow();
+  initializeAutoUpdater();
+  if (updateState.supported) {
+    setTimeout(() => void checkForUpdates(), 5_000);
+  }
 
   ipcMain.handle("runtime:state", () => {
     const root = runtimeRoot();
@@ -504,6 +622,13 @@ app.whenReady().then(() => {
   });
   ipcMain.handle("settings:get", () => getSettings());
   ipcMain.handle("settings:save", (_, settings: Settings) => saveSettings(settings));
+  ipcMain.handle("update:state", () => updateState);
+  ipcMain.handle("update:check", () => checkForUpdates());
+  ipcMain.handle("update:download", () => downloadUpdate());
+  ipcMain.handle("update:install", () => {
+    if (updateState.phase !== "downloaded") throw new Error("更新尚未下载完成");
+    setImmediate(() => autoUpdater.quitAndInstall());
+  });
   ipcMain.handle("license:get", () => getLicenseStatus());
   ipcMain.handle("license:activate", (_, code: string) => activateLicense(String(code || "")));
   ipcMain.handle("license:clear", () => clearLicense());
@@ -614,6 +739,75 @@ app.whenReady().then(() => {
     mkdirSync(directory, { recursive: true });
     void shell.openPath(directory);
   });
+  ipcMain.handle("chest:users", () => chestUsers());
+  ipcMain.handle("chest:user-create", (_, name: string) => createChestUser(name));
+  ipcMain.handle("chest:user-rename", (_, userId: string, name: string) => renameChestUser(userId, name));
+  ipcMain.handle("chest:list-days", (_, device = "", userId = "default") => {
+    const records = chestScreenshotRecords(device, userId);
+    const daily = new Map<string, { day: string; count: number; latestAt: string }>();
+    for (const record of records) {
+      const day = String(record.before_saved_at ?? "").slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
+      const existing = daily.get(day) ?? { day, count: 0, latestAt: "" };
+      existing.count += 1;
+      const savedAt = String(record.before_saved_at ?? "");
+      if (savedAt > existing.latestAt) existing.latestAt = savedAt;
+      daily.set(day, existing);
+    }
+    const screenshotPaths = new Set(records.map((record) => String(record.before_path ?? "")));
+    for (const event of chestAllItemEvents(device, userId)) {
+      if (screenshotPaths.has(String(event.screenshot_path ?? ""))) continue;
+      const day = String(event.captured_at ?? "").slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
+      const existing = daily.get(day) ?? { day, count: 0, latestAt: "" };
+      existing.count += 1;
+      const capturedAt = String(event.captured_at ?? "");
+      if (capturedAt > existing.latestAt) existing.latestAt = capturedAt;
+      daily.set(day, existing);
+    }
+    return [...daily.values()].sort((a, b) => b.day.localeCompare(a.day));
+  });
+  ipcMain.handle("chest:screenshots", (_, day: string, device = "", userId = "default") => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(day))) return [];
+    return chestScreenshotRecords(device, userId)
+      .filter((record) => String(record.before_saved_at ?? "").startsWith(day))
+      .sort((a, b) => String(b.before_saved_at ?? "").localeCompare(String(a.before_saved_at ?? "")));
+  });
+  ipcMain.handle("chest:item-events", (_, day: string, device = "", userId = "default") => chestItemEvents(day, device, userId));
+  ipcMain.handle("chest:item-summary", (_, day: string, device = "", userId = "default") => chestItemSummary(day, device, userId));
+  ipcMain.handle("chest:summary-range", (_, endDay: string, range: string, device = "", userId = "default", startDay?: string) => chestSummaryRange(endDay, range, device, userId, startDay));
+  ipcMain.handle("chest:export-report", (_, endDay: string, range: string, device = "", userId = "default", startDay?: string) => exportChestReport(endDay, range, device, userId, startDay));
+  ipcMain.handle("chest:sync-export", (_, userId = "default") => exportChestSyncPackage(userId));
+  ipcMain.handle("chest:sync-import", (_, userId = "default") => importChestSyncPackage(userId));
+  ipcMain.handle("chest:open-report-directory", async () => {
+    const directory = path.join(chestResultsRoot(), "reports");
+    mkdirSync(directory, { recursive: true });
+    const error = await shell.openPath(directory);
+    if (error) throw new Error(error);
+  });
+  ipcMain.handle("chest:set-active-source", (_, userId: string, taskId: string, sourceId: string, sourceName: string) =>
+    setChestActiveSource(userId, taskId, sourceId, sourceName),
+  );
+ipcMain.handle("chest:reanalyze", (_event, day?: string, userId?: string) =>
+  runChestAnalyzer(
+    typeof day === "string" ? day : undefined,
+    typeof userId === "string" ? userId : undefined,
+  ),
+);
+  ipcMain.handle("chest:unlabeled-items", () => chestUnlabeledItems());
+  ipcMain.handle("chest:label-item", (_, itemId: string, name: string) => labelChestItem(itemId, name));
+  ipcMain.handle("chest:item-weight", (_, itemId: string, weight: number | null) => setChestItemWeight(itemId, weight));
+  ipcMain.handle("chest:correct-event", (_, screenshotPath: string, corrections: Array<{ slot: number; itemName?: string | null; quantity: number | null }>, metadata?: { userId: string; sourceId: string; sourceName: string }) =>
+    correctChestEvent(screenshotPath, corrections, metadata),
+  );
+  ipcMain.handle("chest:delete-event", (_, screenshotPath: string) => deleteChestEvent(screenshotPath));
+  ipcMain.handle("chest:delete-item", (_, itemId: string) => deleteChestCatalogItem(itemId));
+  ipcMain.handle("chest:image", (_, rawPath: string) => runtimeDiagnosticImage("chest_results", rawPath));
+  ipcMain.handle("chest:open-screenshots", () => {
+    const directory = path.join(runtimeRoot(), "diagnostics", "chest_results");
+    mkdirSync(directory, { recursive: true });
+    void shell.openPath(directory);
+  });
 
   ipcMain.handle("adb:list-devices", async (_, adbPath: string) => {
     const result = await runCommand(adbPath || getSettings().adbPath, ["devices"]);
@@ -649,6 +843,13 @@ app.whenReady().then(() => {
     }
     createRunWindow(initialPlan);
   });
+  ipcMain.handle("chest:open-window", (_, initialPlan?: string, userId = "default", sourceId = "", sourceName = "") => {
+    const license = getLicenseStatus();
+    if (license.tier !== "pro") throw new Error("开宝箱多开需要专业版，请在设置中输入激活码");
+    const maxAdditionalWindows = Math.max(0, license.maxConcurrentRunners - 1);
+    if (runnerWindows.size >= maxAdditionalWindows) throw new Error(`专业版当前最多可额外打开 ${maxAdditionalWindows} 个开宝箱窗口`);
+    createRunWindow(initialPlan, "chest", userId, sourceId, sourceName);
+  });
   ipcMain.handle("task:start", (event, request: TaskRequest) => spawnTask(request, event.sender.id));
   ipcMain.handle("task:stop", (_, id: string) => {
     const task = tasks.get(id);
@@ -658,12 +859,841 @@ app.whenReady().then(() => {
   });
 });
 
+type ChestUser = { id: string; name: string; createdAt: string };
+type ChestSource = { sourceId: string; sourceName: string };
+const CHEST_INDEX_FIELDS = [
+  "device",
+  "user_id",
+  "source_id",
+  "source_name",
+  "session_id",
+  "pair_key",
+  "pair_index",
+  "pair_prefix",
+  "before_label",
+  "before_path",
+  "before_saved_at",
+  "after_label",
+  "after_path",
+  "after_saved_at",
+  "composite_path",
+  "composite_saved_at",
+];
+
+function chestUsersFile() {
+  return path.join(app.getPath("userData"), "chest_users.json");
+}
+
+function chestUsers(): ChestUser[] {
+  const fallback: ChestUser[] = [{ id: "default", name: "默认用户", createdAt: "" }];
+  try {
+    const value = JSON.parse(readFileSync(chestUsersFile(), "utf8")) as { users?: ChestUser[] };
+    const users = Array.isArray(value.users) ? value.users.filter((user) => user && user.id && user.name) : [];
+    return users.length ? users : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function requireChestPro() {
+  if (getLicenseStatus().tier !== "pro") throw new Error("多用户开宝箱需要专业版，请在设置中输入激活码");
+}
+
+function writeChestUsers(users: ChestUser[]) {
+  writeFileSync(chestUsersFile(), `${JSON.stringify({ version: 1, users }, null, 2)}\n`, "utf8");
+}
+
+function createChestUser(rawName: string) {
+  requireChestPro();
+  const name = String(rawName ?? "").trim();
+  if (!name) throw new Error("用户名不能为空");
+  const users = chestUsers();
+  const id = `user-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const user = { id, name, createdAt: new Date().toISOString() };
+  writeChestUsers([...users, user]);
+  return user;
+}
+
+function renameChestUser(rawUserId: string, rawName: string) {
+  requireChestPro();
+  const userId = String(rawUserId ?? "");
+  const name = String(rawName ?? "").trim();
+  if (!userId || !name) throw new Error("用户标识和名称不能为空");
+  const users = chestUsers();
+  const user = users.find((entry) => entry.id === userId);
+  if (!user) throw new Error("未找到用户");
+  user.name = name;
+  writeChestUsers(users);
+  return user;
+}
+
+function matchesChestDevice(record: Record<string, unknown>, device: string): boolean {
+  if (!device) return true;
+  const recordDevice = String(record.device ?? "");
+  return !recordDevice || recordDevice === device;
+}
+
+function matchesChestUser(record: Record<string, unknown>, userId: string): boolean {
+  if (!userId) return true;
+  return String(record.user_id ?? "default") === userId;
+}
+
+function legacyChestSource(userId: string): ChestSource {
+  const userName = chestUsers().find((user) => user.id === userId)?.name ?? "";
+  if (userName === "潇然") return { sourceId: "boss_jinjia", sourceName: "金甲" };
+  if (userName === "熊大") return { sourceId: "boss_dayan", sourceName: "大眼" };
+  return { sourceId: "", sourceName: "" };
+}
+
+function chestSourceFromRecord(record: Record<string, unknown>, fallbackUserId?: string): ChestSource {
+  const sourceId = String(record.source_id ?? "").trim();
+  const sourceName = String(record.source_name ?? "").trim();
+  if (sourceId || sourceName) return { sourceId, sourceName: sourceName || sourceId };
+  return legacyChestSource(String(record.user_id ?? fallbackUserId ?? "default"));
+}
+
+function chestSourceStateFile(rawUserId: string, rawTaskId: string) {
+  const safeUser = String(rawUserId || "default").replace(/[^a-zA-Z0-9_-]/g, "_");
+  const safeTask = String(rawTaskId || "chest").replace(/[^a-zA-Z0-9_-]/g, "_");
+  return path.join(chestResultsRoot(), "active_sources", `${safeUser}_${safeTask}.json`);
+}
+
+function setChestActiveSource(rawUserId: string, rawTaskId: string, rawSourceId: string, rawSourceName: string) {
+  const userId = String(rawUserId || "default");
+  const sourceId = String(rawSourceId || "").trim();
+  const sourceName = String(rawSourceName || "").trim();
+  if (!sourceId || !sourceName) throw new Error("宝箱来源不能为空");
+  const file = chestSourceStateFile(userId, rawTaskId);
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, `${JSON.stringify({ source_id: sourceId, source_name: sourceName })}\n`, "utf8");
+  return { sourceFile: file, sourceId, sourceName };
+}
+
+function chestScreenshotSources(): Map<string, ChestSource> {
+  const indexFile = path.join(chestResultsRoot(), "index.jsonl");
+  if (!existsSync(indexFile)) return new Map();
+  const sources = new Map<string, ChestSource>();
+  for (const line of readFileSync(indexFile, "utf8").split(/\r?\n/).filter(Boolean)) {
+    try {
+      const record = JSON.parse(line) as Record<string, unknown>;
+      const screenshotPath = String(record.before_path ?? "");
+      if (screenshotPath) sources.set(screenshotPath, chestSourceFromRecord(record));
+    } catch { /* ignore malformed screenshot records */ }
+  }
+  return sources;
+}
+
+function attachChestEventSource(event: Record<string, unknown>, screenshotSources: Map<string, ChestSource>): Record<string, unknown> {
+  const source = screenshotSources.get(String(event.screenshot_path ?? "")) ?? chestSourceFromRecord(event);
+  return { ...event, source_id: source.sourceId, source_name: source.sourceName };
+}
+
+function migrateLegacyChestSources() {
+  const indexFile = path.join(chestResultsRoot(), "index.jsonl");
+  if (existsSync(indexFile)) {
+    const records = readFileSync(indexFile, "utf8").split(/\r?\n/).filter(Boolean).flatMap((line) => {
+      try { return [JSON.parse(line) as Record<string, unknown>]; } catch { return []; }
+    });
+    let changed = false;
+    for (const record of records) {
+      if (String(record.source_id ?? "").trim() || String(record.source_name ?? "").trim()) continue;
+      const source = legacyChestSource(String(record.user_id ?? "default"));
+      if (!source.sourceId) continue;
+      record.source_id = source.sourceId;
+      record.source_name = source.sourceName;
+      changed = true;
+    }
+    if (changed) writeFileSync(indexFile, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`, "utf8");
+  }
+
+  const eventFile = path.join(chestResultsRoot(), "item_events.jsonl");
+  if (!existsSync(eventFile)) return;
+  const screenshotSources = chestScreenshotSources();
+  const events = readFileSync(eventFile, "utf8").split(/\r?\n/).filter(Boolean).flatMap((line) => {
+    try { return [JSON.parse(line) as Record<string, unknown>]; } catch { return []; }
+  });
+  let changed = false;
+  for (const event of events) {
+    if (String(event.source_id ?? "").trim() || String(event.source_name ?? "").trim()) continue;
+    const source = screenshotSources.get(String(event.screenshot_path ?? "")) ?? legacyChestSource(String(event.user_id ?? "default"));
+    if (!source.sourceId) continue;
+    event.source_id = source.sourceId;
+    event.source_name = source.sourceName;
+    changed = true;
+  }
+  if (changed) writeFileSync(eventFile, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`, "utf8");
+}
+
+function chestScreenshotUserIds(): Map<string, string> {
+  const indexFile = path.join(chestResultsRoot(), "index.jsonl");
+  if (!existsSync(indexFile)) return new Map();
+  const users = new Map<string, string>();
+  for (const line of readFileSync(indexFile, "utf8").split(/\r?\n/).filter(Boolean)) {
+    try {
+      const record = JSON.parse(line) as Record<string, unknown>;
+      const screenshotPath = String(record.before_path ?? "");
+      if (screenshotPath) users.set(screenshotPath, String(record.user_id ?? "default"));
+    } catch { /* ignore malformed screenshot records */ }
+  }
+  return users;
+}
+
+function matchesChestEventUser(event: Record<string, unknown>, userId: string, screenshotUsers: Map<string, string>): boolean {
+  if (!userId) return true;
+  const screenshotUser = screenshotUsers.get(String(event.screenshot_path ?? ""));
+  return (screenshotUser ?? String(event.user_id ?? "default")) === userId;
+}
+
+function chestScreenshotRecords(device = "", userId = "default"): Array<Record<string, unknown>> {
+  const indexFile = path.join(runtimeRoot(), "diagnostics", "chest_results", "index.jsonl");
+  if (!existsSync(indexFile)) return [];
+  return readFileSync(indexFile, "utf8")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .flatMap((line) => {
+      try {
+        const record = JSON.parse(line) as Record<string, unknown>;
+        if (!matchesChestDevice(record, device) || !matchesChestUser(record, userId)) return [];
+        const source = chestSourceFromRecord(record);
+        return [{ ...record, source_id: source.sourceId, source_name: source.sourceName }];
+      } catch { return []; }
+    });
+}
+
+function chestItemEvents(day: string, device = "", userId = "default"): Array<Record<string, unknown>> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return [];
+  const eventsFile = path.join(runtimeRoot(), "diagnostics", "chest_results", "item_events.jsonl");
+  if (!existsSync(eventsFile)) return [];
+  const screenshotUsers = chestScreenshotUserIds();
+  const screenshotSources = chestScreenshotSources();
+  return readFileSync(eventsFile, "utf8")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .flatMap((line) => {
+      try {
+        const event = JSON.parse(line) as Record<string, unknown>;
+        return matchesChestDevice(event, device) && matchesChestEventUser(event, userId, screenshotUsers)
+          ? [attachChestEventSource(event, screenshotSources)]
+          : [];
+      } catch { return []; }
+    })
+    .filter((event) => String(event.captured_at ?? "").startsWith(day))
+    .sort((a, b) => String(b.captured_at ?? "").localeCompare(String(a.captured_at ?? "")));
+}
+
+function canonicalChestItemName(rawName: unknown): string {
+  const name = String(rawName ?? "").trim();
+  return name === "蓝色石头" ? "蓝石头" : name;
+}
+
+function buildChestItemSummary(events: Array<Record<string, unknown>>, totalEvents = events.length): Array<Record<string, unknown>> {
+  const catalogFile = path.join(chestResultsRoot(), "item_catalog.json");
+  let catalogItems: Array<Record<string, unknown>> = [];
+  try {
+    const catalog = JSON.parse(readFileSync(catalogFile, "utf8")) as { items?: Array<Record<string, unknown>> };
+    catalogItems = catalog.items ?? [];
+  } catch { /* summary can still render without catalog weights */ }
+  const weightsById = new Map(catalogItems.map((item) => [String(item.item_id ?? ""), item.weight]));
+  const weightsByName = new Map(catalogItems
+    .filter((item) => item.name && item.weight !== undefined && item.weight !== null)
+    .map((item) => [canonicalChestItemName(item.name), item.weight]));
+  const totals = new Map<string, Record<string, unknown>>();
+  for (const event of events) {
+    const sourceId = String(event.source_id ?? "").trim();
+    const sourceName = String(event.source_name ?? "").trim() || sourceId || "未分类";
+    const items = Array.isArray(event.items) ? event.items : [];
+    for (const rawItem of items) {
+      if (!rawItem || typeof rawItem !== "object") continue;
+      const item = rawItem as Record<string, unknown>;
+      const itemId = String(item.item_id ?? "unknown");
+      const itemName = canonicalChestItemName(item.item_name) || "待标注物品";
+      // Keep unknown items separate until they have a real catalog name;
+      // merge named items across different item IDs for daily totals.
+      const summaryKey = itemName === "待标注物品"
+        ? `${sourceId}:${itemId}`
+        : `${sourceId}:name:${itemName}`;
+      const current = totals.get(summaryKey) ?? {
+        itemId,
+        itemName,
+        sourceId,
+        sourceName,
+        totalQuantity: 0,
+        itemCount: 0,
+        unreadQuantityCount: 0,
+        cropPath: String(item.crop_path ?? ""),
+        iconCropPath: String(item.icon_crop_path ?? item.crop_path ?? ""),
+      };
+      current.itemCount = Number(current.itemCount) + 1;
+      const quantity = Number(item.quantity);
+      if (Number.isFinite(quantity) && quantity > 0) current.totalQuantity = Number(current.totalQuantity) + quantity;
+      else current.unreadQuantityCount = Number(current.unreadQuantityCount) + 1;
+      totals.set(summaryKey, current);
+    }
+  }
+  return [...totals.entries()].map(([summaryKey, item]) => {
+    const unread = Number(item.unreadQuantityCount ?? 0);
+    const weight = weightsByName.get(canonicalChestItemName(item.itemName)) ?? weightsById.get(String(item.itemId ?? ""));
+    return {
+      ...item,
+      weight: Number.isFinite(Number(weight)) ? Number(weight) : null,
+      dropProbability: totalEvents ? Math.round((Number(item.itemCount) / totalEvents) * 10000) / 100 : 0,
+      expectedQuantity: totalEvents && unread === 0 ? Math.round((Number(item.totalQuantity) / totalEvents) * 100) / 100 : null,
+    };
+  }).sort((a, b) => {
+    const left = a as Record<string, unknown>;
+    const right = b as Record<string, unknown>;
+    const leftWeight = Number(left.weight);
+    const rightWeight = Number(right.weight);
+    const leftHasWeight = left.weight !== null && left.weight !== undefined && String(left.weight).trim() !== "" && Number.isFinite(leftWeight);
+    const rightHasWeight = right.weight !== null && right.weight !== undefined && String(right.weight).trim() !== "" && Number.isFinite(rightWeight);
+    if (leftHasWeight !== rightHasWeight) return leftHasWeight ? -1 : 1;
+    if (leftHasWeight && leftWeight !== rightWeight) return leftWeight - rightWeight;
+    return Number(right.totalQuantity) - Number(left.totalQuantity);
+  });
+}
+
+function chestItemSummary(day: string, device = "", userId = "default") {
+  return buildChestItemSummary(chestItemEvents(day, device, userId));
+}
+
+function chestAllItemEvents(device = "", userId = "default") {
+  const eventsFile = path.join(runtimeRoot(), "diagnostics", "chest_results", "item_events.jsonl");
+  if (!existsSync(eventsFile)) return [];
+  const screenshotUsers = chestScreenshotUserIds();
+  const screenshotSources = chestScreenshotSources();
+  return readFileSync(eventsFile, "utf8").split(/\r?\n/).filter(Boolean).flatMap((line) => {
+    try {
+      const event = JSON.parse(line) as Record<string, unknown>;
+      return matchesChestDevice(event, device) && matchesChestEventUser(event, userId, screenshotUsers)
+        ? [attachChestEventSource(event, screenshotSources)]
+        : [];
+    } catch { return []; }
+  });
+}
+
+function chestSummaryRange(endDay: string, range: string, device = "", userId = "default", customStartDay?: string) {
+  const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+  if (!datePattern.test(endDay)) return { items: [], boxCount: 0 };
+  let startDay = endDay;
+  if (range === "custom") {
+    if (!datePattern.test(String(customStartDay ?? ""))) return { items: [], boxCount: 0 };
+    startDay = String(customStartDay);
+    if (startDay > endDay) throw new Error("自定义统计范围的开始日期不能晚于结束日期");
+  } else {
+    const spanDays = range === "month" ? 30 : range === "7d" ? 7 : 1;
+    const endParts = endDay.split("-").map(Number);
+    const endOrdinal = Date.UTC(endParts[0], endParts[1] - 1, endParts[2]);
+    const start = new Date(endOrdinal - (spanDays - 1) * 24 * 60 * 60 * 1000);
+    startDay = [
+      start.getUTCFullYear(),
+      String(start.getUTCMonth() + 1).padStart(2, "0"),
+      String(start.getUTCDate()).padStart(2, "0"),
+    ].join("-");
+  }
+  const inRange = (timestamp: unknown) => {
+    const day = String(timestamp ?? "").slice(0, 10);
+    return day >= startDay && day <= endDay;
+  };
+  const records = chestScreenshotRecords(device, userId).filter((record) => inRange(record.before_saved_at ?? record.saved_at));
+  const events = chestAllItemEvents(device, userId).filter((event) => {
+    const day = String(event.captured_at ?? "").slice(0, 10);
+    return day >= startDay && day <= endDay;
+  });
+  const recordPaths = new Set(records.map((record) => String(record.before_path ?? "")));
+  const boxCount = records.length + events.filter((event) => !recordPaths.has(String(event.screenshot_path ?? ""))).length;
+  return { items: buildChestItemSummary(events, boxCount || events.length), boxCount: boxCount || events.length, startDay, endDay, range };
+}
+
+function exportChestReport(endDay: string, range: string, device = "", userId = "default", customStartDay?: string) {
+  const summary = chestSummaryRange(endDay, range, device, userId, customStartDay);
+  const directory = path.join(chestResultsRoot(), "reports");
+  mkdirSync(directory, { recursive: true });
+  const safeUser = userId.replace(/[^a-zA-Z0-9_-]/g, "_") || "default";
+  const userName = chestUsers().find((user) => user.id === userId)?.name ?? userId;
+  const rangeFilePart = range === "custom" ? `${summary.startDay}_${endDay}_custom` : `${endDay}_${range}`;
+  const file = path.join(directory, `${rangeFilePart}_${safeUser}_chest_report.csv`);
+  const escape = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+  const lines = [
+    ["用户", userName, "统计开始日期", summary.startDay, "统计结束日期", summary.endDay, "宝箱数量", summary.boxCount],
+    [],
+    ["来源", "物品", "累计数量", "掉落次数", "掉落概率(%)", "期望/次开箱"],
+    ...summary.items.map((item) => [item.sourceName ?? "未分类", item.itemName, item.totalQuantity, item.itemCount, item.dropProbability, item.expectedQuantity ?? "待识别"]),
+  ];
+  writeFileSync(file, `\uFEFF${lines.map((line) => line.map(escape).join(",")).join("\n")}\n`, "utf8");
+  return { file, boxCount: summary.boxCount };
+}
+
+function chestSyncEventId(event: Record<string, unknown>) {
+  if (typeof event.sync_id === "string" && event.sync_id) return event.sync_id;
+  const items = Array.isArray(event.items) ? event.items.map((raw) => {
+    const item = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+    return [item.item_id, item.item_name, item.quantity, item.slot];
+  }) : [];
+  return createHash("sha256").update(JSON.stringify([
+    event.captured_at,
+    event.source_id,
+    event.source_name,
+    event.reward_kind,
+    items,
+  ])).digest("hex").slice(0, 32);
+}
+
+function exportChestSyncPackage(userId: string) {
+  const user = chestUsers().find((entry) => entry.id === userId) ?? { id: userId, name: userId, createdAt: "" };
+  const events = chestAllItemEvents("", userId);
+  const referencedIds = new Set<string>();
+  const icons: Record<string, string> = {};
+  const root = chestResultsRoot();
+  const safeIcon = (rawPath: unknown) => {
+    const target = path.resolve(String(rawPath ?? ""));
+    return target.startsWith(`${root}${path.sep}`) && existsSync(target) ? target : "";
+  };
+  const exportedEvents = events.map((event) => {
+    const items = Array.isArray(event.items) ? event.items.map((raw) => {
+      const item = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+      const itemId = String(item.item_id ?? "");
+      if (itemId) referencedIds.add(itemId);
+      const iconPath = safeIcon(item.icon_crop_path ?? item.crop_path);
+      if (itemId && iconPath && !icons[itemId]) icons[itemId] = readFileSync(iconPath).toString("base64");
+      const { crop_path: _cropPath, icon_crop_path: _iconCropPath, ...portableItem } = item;
+      return portableItem;
+    }) : [];
+    const { screenshot_path: _screenshotPath, user_id: _userId, device: _device, ...portableEvent } = event;
+    return { ...portableEvent, sync_id: chestSyncEventId(event), items };
+  });
+  let catalogItems: Array<Record<string, unknown>> = [];
+  try {
+    const catalog = JSON.parse(readFileSync(path.join(root, "item_catalog.json"), "utf8")) as { items?: Array<Record<string, unknown>> };
+    catalogItems = (catalog.items ?? []).filter((item) => referencedIds.has(String(item.item_id ?? "")));
+  } catch { /* event details remain exportable without a catalog */ }
+  const packageData = {
+    format: "bs-manager-chest-sync",
+    version: 1,
+    exported_at: new Date().toISOString(),
+    user: { id: user.id, name: user.name },
+    events: exportedEvents,
+    catalog: catalogItems,
+    icons,
+  };
+  const date = new Date().toISOString().slice(0, 10);
+  return dialog.showSaveDialog(mainWindow!, {
+    title: "导出开箱同步数据",
+    defaultPath: `${user.name || user.id}_${date}.chest-sync.json`,
+    filters: [{ name: "开箱同步数据", extensions: ["json"] }],
+  }).then((result) => {
+    if (result.canceled || !result.filePath) return { canceled: true, events: 0, icons: 0 };
+    writeFileSync(result.filePath, `${JSON.stringify(packageData)}\n`, "utf8");
+    return { canceled: false, file: result.filePath, events: exportedEvents.length, icons: Object.keys(icons).length };
+  });
+}
+
+function importChestSyncPackage(userId: string) {
+  return dialog.showOpenDialog(mainWindow!, {
+    title: "导入开箱同步数据",
+    properties: ["openFile"],
+    filters: [{ name: "开箱同步数据", extensions: ["json"] }],
+  }).then((result) => {
+    if (result.canceled || !result.filePaths[0]) return { canceled: true, imported: 0, skipped: 0, icons: 0 };
+    let data: Record<string, unknown>;
+    try { data = JSON.parse(readFileSync(result.filePaths[0], "utf8")) as Record<string, unknown>; }
+    catch { throw new Error("同步数据文件不是有效 JSON"); }
+    if (data.format !== "bs-manager-chest-sync" || data.version !== 1 || !Array.isArray(data.events)) {
+      throw new Error("不是受支持的开箱同步数据文件");
+    }
+    const root = chestResultsRoot();
+    const iconDirectory = path.join(root, "synced_icons");
+    mkdirSync(iconDirectory, { recursive: true });
+    const icons = data.icons && typeof data.icons === "object" ? data.icons as Record<string, unknown> : {};
+    let importedIcons = 0;
+    const iconPathFor = (itemId: string) => {
+      const encoded = icons[itemId];
+      if (typeof encoded !== "string" || !/^[A-Za-z0-9+/=]+$/.test(encoded)) return "";
+      const bytes = Buffer.from(encoded, "base64");
+      if (!bytes.length || bytes.length > 2 * 1024 * 1024) return "";
+      const safeId = itemId.replace(/[^a-zA-Z0-9_-]/g, "_");
+      const target = path.join(iconDirectory, `${safeId}.png`);
+      if (!existsSync(target)) {
+        writeFileSync(target, bytes);
+        importedIcons += 1;
+      }
+      return target;
+    };
+    const catalogFile = path.join(root, "item_catalog.json");
+    let catalog: { version?: number; items?: Array<Record<string, unknown>> } = { version: 1, items: [] };
+    try { catalog = JSON.parse(readFileSync(catalogFile, "utf8")) as typeof catalog; } catch { /* create a catalog below */ }
+    const catalogById = new Map((catalog.items ?? []).map((item) => [String(item.item_id ?? ""), item]));
+    for (const raw of Array.isArray(data.catalog) ? data.catalog : []) {
+      if (!raw || typeof raw !== "object") continue;
+      const incoming = raw as Record<string, unknown>;
+      const itemId = String(incoming.item_id ?? "");
+      if (!itemId) continue;
+      const existing = catalogById.get(itemId);
+      if (!existing) {
+        const created = { ...incoming, hashes: Array.isArray(incoming.hashes) ? incoming.hashes : [] };
+        catalogById.set(itemId, created);
+        continue;
+      }
+      const hashes = new Set([...(Array.isArray(existing.hashes) ? existing.hashes : []), ...(Array.isArray(incoming.hashes) ? incoming.hashes : [])]);
+      existing.hashes = [...hashes];
+      if (String(existing.category ?? "unknown") === "unknown" && String(incoming.category ?? "unknown") !== "unknown") {
+        existing.name = incoming.name;
+        existing.category = incoming.category;
+        if (incoming.weight !== undefined) existing.weight = incoming.weight;
+      }
+    }
+    catalog.items = [...catalogById.values()];
+    writeFileSync(catalogFile, `${JSON.stringify(catalog, null, 2)}\n`, "utf8");
+
+    const existingEvents = chestItemEventsFromFile();
+    const knownSyncIds = new Set(existingEvents.map(chestSyncEventId));
+    let imported = 0;
+    let skipped = 0;
+    for (const raw of data.events) {
+      if (!raw || typeof raw !== "object") continue;
+      const incoming = raw as Record<string, unknown>;
+      const syncId = chestSyncEventId(incoming);
+      if (knownSyncIds.has(syncId)) { skipped += 1; continue; }
+      const items = Array.isArray(incoming.items) ? incoming.items.flatMap((rawItem, index) => {
+        if (!rawItem || typeof rawItem !== "object") return [];
+        const item = rawItem as Record<string, unknown>;
+        const itemId = String(item.item_id ?? "");
+        const iconPath = itemId ? iconPathFor(itemId) : "";
+        return [{ ...item, slot: Number(item.slot) || index + 1, crop_path: iconPath, icon_crop_path: iconPath }];
+      }) : [];
+      const event = {
+        event_id: `sync-${syncId.slice(0, 16)}`,
+        sync_id: syncId,
+        user_id: userId,
+        screenshot_path: `sync://${syncId}`,
+        captured_at: String(incoming.captured_at ?? ""),
+        reward_kind: String(incoming.reward_kind ?? "items"),
+        source_id: String(incoming.source_id ?? ""),
+        source_name: String(incoming.source_name ?? "") || "未分类",
+        items,
+        review_required: items.some((item) => {
+          const quantity = (item as Record<string, unknown>).quantity;
+          return quantity === null || quantity === undefined;
+        }),
+        imported_at: new Date().toISOString(),
+      };
+      if (!/^\d{4}-\d{2}-\d{2}/.test(event.captured_at)) { skipped += 1; continue; }
+      existingEvents.push(event);
+      knownSyncIds.add(syncId);
+      imported += 1;
+    }
+    existingEvents.sort((left, right) => String(right.captured_at ?? "").localeCompare(String(left.captured_at ?? "")));
+    writeFileSync(path.join(root, "item_events.jsonl"), existingEvents.map((event) => JSON.stringify(event)).join("\n") + (existingEvents.length ? "\n" : ""), "utf8");
+    return { canceled: false, imported, skipped, icons: importedIcons };
+  });
+}
+
+function runChestAnalyzer(day?: string, userId?: string) {
+  const root = path.join(runtimeRoot(), "diagnostics", "chest_results");
+  const script = path.join(runtimeRoot(), "chest_analyzer.py");
+  const executable = resolveExecutable(getSettings().pythonPath, process.platform === "win32" ? "python.exe" : "python3");
+  if (day && !/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+    return Promise.reject(new Error("重新识别日期格式无效"));
+  }
+  const args = [script, "--input-dir", root, "--force"];
+  if (day) args.push("--day", day);
+  if (userId) args.push("--user-id", userId);
+  return new Promise<Record<string, unknown>>((resolve, reject) => {
+    const process = spawn(executable, args, { windowsHide: true, env: runtimeEnvironment() });
+    let output = "";
+    process.stdout.on("data", (data) => (output += data.toString("utf8")));
+    process.stderr.on("data", (data) => (output += data.toString("utf8")));
+    process.on("error", reject);
+    process.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(output || `物品识别进程退出码 ${code}`));
+        return;
+      }
+      try {
+        resolve(JSON.parse(output.trim()) as Record<string, unknown>);
+      } catch {
+        resolve({ message: output.trim() });
+      }
+    });
+  });
+}
+
+function chestResultsRoot() {
+  return path.join(runtimeRoot(), "diagnostics", "chest_results");
+}
+
+function writeChestScreenshotIndexCsv(root: string, records: Array<Record<string, unknown>>) {
+  const escape = (value: unknown) => `"${String(value ?? "").replace(/"/g, "\"\"")}"`;
+  const rows = [
+    CHEST_INDEX_FIELDS,
+    ...records.map((record) => CHEST_INDEX_FIELDS.map((field) => record[field])),
+  ];
+  writeFileSync(path.join(root, "index.csv"), `${rows.map((row) => row.map(escape).join(",")).join("\n")}\n`, "utf8");
+}
+
+function normalizeChestCatalogItems(items: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  const merged = new Map<string, Record<string, unknown>>();
+  for (const item of items) {
+    const itemId = String(item.item_id ?? "");
+    if (!itemId) continue;
+    const current = merged.get(itemId);
+    if (!current) {
+      merged.set(itemId, { ...item, hashes: Array.isArray(item.hashes) ? [...item.hashes] : [] });
+      continue;
+    }
+    const hashes = Array.isArray(current.hashes) ? current.hashes : [];
+    for (const hash of Array.isArray(item.hashes) ? item.hashes : []) if (!hashes.includes(hash)) hashes.push(hash);
+    current.hashes = hashes;
+    if (String(current.name ?? "待标注物品") === "待标注物品" && String(item.name ?? "待标注物品") !== "待标注物品") {
+      current.name = item.name;
+      current.category = item.category;
+    }
+  }
+  return [...merged.values()];
+}
+
+function chestUnlabeledItems(): Array<Record<string, unknown>> {
+  const result = new Map<string, Record<string, unknown>>();
+  const catalogFile = path.join(chestResultsRoot(), "item_catalog.json");
+  let catalogItems: Array<Record<string, unknown>> = [];
+  try {
+    const catalog = JSON.parse(readFileSync(catalogFile, "utf8")) as { items?: Array<Record<string, unknown>> };
+    catalogItems = Array.isArray(catalog.items) ? catalog.items : [];
+  } catch { /* no catalog yet */ }
+  catalogItems = normalizeChestCatalogItems(catalogItems);
+  const labels = new Map(catalogItems.map((item) => [String(item.item_id ?? ""), item]));
+  const labelsByName = new Map(catalogItems
+    .filter((item) => String(item.category ?? "unknown") !== "unknown" && String(item.name ?? "") !== "待标注物品")
+    .map((item) => [String(item.name), item]));
+  for (const event of chestItemEventsFromFile()) {
+    for (const rawItem of Array.isArray(event.items) ? event.items : []) {
+      if (!rawItem || typeof rawItem !== "object") continue;
+      const item = rawItem as Record<string, unknown>;
+      const itemId = String(item.item_id ?? "");
+      if (!itemId) continue;
+      const existing = result.get(itemId);
+      if (existing) {
+        existing.occurrences = Number(existing.occurrences ?? 0) + 1;
+        continue;
+      }
+      const catalogItem = labels.get(itemId) ?? labelsByName.get(String(item.item_name ?? ""));
+      const name = String(catalogItem?.name ?? item.item_name ?? "待标注物品");
+      const labeled = String(catalogItem?.category ?? "unknown") !== "unknown" && name !== "待标注物品";
+      result.set(itemId, { itemId, name, labeled, weight: catalogItem?.weight ?? null, cropPath: String(item.icon_crop_path ?? item.crop_path ?? ""), occurrences: 1 });
+    }
+  }
+  return [...result.values()];
+}
+
+function setChestItemWeight(rawItemId: string, rawWeight: number | null) {
+  const itemId = String(rawItemId ?? "");
+  if (!itemId) throw new Error("物品标识无效");
+  const weight = rawWeight === null || rawWeight === undefined ? null : Number(rawWeight);
+  if (weight !== null && (!Number.isFinite(weight) || weight < 0)) throw new Error("权重必须是非负数字");
+  const file = path.join(chestResultsRoot(), "item_catalog.json");
+  if (!existsSync(file)) throw new Error("物品图鉴不存在");
+  const catalog = JSON.parse(readFileSync(file, "utf8")) as { items?: Array<Record<string, unknown>> };
+  const item = (catalog.items ?? []).find((entry) => String(entry.item_id ?? "") === itemId);
+  if (!item) throw new Error("未找到物品图鉴");
+  if (weight === null) delete item.weight;
+  else item.weight = weight;
+  writeFileSync(file, `${JSON.stringify(catalog, null, 2)}\n`, "utf8");
+  return { itemId, weight };
+}
+
+function chestItemEventsFromFile(): Array<Record<string, unknown>> {
+  const eventsFile = path.join(chestResultsRoot(), "item_events.jsonl");
+  if (!existsSync(eventsFile)) return [];
+  return readFileSync(eventsFile, "utf8").split(/\r?\n/).filter(Boolean).flatMap((line) => {
+    try { return [JSON.parse(line) as Record<string, unknown>]; } catch { return []; }
+  });
+}
+
+function labelChestItem(rawItemId: string, rawName: string) {
+  const itemId = String(rawItemId ?? "");
+  const name = String(rawName ?? "").trim();
+  if (!itemId || !name) throw new Error("物品标识或名称无效");
+  const root = chestResultsRoot();
+  const catalogFile = path.join(root, "item_catalog.json");
+  let catalog: { items?: Array<Record<string, unknown>> } = { items: [] };
+  try { catalog = JSON.parse(readFileSync(catalogFile, "utf8")) as { items?: Array<Record<string, unknown>> }; } catch { /* created by analyzer later */ }
+  const items = Array.isArray(catalog.items) ? catalog.items : [];
+  const normalizedItems = normalizeChestCatalogItems(items);
+  const eventName = chestItemEventsFromFile()
+    .flatMap((event) => Array.isArray(event.items) ? event.items : [])
+    .find((rawItem) => rawItem && typeof rawItem === "object" && String((rawItem as Record<string, unknown>).item_id ?? "") === itemId && String((rawItem as Record<string, unknown>).item_name ?? ""));
+  const target = normalizedItems.find((item) => String(item.item_id ?? "") === itemId)
+    ?? normalizedItems.find((item) => String(item.name ?? "") === String((eventName as Record<string, unknown> | undefined)?.item_name ?? "") && String(item.category ?? "unknown") !== "unknown");
+  if (!target) throw new Error("未找到待标注物品");
+  const previousId = itemId;
+  let nextId = String(target.item_id);
+  if (String(target.category ?? "unknown") === "unknown") {
+    let nextNumber = 1;
+    const usedIds = new Set(normalizedItems.map((item) => String(item.item_id ?? "")));
+    nextId = `item_${String(nextNumber).padStart(4, "0")}`;
+    while (usedIds.has(nextId)) {
+      nextNumber += 1;
+      nextId = `item_${String(nextNumber).padStart(4, "0")}`;
+    }
+  }
+  target.item_id = nextId;
+  target.name = name;
+  target.category = "labeled";
+  catalog.items = normalizedItems;
+  writeFileSync(catalogFile, `${JSON.stringify(catalog, null, 2)}\n`, "utf8");
+
+  const events = chestItemEventsFromFile();
+  for (const event of events) {
+    for (const rawItem of Array.isArray(event.items) ? event.items : []) {
+      if (rawItem && typeof rawItem === "object" && String((rawItem as Record<string, unknown>).item_id ?? "") === previousId) {
+        (rawItem as Record<string, unknown>).item_id = nextId;
+        (rawItem as Record<string, unknown>).item_name = name;
+      }
+    }
+  }
+  writeFileSync(path.join(root, "item_events.jsonl"), events.map((event) => JSON.stringify(event)).join("\n") + (events.length ? "\n" : ""), "utf8");
+  return { itemId: nextId, name };
+}
+
+function correctChestEvent(
+  rawScreenshotPath: string,
+  correctionsInput: Array<{ slot: number; itemName?: string | null; quantity: number | null }>,
+  metadata?: { userId: string; sourceId: string; sourceName: string },
+) {
+  const root = chestResultsRoot();
+  const targetPath = path.resolve(String(rawScreenshotPath || ""));
+  const events = chestItemEventsFromFile();
+  const event = events.find((candidate) => path.resolve(String(candidate.screenshot_path ?? "")) === targetPath);
+  if (!event) throw new Error("未找到对应的开箱事件");
+  const userId = String(metadata?.userId ?? event.user_id ?? "default");
+  const sourceId = String(metadata?.sourceId ?? event.source_id ?? "").trim();
+  const sourceName = String(metadata?.sourceName ?? event.source_name ?? "").trim();
+  if (!chestUsers().some((user) => user.id === userId)) throw new Error("未找到校准用户");
+  if (!sourceId || !sourceName) throw new Error("宝箱来源不能为空");
+  const clean = correctionsInput
+    .filter((item) => Number.isInteger(item.slot) && item.slot > 0 && (item.quantity === null || (Number.isInteger(item.quantity) && item.quantity >= 0)))
+    .map((item) => {
+      const itemName = String(item.itemName ?? "").trim();
+      return {
+        slot: item.slot,
+        quantity: item.quantity,
+        ...(itemName ? { item_name: itemName } : {}),
+      };
+    });
+  const correctionsPath = path.join(root, "manual_item_corrections.json");
+  let corrections: { version: number; events: Record<string, Array<Record<string, unknown>>> } = { version: 1, events: {} };
+  try { corrections = JSON.parse(readFileSync(correctionsPath, "utf8")) as typeof corrections; } catch { /* create on first calibration */ }
+  const capturedAt = String(event.captured_at ?? "");
+  const correctionKey = String(event.event_id ?? targetPath);
+  const previous = corrections.events[capturedAt] ?? [];
+  const keyedPrevious = corrections.events[correctionKey] ?? previous;
+  const previousBySlot = new Map(keyedPrevious.map((item) => [Number(item.slot), item]));
+  corrections.events[correctionKey] = clean.map((item) => ({ ...(previousBySlot.get(item.slot) ?? {}), slot: item.slot, quantity: item.quantity }));
+  writeFileSync(correctionsPath, `${JSON.stringify(corrections, null, 2)}\n`, "utf8");
+  for (const item of clean) {
+    const target = Array.isArray(event.items) ? event.items[item.slot - 1] : null;
+    if (target && typeof target === "object") {
+      (target as Record<string, unknown>).quantity = item.quantity;
+      if (item.item_name) (target as Record<string, unknown>).item_name = item.item_name;
+    }
+  }
+  event.user_id = userId;
+  event.source_id = sourceId;
+  event.source_name = sourceName;
+  writeFileSync(path.join(root, "item_events.jsonl"), events.map((item) => JSON.stringify(item)).join("\n") + "\n", "utf8");
+  const indexFile = path.join(root, "index.jsonl");
+  if (existsSync(indexFile)) {
+    const indexRecords = readFileSync(indexFile, "utf8").split(/\r?\n/).filter(Boolean).flatMap((line) => {
+      try { return [JSON.parse(line) as Record<string, unknown>]; } catch { return []; }
+    });
+    for (const record of indexRecords) {
+      if (path.resolve(String(record.before_path ?? "")) !== targetPath) continue;
+      record.user_id = userId;
+      record.source_id = sourceId;
+      record.source_name = sourceName;
+    }
+    writeFileSync(indexFile, indexRecords.map((record) => JSON.stringify(record)).join("\n") + (indexRecords.length ? "\n" : ""), "utf8");
+    writeChestScreenshotIndexCsv(root, indexRecords);
+  }
+  return { screenshotPath: targetPath, capturedAt, corrected: clean.length, userId, sourceId, sourceName };
+}
+
+function deleteChestEvent(rawScreenshotPath: string) {
+  const root = chestResultsRoot();
+  const target = path.resolve(String(rawScreenshotPath || ""));
+  if (!target.startsWith(`${root}${path.sep}`) || !existsSync(target)) throw new Error("截图路径无效");
+  const events = chestItemEventsFromFile().filter((event) => path.resolve(String(event.screenshot_path ?? "")) !== target);
+  // The event id is derived from the absolute screenshot path, so locate its
+  // crop directory by matching the event before removing it.
+  const removed = chestItemEventsFromFile().find((event) => path.resolve(String(event.screenshot_path ?? "")) === target);
+  const cropDir = removed ? path.join(root, "item_crops", String(removed.event_id ?? "")) : "";
+  unlinkSync(target);
+  writeFileSync(path.join(root, "item_events.jsonl"), events.map((event) => JSON.stringify(event)).join("\n") + (events.length ? "\n" : ""), "utf8");
+  const indexFile = path.join(root, "index.jsonl");
+  if (existsSync(indexFile)) {
+    const indexRecords = readFileSync(indexFile, "utf8").split(/\r?\n/).filter(Boolean).flatMap((line) => {
+      try { return [JSON.parse(line) as Record<string, unknown>]; } catch { return []; }
+    }).filter((record) => path.resolve(String(record.before_path ?? "")) !== target && path.resolve(String(record.after_path ?? "")) !== target);
+    writeFileSync(indexFile, indexRecords.map((record) => JSON.stringify(record)).join("\n") + (indexRecords.length ? "\n" : ""), "utf8");
+  }
+  if (existsSync(cropDir)) rmSync(cropDir, { recursive: true, force: true });
+  return { deleted: target };
+}
+
+function deleteChestCatalogItem(itemId: string) {
+  const root = chestResultsRoot();
+  const file = path.join(root, "item_catalog.json");
+  let catalog: { items?: Array<Record<string, unknown>> } = { items: [] };
+  try { catalog = JSON.parse(readFileSync(file, "utf8")) as typeof catalog; } catch { /* remove stale event-only unknown item */ }
+  const target = (catalog.items ?? []).find((item) => String(item.item_id ?? "") === itemId);
+  const removeOccurrences = itemId.startsWith("unknown_") || String(target?.category ?? "unknown") === "unknown";
+  catalog.items = (catalog.items ?? []).filter((item) => String(item.item_id ?? "") !== itemId);
+  writeFileSync(file, `${JSON.stringify(catalog, null, 2)}\n`, "utf8");
+
+  let removedOccurrences = 0;
+  if (removeOccurrences) {
+    const events = chestItemEventsFromFile();
+    for (const event of events) {
+      const items = Array.isArray(event.items) ? event.items : [];
+      const kept = items.filter((rawItem) => {
+        if (!rawItem || typeof rawItem !== "object" || String((rawItem as Record<string, unknown>).item_id ?? "") !== itemId) return true;
+        removedOccurrences += 1;
+        const cropPath = path.resolve(String((rawItem as Record<string, unknown>).crop_path ?? ""));
+        if (cropPath.startsWith(`${root}${path.sep}`) && existsSync(cropPath)) unlinkSync(cropPath);
+        const iconCropPath = path.resolve(String((rawItem as Record<string, unknown>).icon_crop_path ?? ""));
+        if (iconCropPath.startsWith(`${root}${path.sep}`) && existsSync(iconCropPath)) unlinkSync(iconCropPath);
+        return false;
+      });
+      event.items = kept;
+    }
+    writeFileSync(path.join(root, "item_events.jsonl"), events.map((event) => JSON.stringify(event)).join("\n") + (events.length ? "\n" : ""), "utf8");
+  }
+  return { deleted: itemId, removedOccurrences };
+}
+
+function runtimeDiagnosticImage(directory: string, rawPath: string): string | null {
+  const root = path.resolve(runtimeRoot(), "diagnostics", directory);
+  const target = path.resolve(String(rawPath || ""));
+  if (!target.startsWith(`${root}${path.sep}`) || !existsSync(target)) return null;
+  const extension = path.extname(target).toLowerCase();
+  const mime = extension === ".jpg" || extension === ".jpeg" ? "image/jpeg" : "image/png";
+  return `data:${mime};base64,${readFileSync(target).toString("base64")}`;
+}
+
 app.on("window-all-closed", () => {
   for (const task of tasks.values()) task.kill();
   taskOwners.clear();
   if (process.platform !== "darwin") app.quit();
 });
 
+app.on("before-quit", () => {
+  isQuitting = true;
+});
+
 app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show();
+    mainWindow.focus();
+    return;
+  }
+  createWindow();
 });

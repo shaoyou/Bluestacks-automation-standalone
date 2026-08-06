@@ -22,6 +22,7 @@
     "license:issue:local": "node scripts/issue-local-license.mjs"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
@@ -48,7 +49,6 @@
       "dist/**/*",
       "dist-electron/**/*",
       "package.json",
-      "!node_modules/**/*",
       "!dist-electron/preload.js",
       "!dist/mac-*/*",
       "!dist/win-*/*"
@@ -56,6 +56,14 @@
     "directories": {
       "output": "release"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "shaoyou",
+        "repo": "Bluestacks-automation-standalone",
+        "releaseType": "release"
+      }
+    ],
     "extraResources": [
       {
         "from": "../adb_bot.py",
@@ -64,6 +72,10 @@
       {
         "from": "../record_touch.py",
         "to": "runtime/record_touch.py"
+      },
+      {
+        "from": "../chest_analyzer.py",
+        "to": "runtime/chest_analyzer.py"
       },
       {
         "from": "default_plans",

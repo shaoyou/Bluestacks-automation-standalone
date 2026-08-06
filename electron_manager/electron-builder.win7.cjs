@@ -20,4 +20,6 @@ module.exports = {
   extraMetadata: {
     main: "dist-electron/legacy-main.cjs",
   },
+  // This legacy build intentionally does not share the modern updater feed.
+  publish: null,
 };

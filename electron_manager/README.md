@@ -142,3 +142,28 @@ powershell -ExecutionPolicy Bypass -File scripts/build_windows_runtime.ps1 -Pyth
 
 The output is written to `release/win7-legacy`. The GitHub Actions workflow
 performs both builds and uploads two distinctly named artifacts.
+
+### GitHub Releases 自动更新
+
+现代 Windows 10/11 版和 macOS 版使用 GitHub Releases 作为更新源。应用启动
+后会自动检查更新；用户可以在“设置”中手动检查、下载并重启安装。Windows 7
+兼容版不会读取现代版更新源。
+
+发布流程：
+
+```sh
+cd electron_manager
+npm version patch --no-git-tag-version
+git add package.json package-lock.json
+git commit -m "release: v$(node -p "require('./package.json').version")"
+git tag "v$(node -p "require('./package.json').version")"
+git push origin main --tags
+```
+
+推送 `v*` 标签后，GitHub Actions 会构建 Windows 10/11 安装包、Windows 7
+兼容包，并自动创建 GitHub Release。现代版需要 Release 中包含对应的
+`latest.yml`；如果要发布 macOS 更新，还需要把 `package:mac` 生成的 DMG、
+ZIP 和 `latest-mac.yml` 一并上传到同一个 Release。
+
+GitHub Actions 需要仓库允许 workflow 使用 `contents: write`，本项目工作流
+已配置该权限。首次上线前应先用测试版本验证安装、下载、重启和回滚流程。

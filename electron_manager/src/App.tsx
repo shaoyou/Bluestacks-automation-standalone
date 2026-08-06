@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Activity,
+  Archive,
   Bot,
   Code2,
   Crosshair,
@@ -8,16 +9,18 @@ import {
   Radio,
   Settings2,
 } from "lucide-react";
-import type { AppSettings, EnvironmentState, LicenseStatus, TaskEvent } from "./types";
+import type { AppSettings, EnvironmentState, LicenseStatus, TaskEvent, UpdateState } from "./types";
 import { appendPlanAction, type Page, type PickedCoordinate, type SharedProps } from "./app/shared";
 import { EnvironmentSetup, LicenseActivationDialog } from "./components/layout";
 import { ScriptsPage, RunnerPage } from "./pages/ScriptsRunnerPage";
 import { CalibrationPage, DiagnosticsPage, RecorderPage, SettingsPage } from "./pages/DevicePages";
 import { DrawPage } from "./pages/DrawPage";
+import { ChestPage } from "./pages/ChestPage";
 
 const navItems: { id: Page; label: string; icon: typeof Code2 }[] = [
   { id: "runner", label: "运行", icon: Play },
   { id: "draw", label: "抽卡", icon: Activity },
+  { id: "chest", label: "开宝箱", icon: Archive },
   { id: "scripts", label: "脚本", icon: Code2 },
   { id: "recorder", label: "录制", icon: Radio },
   { id: "calibration", label: "标定", icon: Crosshair },
@@ -32,8 +35,11 @@ function logTime() {
 }
 export function App() {
   const query = new URLSearchParams(window.location.search);
-  const windowMode = query.get("mode") === "runner" ? "runner" : "main";
+  const windowMode = query.get("mode") === "runner" ? "runner" : query.get("mode") === "chest" ? "chest" : "main";
   const runnerId = query.get("runnerId") || "main";
+  const chestUserId = query.get("userId") || "default";
+  const chestSourceId = query.get("sourceId") || "";
+  const chestSourceName = query.get("sourceName") || "";
   const initialRunnerPlan = query.get("plan") || "";
   const [page, setPage] = useState<Page>("runner");
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
@@ -51,6 +57,7 @@ export function App() {
   const [license, setLicense] = useState<LicenseStatus | null>(null);
   const [activationOpen, setActivationOpen] = useState(false);
   const [activationError, setActivationError] = useState("");
+  const [update, setUpdate] = useState<UpdateState | null>(null);
 
   const bootstrapEnvironment = async () => {
     setEnvironment((current) => current ? { ...current, phase: "running", progress: 0, message: "正在准备运行环境" } : current);
@@ -85,18 +92,20 @@ export function App() {
   useEffect(() => {
     void (async () => {
       try {
-        const [state, savedSettings, names, environmentState, licenseState] = await Promise.all([
+        const [state, savedSettings, names, environmentState, licenseState, updateState] = await Promise.all([
           window.bsManager.runtimeState(),
           window.bsManager.settingsGet(),
           window.bsManager.plansList(),
           window.bsManager.environmentState(),
           window.bsManager.licenseGet(),
+          window.bsManager.updateState(),
         ]);
         setRuntime(state);
         setSettings(savedSettings);
         setPlans(names);
         setEnvironment(environmentState);
         setLicense(licenseState);
+        setUpdate(updateState);
         if (names[0]) await loadPlan(names[0]);
         setNotice("运行环境已就绪");
         if (environmentState.required && !environmentState.ready) void bootstrapEnvironment();
@@ -128,10 +137,12 @@ export function App() {
           [event.id]: `${current[event.id] ?? ""}[${logTime()}] 进程结束，退出码 ${event.code ?? "未知"}\n`,
         }));
         if (event.id === "draw") window.dispatchEvent(new Event("draw-task-finished"));
+        if (event.id === "chest" || event.id.startsWith("chest-")) window.dispatchEvent(new Event("chest-task-finished"));
       }
     });
     const removeEnvironmentListener = window.bsManager.onEnvironmentEvent((event: EnvironmentState) => setEnvironment(event));
-    return () => { removeTaskListener(); removeEnvironmentListener(); };
+    const removeUpdateListener = window.bsManager.onUpdateEvent((event: UpdateState) => setUpdate(event));
+    return () => { removeTaskListener(); removeEnvironmentListener(); removeUpdateListener(); };
   }, []);
 
   useEffect(() => {
@@ -180,7 +191,7 @@ export function App() {
   const startTask = async (id: string, args: string[]) => {
     try {
       setLogs((current) => ({ ...current, [id]: "" }));
-      const kind = id === "draw" ? "draw" : id.includes("recorder") ? "recorder" : id.includes("diagnostic") ? "diagnostic" : "runner";
+      const kind = id === "draw" ? "draw" : (id === "chest" || id.startsWith("chest-")) ? "chest" : id.includes("recorder") ? "recorder" : id.includes("diagnostic") ? "diagnostic" : "runner";
       await window.bsManager.startTask({ id, kind, args });
     } catch (error) {
       setNotice(`无法启动: ${String(error)}`);
@@ -224,6 +235,27 @@ export function App() {
     setActivationError("");
     setActivationOpen(true);
   };
+  const checkForUpdates = async () => {
+    try {
+      setUpdate(await window.bsManager.updateCheck());
+    } catch (error) {
+      setNotice(`检查更新失败: ${String(error)}`);
+    }
+  };
+  const downloadUpdate = async () => {
+    try {
+      setUpdate(await window.bsManager.updateDownload());
+    } catch (error) {
+      setNotice(`下载更新失败: ${String(error)}`);
+    }
+  };
+  const installUpdate = async () => {
+    try {
+      await window.bsManager.updateInstall();
+    } catch (error) {
+      setNotice(`安装更新失败: ${String(error)}`);
+    }
+  };
 
   const context = {
     settings,
@@ -232,6 +264,10 @@ export function App() {
     activateLicense,
     clearLicense,
     openLicenseActivation,
+    update,
+    checkForUpdates,
+    downloadUpdate,
+    installUpdate,
     runtime,
     plans,
     activePlan,
@@ -263,6 +299,9 @@ export function App() {
   if (windowMode === "runner") {
     return <main className="runner-window-shell"><RunnerPage {...context} runnerId={runnerId} initialPlan={initialRunnerPlan} standalone /></main>;
   }
+  if (windowMode === "chest") {
+    return <main className="runner-window-shell"><ChestPage {...context} chestTaskId={`chest-${runnerId}`} chestUserId={chestUserId} chestSourceId={chestSourceId} chestSourceName={chestSourceName} /></main>;
+  }
 
   return (
     <>
@@ -282,6 +321,7 @@ export function App() {
         {page === "scripts" && <ScriptsPage {...context} />}
         {page === "runner" && <RunnerPage {...context} />}
         {page === "draw" && <DrawPage {...context} />}
+        {page === "chest" && <ChestPage {...context} />}
         {page === "recorder" && <RecorderPage {...context} />}
         {page === "calibration" && <CalibrationPage {...context} />}
         {page === "diagnostics" && <DiagnosticsPage {...context} />}

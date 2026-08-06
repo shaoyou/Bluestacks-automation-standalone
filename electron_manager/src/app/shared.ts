@@ -1,6 +1,6 @@
-import type { AppSettings, LicenseStatus } from "../types";
+import type { AppSettings, LicenseStatus, UpdateState } from "../types";
 
-export type Page = "scripts" | "runner" | "draw" | "recorder" | "calibration" | "diagnostics" | "settings";
+export type Page = "scripts" | "runner" | "draw" | "chest" | "recorder" | "calibration" | "diagnostics" | "settings";
 export type PickedCoordinate = { x: number; y: number; device: string; capturedAt: string };
 export type ScriptVariable = { name: string; value: string; note: string };
 export type RunnerSelection = { plan: string; device: string; profitPerCycle: string; showRealtimeLogs: boolean };
@@ -12,6 +12,10 @@ export type SharedProps = {
   activateLicense: (code: string) => Promise<boolean>;
   clearLicense: () => Promise<void>;
   openLicenseActivation: () => void;
+  update: UpdateState | null;
+  checkForUpdates: () => Promise<void>;
+  downloadUpdate: () => Promise<void>;
+  installUpdate: () => Promise<void>;
   runtime: { root: string; plansDir: string; templatesDir: string } | null;
   plans: string[];
   activePlan: string | null;
@@ -34,6 +38,10 @@ export type SharedProps = {
   clearTaskLog: (id: string) => void;
   devices: string[];
   refreshDevices: () => Promise<void>;
+  chestTaskId?: string;
+  chestUserId?: string;
+  chestSourceId?: string;
+  chestSourceName?: string;
 };
 
 export function updateVariables(source: string, variables: ScriptVariable[]) {

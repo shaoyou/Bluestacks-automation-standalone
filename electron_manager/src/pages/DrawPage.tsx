@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { CircleStop, FolderOpen, Play, RefreshCw } from "lucide-react";
-import { LogPanel, PageHeading } from "../components/layout";
+import { LogActions, LogPanel, PageHeading } from "../components/layout";
 import type { SharedProps } from "../app/shared";
 
 const drawDeviceStorageKey = "draw-selected-device";
+const drawRealtimeLogsStorageKey = "draw-show-realtime-logs";
 const defaultRedRoles = [
   ["role_bosiwangzi.png", "波斯王子"],
   ["role_kakaxi.png", "卡卡西"],
@@ -25,7 +26,12 @@ export function DrawPage(props: SharedProps) {
   const [selectedPairId, setSelectedPairId] = useState("");
   const [beforeImage, setBeforeImage] = useState<string | null>(null);
   const [afterImage, setAfterImage] = useState<string | null>(null);
+  const [showRealtimeLogs, setShowRealtimeLogs] = useState(() => window.localStorage.getItem(drawRealtimeLogsStorageKey) === "true");
   const running = !!props.running.draw;
+  const rawLog = props.logs.draw ?? "";
+  const log = showRealtimeLogs
+    ? rawLog
+    : rawLog.split(/\r?\n/).filter((line) => !/if_image \[\d+\/\d+\] template .+ not matched|CMD adb shell input tap/.test(line)).join("\n");
   const plan = props.plans.includes("choukaka.json") ? "choukaka.json" : "";
   const selectedSession = sessions.find((item) => String(item.summary.session_id ?? "") === selectedSessionId) ?? sessions[0];
   const selectedPair = pairs.find((pair) => pairKey(pair) === selectedPairId) ?? pairs[0];
@@ -46,6 +52,13 @@ export function DrawPage(props: SharedProps) {
     if (nextDevice) window.localStorage.setItem(drawDeviceStorageKey, nextDevice);
     else window.localStorage.removeItem(drawDeviceStorageKey);
   };
+
+  const updateRealtimeLogs = (next: boolean) => {
+    setShowRealtimeLogs(next);
+    window.localStorage.setItem(drawRealtimeLogsStorageKey, String(next));
+  };
+
+  const copyLog = () => void navigator.clipboard.writeText(rawLog);
 
   const loadSession = async (sessionId: string) => {
     if (!sessionId) {
@@ -117,7 +130,7 @@ export function DrawPage(props: SharedProps) {
         <label>计划<input readOnly value={plan || "未找到 choukaka.json"} /></label>
         <label>设备<select value={device} onChange={(event) => selectDevice(event.target.value)}>{props.devices.map((name) => <option key={name}>{name}</option>)}</select></label>
         {!running ? <button className="button primary full" disabled={!plan} onClick={start}><Play size={16} />开始抽卡</button> : <button className="button danger full" onClick={() => void window.bsManager.stopTask("draw")}><CircleStop size={16} />停止抽卡</button>}
-        <LogPanel title="抽卡日志" text={props.logs.draw ?? ""} />
+        <LogPanel title="抽卡日志" text={log} actions={<LogActions text={rawLog} showRealtimeLogs={showRealtimeLogs} onToggleRealtimeLogs={updateRealtimeLogs} onCopy={copyLog} onClear={() => props.clearTaskLog("draw")} />} />
       </section>
       <section className="draw-workspace">
         {selectedSession ? <>
@@ -184,4 +197,3 @@ function DrawImage({ label, image, placeholder }: { label: string; image: string
 function Metric({ label, value, detail }: { label: string; value: unknown; detail?: string }) {
   return <div><span>{label}</span><strong>{String(value ?? 0)}</strong>{detail ? <small>{detail}</small> : null}</div>;
 }
-

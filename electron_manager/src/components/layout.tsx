@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { Bot, KeyRound, RefreshCw, TerminalSquare, X } from "lucide-react";
+import { Bot, Copy, KeyRound, RefreshCw, TerminalSquare, Trash2, X } from "lucide-react";
 import type { EnvironmentState } from "../types";
 
 export function PageHeading({ title, detail, children }: { title: string; detail: string; children?: ReactNode }) {
@@ -10,8 +10,16 @@ export function Toggle({ label, checked, onChange }: { label: string; checked: b
   return <label className="toggle"><span>{label}</span><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /><i /></label>;
 }
 
-export function LogPanel({ title, text }: { title: string; text: string }) {
-  return <section className="panel log-panel"><div className="panel-title"><span>{title}</span><TerminalSquare size={16} /></div><pre className="log-output">{text || "等待任务输出..."}</pre></section>;
+export function LogActions({ text, showRealtimeLogs, onToggleRealtimeLogs, onCopy, onClear }: { text: string; showRealtimeLogs: boolean; onToggleRealtimeLogs: (next: boolean) => void; onCopy?: () => void; onClear?: () => void }) {
+  return <span className="log-actions">
+    <Toggle label="实时输出" checked={showRealtimeLogs} onChange={onToggleRealtimeLogs} />
+    <button className="icon-button" title="复制日志" aria-label="复制日志" disabled={!text} onClick={() => { if (onCopy) onCopy(); else void navigator.clipboard.writeText(text); }}><Copy size={15} /></button>
+    <button className="icon-button" title="清空日志" aria-label="清空日志" disabled={!text} onClick={onClear}><Trash2 size={15} /></button>
+  </span>;
+}
+
+export function LogPanel({ title, text, actions }: { title: string; text: string; actions?: ReactNode }) {
+  return <section className="panel log-panel"><div className="panel-title"><span>{title}</span><span className="panel-title-actions">{actions}<TerminalSquare size={16} /></span></div><pre className="log-output">{text || "等待任务输出..."}</pre></section>;
 }
 
 export function EnvironmentSetup({ state, onRetry, onCancel }: { state: EnvironmentState | null; onRetry: () => void; onCancel: () => void }) {
