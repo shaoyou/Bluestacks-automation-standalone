@@ -20,7 +20,7 @@
         },
         {
           "remark" : "等待10秒",
-          "seconds" : 11,
+          "seconds" : 10,
           "type" : "wait"
         },
         {
@@ -398,7 +398,7 @@
         },
         {
           "remark" : "等待10秒",
-          "seconds" : 11,
+          "seconds" : 10,
           "type" : "wait"
         },
         {
