@@ -27,6 +27,7 @@ copy_runtime_tree() {
 
   cp "$ROOT_DIR/adb_bot.py" "$dest_dir/adb_bot.py"
   cp "$ROOT_DIR/record_touch.py" "$dest_dir/record_touch.py"
+  cp "$ROOT_DIR/chest_analyzer.py" "$dest_dir/chest_analyzer.py"
   cp -R "$ROOT_DIR/plans" "$dest_dir/plans"
   cp -R "$ROOT_DIR/image_templates" "$dest_dir/image_templates"
   mkdir -p "$dest_dir/diagnostics"

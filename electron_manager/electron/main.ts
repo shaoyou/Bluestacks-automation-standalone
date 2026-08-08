@@ -775,8 +775,8 @@ app.whenReady().then(() => {
   });
   ipcMain.handle("chest:item-events", (_, day: string, device = "", userId = "default") => chestItemEvents(day, device, userId));
   ipcMain.handle("chest:item-summary", (_, day: string, device = "", userId = "default") => chestItemSummary(day, device, userId));
-  ipcMain.handle("chest:summary-range", (_, endDay: string, range: string, device = "", userId = "default", startDay?: string) => chestSummaryRange(endDay, range, device, userId, startDay));
-  ipcMain.handle("chest:export-report", (_, endDay: string, range: string, device = "", userId = "default", startDay?: string) => exportChestReport(endDay, range, device, userId, startDay));
+  ipcMain.handle("chest:summary-range", (_, endDay: string, range: string, device = "", userId = "default", startDay?: string, sourceId = "") => chestSummaryRange(endDay, range, device, userId, startDay, sourceId));
+  ipcMain.handle("chest:export-report", (_, endDay: string, range: string, device = "", userId = "default", startDay?: string, sourceId = "") => exportChestReport(endDay, range, device, userId, startDay, sourceId));
   ipcMain.handle("chest:sync-export", (_, userId = "default") => exportChestSyncPackage(userId));
   ipcMain.handle("chest:sync-import", (_, userId = "default") => importChestSyncPackage(userId));
   ipcMain.handle("chest:open-report-directory", async () => {
@@ -788,6 +788,9 @@ app.whenReady().then(() => {
   ipcMain.handle("chest:set-active-source", (_, userId: string, taskId: string, sourceId: string, sourceName: string) =>
     setChestActiveSource(userId, taskId, sourceId, sourceName),
   );
+  ipcMain.handle("chest:sources", (_, userId = "default") => customChestSources(userId));
+  ipcMain.handle("chest:source-create", (_, userId: string, sourceName: string) => addCustomChestSource(userId, sourceName));
+  ipcMain.handle("chest:source-delete", (_, userId: string, sourceId: string) => deleteCustomChestSource(userId, sourceId));
 ipcMain.handle("chest:reanalyze", (_event, day?: string, userId?: string) =>
   runChestAnalyzer(
     typeof day === "string" ? day : undefined,
@@ -925,6 +928,60 @@ function renameChestUser(rawUserId: string, rawName: string) {
   user.name = name;
   writeChestUsers(users);
   return user;
+}
+
+function chestSourcesFile() {
+  return path.join(app.getPath("userData"), "chest_sources.json");
+}
+
+function readCustomChestSources(): Record<string, ChestSource[]> {
+  try {
+    const value = JSON.parse(readFileSync(chestSourcesFile(), "utf8")) as { sources?: Record<string, ChestSource[]> };
+    return value.sources && typeof value.sources === "object" ? value.sources : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeCustomChestSources(sources: Record<string, ChestSource[]>) {
+  writeFileSync(chestSourcesFile(), `${JSON.stringify({ version: 1, sources }, null, 2)}\n`, "utf8");
+}
+
+function customChestSources(rawUserId = "default"): ChestSource[] {
+  const userId = String(rawUserId || "default");
+  const sources = readCustomChestSources()[userId] ?? [];
+  return sources.filter((source) => source && typeof source.sourceId === "string" && source.sourceId.startsWith("custom_") && typeof source.sourceName === "string" && source.sourceName.trim());
+}
+
+function addCustomChestSource(rawUserId: string, rawName: string) {
+  const userId = String(rawUserId || "default");
+  const sourceName = String(rawName || "").trim();
+  if (!sourceName) throw new Error("自定义来源名称不能为空");
+  const allSources = readCustomChestSources();
+  const sources = allSources[userId] ?? [];
+  const existing = sources.find((source) => source.sourceName === sourceName);
+  if (existing) return existing;
+  const baseId = `custom_${sourceName.replace(/[^a-zA-Z0-9\u4e00-\u9fff]+/g, "_").replace(/^_+|_+$/g, "") || "source"}`;
+  let sourceId = baseId;
+  let suffix = 2;
+  while (sources.some((source) => source.sourceId === sourceId)) sourceId = `${baseId}_${suffix++}`;
+  const source = { sourceId, sourceName };
+  allSources[userId] = [...sources, source];
+  writeCustomChestSources(allSources);
+  return source;
+}
+
+function deleteCustomChestSource(rawUserId: string, rawSourceId: string) {
+  const userId = String(rawUserId || "default");
+  const sourceId = String(rawSourceId || "").trim();
+  if (!sourceId.startsWith("custom_")) throw new Error("只能删除自定义来源");
+  const allSources = readCustomChestSources();
+  const sources = allSources[userId] ?? [];
+  const removed = sources.find((source) => source.sourceId === sourceId);
+  if (!removed) throw new Error("未找到自定义来源");
+  allSources[userId] = sources.filter((source) => source.sourceId !== sourceId);
+  writeCustomChestSources(allSources);
+  return removed;
 }
 
 function matchesChestDevice(record: Record<string, unknown>, device: string): boolean {
@@ -1171,7 +1228,7 @@ function chestAllItemEvents(device = "", userId = "default") {
   });
 }
 
-function chestSummaryRange(endDay: string, range: string, device = "", userId = "default", customStartDay?: string) {
+function chestSummaryRange(endDay: string, range: string, device = "", userId = "default", customStartDay?: string, sourceId = "") {
   const datePattern = /^\d{4}-\d{2}-\d{2}$/;
   if (!datePattern.test(endDay)) return { items: [], boxCount: 0 };
   let startDay = endDay;
@@ -1194,27 +1251,30 @@ function chestSummaryRange(endDay: string, range: string, device = "", userId = 
     const day = String(timestamp ?? "").slice(0, 10);
     return day >= startDay && day <= endDay;
   };
-  const records = chestScreenshotRecords(device, userId).filter((record) => inRange(record.before_saved_at ?? record.saved_at));
+  const selectedSourceId = String(sourceId ?? "").trim();
+  const records = chestScreenshotRecords(device, userId).filter((record) => inRange(record.before_saved_at ?? record.saved_at) && (!selectedSourceId || String(record.source_id ?? "").trim() === selectedSourceId));
   const events = chestAllItemEvents(device, userId).filter((event) => {
     const day = String(event.captured_at ?? "").slice(0, 10);
-    return day >= startDay && day <= endDay;
+    return day >= startDay && day <= endDay && (!selectedSourceId || String(event.source_id ?? "").trim() === selectedSourceId);
   });
   const recordPaths = new Set(records.map((record) => String(record.before_path ?? "")));
   const boxCount = records.length + events.filter((event) => !recordPaths.has(String(event.screenshot_path ?? ""))).length;
-  return { items: buildChestItemSummary(events, boxCount || events.length), boxCount: boxCount || events.length, startDay, endDay, range };
+  return { items: buildChestItemSummary(events, boxCount || events.length), boxCount: boxCount || events.length, startDay, endDay, range, sourceId: selectedSourceId };
 }
 
-function exportChestReport(endDay: string, range: string, device = "", userId = "default", customStartDay?: string) {
-  const summary = chestSummaryRange(endDay, range, device, userId, customStartDay);
+function exportChestReport(endDay: string, range: string, device = "", userId = "default", customStartDay?: string, sourceId = "") {
+  const summary = chestSummaryRange(endDay, range, device, userId, customStartDay, sourceId);
   const directory = path.join(chestResultsRoot(), "reports");
   mkdirSync(directory, { recursive: true });
   const safeUser = userId.replace(/[^a-zA-Z0-9_-]/g, "_") || "default";
   const userName = chestUsers().find((user) => user.id === userId)?.name ?? userId;
   const rangeFilePart = range === "custom" ? `${summary.startDay}_${endDay}_custom` : `${endDay}_${range}`;
-  const file = path.join(directory, `${rangeFilePart}_${safeUser}_chest_report.csv`);
+  const sourceName = sourceId ? String(summary.items.find((item) => String(item.sourceId ?? "") === sourceId)?.sourceName ?? sourceId) : "全部";
+  const safeSource = sourceId.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]/g, "_") || "all";
+  const file = path.join(directory, `${rangeFilePart}_${safeUser}_${safeSource}_chest_report.csv`);
   const escape = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
   const lines = [
-    ["用户", userName, "统计开始日期", summary.startDay, "统计结束日期", summary.endDay, "宝箱数量", summary.boxCount],
+    ["用户", userName, "统计开始日期", summary.startDay, "统计结束日期", summary.endDay, "来源筛选", sourceName, "宝箱数量", summary.boxCount],
     [],
     ["来源", "物品", "累计数量", "掉落次数", "掉落概率(%)", "期望/次开箱"],
     ...summary.items.map((item) => [item.sourceName ?? "未分类", item.itemName, item.totalQuantity, item.itemCount, item.dropProbability, item.expectedQuantity ?? "待识别"]),
@@ -1556,7 +1616,7 @@ function labelChestItem(rawItemId: string, rawName: string) {
 
 function correctChestEvent(
   rawScreenshotPath: string,
-  correctionsInput: Array<{ slot: number; itemName?: string | null; quantity: number | null }>,
+  correctionsInput: Array<{ slot: number; itemName?: string | null; itemId?: string | null; iconCropPath?: string | null; quantity: number | null }>,
   metadata?: { userId: string; sourceId: string; sourceName: string },
 ) {
   const root = chestResultsRoot();
@@ -1577,8 +1637,11 @@ function correctChestEvent(
         slot: item.slot,
         quantity: item.quantity,
         ...(itemName ? { item_name: itemName } : {}),
+        ...(String(item.itemId ?? "").trim() ? { item_id: String(item.itemId).trim() } : {}),
+        ...(String(item.iconCropPath ?? "").trim() ? { icon_crop_path: String(item.iconCropPath).trim(), crop_path: String(item.iconCropPath).trim() } : {}),
       };
     });
+  if (clean.some((item) => !String(item.item_name ?? "").trim())) throw new Error("校准物品名称不能为空");
   const correctionsPath = path.join(root, "manual_item_corrections.json");
   let corrections: { version: number; events: Record<string, Array<Record<string, unknown>>> } = { version: 1, events: {} };
   try { corrections = JSON.parse(readFileSync(correctionsPath, "utf8")) as typeof corrections; } catch { /* create on first calibration */ }
@@ -1587,13 +1650,38 @@ function correctChestEvent(
   const previous = corrections.events[capturedAt] ?? [];
   const keyedPrevious = corrections.events[correctionKey] ?? previous;
   const previousBySlot = new Map(keyedPrevious.map((item) => [Number(item.slot), item]));
-  corrections.events[correctionKey] = clean.map((item) => ({ ...(previousBySlot.get(item.slot) ?? {}), slot: item.slot, quantity: item.quantity }));
+  corrections.events[correctionKey] = clean.map((item) => ({
+    ...(previousBySlot.get(item.slot) ?? {}),
+    slot: item.slot,
+    quantity: item.quantity,
+    item_name: item.item_name,
+    ...(item.item_id ? { item_id: item.item_id } : {}),
+    ...(item.icon_crop_path ? { icon_crop_path: item.icon_crop_path, crop_path: item.icon_crop_path } : {}),
+  }));
   writeFileSync(correctionsPath, `${JSON.stringify(corrections, null, 2)}\n`, "utf8");
+  const eventItems = Array.isArray(event.items) ? event.items as Array<unknown> : [];
+  event.items = eventItems;
   for (const item of clean) {
-    const target = Array.isArray(event.items) ? event.items[item.slot - 1] : null;
+    const target = eventItems[item.slot - 1];
     if (target && typeof target === "object") {
       (target as Record<string, unknown>).quantity = item.quantity;
-      if (item.item_name) (target as Record<string, unknown>).item_name = item.item_name;
+      (target as Record<string, unknown>).item_name = item.item_name;
+      if (item.item_id) (target as Record<string, unknown>).item_id = item.item_id;
+      if (item.icon_crop_path) {
+        (target as Record<string, unknown>).icon_crop_path = item.icon_crop_path;
+        (target as Record<string, unknown>).crop_path = item.icon_crop_path;
+      }
+    } else if (item.slot > eventItems.length) {
+      eventItems.push({
+        slot: item.slot,
+        row: Math.floor((item.slot - 1) / 5) + 1,
+        column: ((item.slot - 1) % 5) + 1,
+        item_id: item.item_id ?? `calibrated_${String(event.event_id ?? "event")}_${item.slot}`,
+        item_name: item.item_name,
+        quantity: item.quantity,
+        ...(item.icon_crop_path ? { icon_crop_path: item.icon_crop_path, crop_path: item.icon_crop_path } : {}),
+        manual_correction: true,
+      });
     }
   }
   event.user_id = userId;
@@ -1675,7 +1763,11 @@ function runtimeDiagnosticImage(directory: string, rawPath: string): string | nu
   const target = path.resolve(String(rawPath || ""));
   if (!target.startsWith(`${root}${path.sep}`) || !existsSync(target)) return null;
   const extension = path.extname(target).toLowerCase();
-  const mime = extension === ".jpg" || extension === ".jpeg" ? "image/jpeg" : "image/png";
+  const mime = extension === ".jpg" || extension === ".jpeg"
+    ? "image/jpeg"
+    : extension === ".webp"
+      ? "image/webp"
+      : "image/png";
   return `data:${mime};base64,${readFileSync(target).toString("base64")}`;
 }
 

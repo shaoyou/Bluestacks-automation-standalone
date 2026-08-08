@@ -136,6 +136,7 @@
 - `stage` (string, 可选): `before` / `after` / `single`
 - `label` (string, 可选): 追加到文件名末尾，便于区分 `min` / `max`
 - `dir` (string, 可选): 自定义输出目录
+- `storage_format` (string, 可选): `png`（默认）或 `webp`；`webp` 使用无损压缩，适合物品截图长期保存，不改变识别像素
 - 成对截图命名示例：
   - `20260425-161652_draw_result_0001_before_min.png`
   - `20260425-161652_draw_result_0001_after_min.png`

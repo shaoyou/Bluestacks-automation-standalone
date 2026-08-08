@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Camera, CircleStop, Download, FolderOpen, Play, RefreshCw, Tag, Trash2, Upload, UserRound, X } from "lucide-react";
+import { Camera, CircleStop, Download, FolderOpen, Play, Plus, RefreshCw, Settings2, Tag, Trash2, Upload, UserRound, X } from "lucide-react";
 import { LogActions, LogPanel, PageHeading } from "../components/layout";
 import type { SharedProps } from "../app/shared";
 
@@ -11,15 +11,17 @@ const chestRunModeStorageKey = "chest-run-mode";
 
 type ChestDay = { day: string; count: number; latestAt: string };
 type ChestItem = { item_id?: string; item_name?: string; quantity?: number | null; crop_path?: string; icon_crop_path?: string };
-type ChestItemCorrection = { slot: number; itemName?: string | null; quantity: number | null };
+type ChestItemCorrection = { slot: number; itemName?: string | null; itemId?: string | null; iconCropPath?: string | null; quantity: number | null };
 type ChestItemSummary = { itemId: string; itemName: string; sourceId?: string; sourceName?: string; cropPath?: string; iconCropPath?: string; totalQuantity: number; itemCount: number; unreadQuantityCount: number; dropProbability: number; expectedQuantity: number | null };
 type CatalogItem = { itemId: string; name: string; labeled: boolean; weight?: number | null; cropPath: string; occurrences: number };
 type ChestUser = { id: string; name: string; createdAt: string };
 type ChestSource = { id: string; name: string };
+type CustomChestSource = { sourceId: string; sourceName: string };
 type SummaryRange = "day" | "7d" | "month" | "custom";
 type ReanalyzeScope = "day" | "all";
 type ChestRunMode = "normal" | "skip_magnifier" | "capture_current";
-const chestSources: ChestSource[] = [{ id: "boss_jinjia", name: "金甲" }, { id: "boss_dayan", name: "大眼" }, { id: "custom", name: "自定义" }];
+const builtInChestSources: ChestSource[] = [{ id: "boss_jinjia", name: "金甲" }, { id: "boss_dayan", name: "大眼" }];
+const chestSources: ChestSource[] = [...builtInChestSources, { id: "custom", name: "自定义" }];
 
 function defaultChestSource(userName: string): ChestSource {
   return userName === "熊大" ? chestSources[1] : chestSources[0];
@@ -85,15 +87,30 @@ export function ChestPage(props: SharedProps) {
   const [itemSummaryImages, setItemSummaryImages] = useState<Record<string, string | null>>({});
   const [summaryBoxCount, setSummaryBoxCount] = useState(0);
   const [summaryRange, setSummaryRange] = useState<SummaryRange>("day");
+  const [summarySourceId, setSummarySourceId] = useState("");
   const [customStartDay, setCustomStartDay] = useState("");
   const [customEndDay, setCustomEndDay] = useState("");
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportUserId, setExportUserId] = useState(userId);
+  const [exportRange, setExportRange] = useState<SummaryRange>("day");
+  const [exportStartDay, setExportStartDay] = useState("");
+  const [exportEndDay, setExportEndDay] = useState("");
+  const [exportSourceId, setExportSourceId] = useState("");
+  const [exportSources, setExportSources] = useState<CustomChestSource[]>([]);
   const [refreshingHistory, setRefreshingHistory] = useState(false);
   const [reanalyzing, setReanalyzing] = useState(false);
   const [showReanalyzeModal, setShowReanalyzeModal] = useState(false);
   const [reanalyzeScope, setReanalyzeScope] = useState<ReanalyzeScope>("day");
   const [reanalyzeUserId, setReanalyzeUserId] = useState(userId);
-  const [sourceId, setSourceId] = useState(() => props.chestSourceId?.startsWith("custom_") ? "custom" : props.chestSourceId || window.localStorage.getItem(sourceStorageKey(userId, storageKeyScope)) || window.localStorage.getItem(sourceStorageKey(userId, "main")) || "boss_jinjia");
+  const [sourceId, setSourceId] = useState(() => {
+    const stored = window.localStorage.getItem(sourceStorageKey(userId, storageKeyScope)) || window.localStorage.getItem(sourceStorageKey(userId, "main"));
+    return props.chestSourceId?.startsWith("custom_") ? props.chestSourceId : props.chestSourceId || (stored === "custom" ? "boss_jinjia" : stored) || "boss_jinjia";
+  });
   const [customSourceName, setCustomSourceName] = useState(() => props.chestSourceId?.startsWith("custom_") ? props.chestSourceName ?? "" : "");
+  const [customSources, setCustomSources] = useState<CustomChestSource[]>([]);
+  const [newCustomSourceName, setNewCustomSourceName] = useState("");
+  const [showSourceManager, setShowSourceManager] = useState(false);
   const [showLabelModal, setShowLabelModal] = useState(false);
   const [unlabeledItems, setUnlabeledItems] = useState<CatalogItem[]>([]);
   const [labelImages, setLabelImages] = useState<Record<string, string | null>>({});
@@ -102,6 +119,7 @@ export function ChestPage(props: SharedProps) {
   const [savingItemId, setSavingItemId] = useState("");
   const [calibrationEvent, setCalibrationEvent] = useState<Record<string, unknown> | null>(null);
   const [calibrationItems, setCalibrationItems] = useState<ChestItem[]>([]);
+  const [calibrationCatalogItems, setCalibrationCatalogItems] = useState<CatalogItem[]>([]);
   const [calibrationImages, setCalibrationImages] = useState<Record<number, string | null>>({});
   const [calibrationNameDrafts, setCalibrationNameDrafts] = useState<Record<number, string>>({});
   const [calibrationDrafts, setCalibrationDrafts] = useState<Record<number, string>>({});
@@ -140,10 +158,25 @@ export function ChestPage(props: SharedProps) {
     const current = users.find((user) => user.id === userId);
     const stored = window.localStorage.getItem(sourceStorageKey(userId, storageKeyScope))
       || window.localStorage.getItem(sourceStorageKey(userId, "main"));
-    const initial = props.chestSourceId?.startsWith("custom_") ? "custom" : props.chestSourceId || stored || defaultChestSource(current?.name ?? "").id;
+    const storedCustomName = window.localStorage.getItem(`${sourceStorageKey(userId, storageKeyScope)}:name`)
+      || window.localStorage.getItem(`${sourceStorageKey(userId, "main")}:name`)
+      || "";
+    const legacyCustom = stored === "custom" && storedCustomName
+      ? customSources.find((source) => source.sourceName === storedCustomName)
+      : null;
+    const initial = props.chestSourceId?.startsWith("custom_")
+      ? props.chestSourceId
+      : props.chestSourceId || legacyCustom?.sourceId || (stored === "custom" ? defaultChestSource(current?.name ?? "").id : stored) || defaultChestSource(current?.name ?? "").id;
     setSourceId(initial);
-    setCustomSourceName(props.chestSourceId?.startsWith("custom_") ? props.chestSourceName ?? "" : "");
-  }, [userId, users.length]);
+    const selectedCustom = customSources.find((source) => source.sourceId === initial);
+    setCustomSourceName(props.chestSourceId?.startsWith("custom_") ? props.chestSourceName ?? "" : selectedCustom?.sourceName ?? "");
+  }, [userId, users.length, customSources, props.chestSourceId, props.chestSourceName]);
+
+  useEffect(() => {
+    void window.bsManager.chestSources(userId)
+      .then((sources) => setCustomSources(sources))
+      .catch((error) => props.setNotice(`读取自定义来源失败: ${String(error)}`));
+  }, [userId]);
 
   useEffect(() => {
     setDevice((current) => {
@@ -163,6 +196,7 @@ export function ChestPage(props: SharedProps) {
 
   const selectUser = (nextUserId: string) => {
     setUserId(nextUserId);
+    setSummarySourceId("");
     window.localStorage.setItem(userStorageKey, nextUserId);
     setShowUserModal(false);
   };
@@ -226,20 +260,24 @@ export function ChestPage(props: SharedProps) {
     setImages(Object.fromEntries(nextImages));
   };
 
-  const refreshSummary = async (day = selectedDay) => {
-    if (!day) {
+  const refreshSummary = async (day = selectedDay, latestDay = days[0]?.day) => {
+    const summaryEndDay = summaryRange === "custom"
+      ? customEndDay
+      : summaryRange === "day"
+        ? day
+        : latestDay || day;
+    if (!summaryEndDay) {
       setItemSummary([]);
       setSummaryBoxCount(0);
       return;
     }
     const rangeStartDay = summaryRange === "custom" ? customStartDay : undefined;
-    const rangeEndDay = summaryRange === "custom" ? customEndDay : day;
-    if (!rangeEndDay || (summaryRange === "custom" && (!rangeStartDay || rangeStartDay > rangeEndDay))) {
+    if (summaryRange === "custom" && (!rangeStartDay || rangeStartDay > summaryEndDay)) {
       setItemSummary([]);
       setSummaryBoxCount(0);
       return;
     }
-    const summary = await window.bsManager.chestSummaryRange(rangeEndDay, summaryRange, "", userId, rangeStartDay);
+    const summary = await window.bsManager.chestSummaryRange(summaryEndDay, summaryRange, "", userId, rangeStartDay, summarySourceId);
     const nextItems = sortSummaryByWeight(summary.items as ChestItemSummary[]);
     setItemSummary(nextItems);
     const imageEntries = await Promise.all(nextItems.map(async (item) => [
@@ -251,22 +289,73 @@ export function ChestPage(props: SharedProps) {
   };
 
   const exportReport = () => {
-    const endDay = summaryRange === "custom" ? customEndDay : selectedDay;
-    const startDay = summaryRange === "custom" ? customStartDay : undefined;
+    const endDay = exportRange === "custom"
+      ? exportEndDay
+      : exportRange === "day"
+        ? exportEndDay
+        : days[0]?.day || selectedDay;
+    const startDay = exportRange === "custom" ? exportStartDay : undefined;
     if (!endDay) return;
-    if (summaryRange === "custom" && (!startDay || startDay > endDay)) {
+    if (exportRange === "custom" && (!startDay || startDay > endDay)) {
       props.setNotice("请选择有效的自定义日期范围");
       return;
     }
-    void window.bsManager.chestExportReport(endDay, summaryRange, "", userId, startDay)
+    setExporting(true);
+    void window.bsManager.chestExportReport(endDay, exportRange, "", exportUserId, startDay, exportSourceId)
       .then((result) => {
+        setShowExportModal(false);
         props.setNotice(`报表已导出：${result.file}`);
         if (window.confirm("报表已导出，是否打开报表目录？")) {
           void window.bsManager.chestOpenReportDirectory()
             .catch((error) => props.setNotice(`打开报表目录失败: ${String(error)}`));
         }
       })
-      .catch((error) => props.setNotice(`导出报表失败: ${String(error)}`));
+      .catch((error) => props.setNotice(`导出报表失败: ${String(error)}`))
+      .finally(() => setExporting(false));
+  };
+
+  const openExportModal = () => {
+    const defaultEndDay = summaryRange === "custom"
+      ? customEndDay
+      : summaryRange === "day"
+        ? selectedDay
+        : days[0]?.day || selectedDay;
+    setExportUserId(userId);
+    setExportRange(summaryRange);
+    setExportStartDay(summaryRange === "custom" ? customStartDay : defaultEndDay);
+    setExportEndDay(defaultEndDay);
+    setExportSourceId(summarySourceId);
+    setShowExportModal(true);
+    void window.bsManager.chestSources(userId)
+      .then((sources) => setExportSources(sources))
+      .catch((error) => props.setNotice(`读取报表来源失败: ${String(error)}`));
+  };
+
+  const updateExportUser = (nextUserId: string) => {
+    setExportUserId(nextUserId);
+    void window.bsManager.chestSources(nextUserId)
+      .then((sources) => {
+        setExportSources(sources);
+        setExportSourceId((current) => (
+          current === "" || builtInChestSources.some((source) => source.id === current) || sources.some((source) => source.sourceId === current)
+            ? current
+            : ""
+        ));
+      })
+      .catch((error) => props.setNotice(`读取报表来源失败: ${String(error)}`));
+  };
+
+  const selectExportRange = (nextRange: SummaryRange) => {
+    const latestDay = days[0]?.day || selectedDay;
+    setExportRange(nextRange);
+    if (nextRange === "custom") {
+      setExportStartDay((current) => current || exportEndDay || latestDay);
+      setExportEndDay((current) => current || latestDay);
+    } else if (nextRange === "day") {
+      setExportEndDay(selectedDay);
+    } else {
+      setExportEndDay(latestDay);
+    }
   };
 
   const exportSyncData = () => {
@@ -303,7 +392,7 @@ export function ChestPage(props: SharedProps) {
       selectedDayRef.current = nextDay;
       setSelectedDay(nextDay);
       await loadDay(nextDay);
-      await refreshSummary(nextDay);
+      await refreshSummary(nextDay, nextDays[0]?.day);
     } catch (error) {
       props.setNotice(`读取开宝箱截图失败: ${String(error)}`);
     } finally {
@@ -318,7 +407,7 @@ export function ChestPage(props: SharedProps) {
 
   useEffect(() => { void loadUsers(); }, []);
   useEffect(() => { void refreshHistory(); }, [userId]);
-  useEffect(() => { void refreshSummary().catch((error) => props.setNotice(String(error))); }, [selectedDay, summaryRange, customStartDay, customEndDay, userId]);
+  useEffect(() => { void refreshSummary().catch((error) => props.setNotice(String(error))); }, [selectedDay, summaryRange, customStartDay, customEndDay, summarySourceId, userId]);
   useEffect(() => {
     if (!running) return;
     const timer = window.setInterval(() => void refreshHistory(), 10_000);
@@ -336,18 +425,68 @@ export function ChestPage(props: SharedProps) {
       if (!name) return null;
       return { id: `custom_${name.replace(/[^a-zA-Z0-9\u4e00-\u9fff]+/g, "_")}`, name };
     }
-    return chestSources.find((source) => source.id === sourceId) ?? null;
+    const builtIn = chestSources.find((source) => source.id === sourceId);
+    if (builtIn) return builtIn;
+    const custom = customSources.find((source) => source.sourceId === sourceId);
+    if (custom) return { id: custom.sourceId, name: custom.sourceName };
+    return sourceId.startsWith("custom_") && customSourceName.trim()
+      ? { id: sourceId, name: customSourceName.trim() }
+      : null;
   };
 
   const saveSourceSelection = (source: ChestSource) => {
-    window.localStorage.setItem(sourceStorageKey(userId, storageKeyScope), sourceId === "custom" ? "custom" : source.id);
+    window.localStorage.setItem(sourceStorageKey(userId, storageKeyScope), source.id);
+    window.localStorage.setItem(`${sourceStorageKey(userId, storageKeyScope)}:name`, source.name);
+  };
+
+  const selectSource = (nextId: string) => {
+    setSourceId(nextId);
+    const custom = customSources.find((source) => source.sourceId === nextId);
+    setCustomSourceName(custom?.sourceName ?? "");
+  };
+
+  const createCustomSource = () => {
+    const name = newCustomSourceName.trim();
+    if (!name) return;
+    void window.bsManager.chestCreateSource(userId, name)
+      .then((source) => {
+        setCustomSources((current) => current.some((item) => item.sourceId === source.sourceId) ? current : [...current, source]);
+        setSourceId(source.sourceId);
+        setCustomSourceName(source.sourceName);
+        setNewCustomSourceName("");
+        saveSourceSelection({ id: source.sourceId, name: source.sourceName });
+        props.setNotice(`已新增自定义来源：${source.sourceName}`);
+      })
+      .catch((error) => props.setNotice(`新增自定义来源失败: ${String(error)}`));
+  };
+
+  const removeCustomSource = (source: CustomChestSource) => {
+    if (!window.confirm(`删除自定义来源“${source.sourceName}”？历史记录不会删除。`)) return;
+    void window.bsManager.chestDeleteSource(userId, source.sourceId)
+      .then(() => {
+        setCustomSources((current) => current.filter((item) => item.sourceId !== source.sourceId));
+        if (sourceId === source.sourceId) {
+          setSourceId("boss_jinjia");
+          setCustomSourceName("");
+          saveSourceSelection({ id: "boss_jinjia", name: "金甲" });
+        }
+        if (summarySourceId === source.sourceId) setSummarySourceId("");
+      })
+      .catch((error) => props.setNotice(`删除自定义来源失败: ${String(error)}`));
   };
 
   const syncActiveSource = async () => {
-    const source = selectedSource();
+    let source = selectedSource();
     if (!source) {
       props.setNotice("请填写宝箱来源");
       return null;
+    }
+    if (source.id.startsWith("custom_")) {
+      const saved = await window.bsManager.chestCreateSource(userId, source.name);
+      source = { id: saved.sourceId, name: saved.sourceName };
+      setCustomSources((current) => current.some((item) => item.sourceId === saved.sourceId) ? current : [...current, saved]);
+      setSourceId(saved.sourceId);
+      setCustomSourceName(saved.sourceName);
     }
     const result = await window.bsManager.chestSetActiveSource(userId, taskId, source.id, source.name);
     saveSourceSelection(source);
@@ -459,11 +598,47 @@ export function ChestPage(props: SharedProps) {
     setCalibrationUserId(recordUserId);
     setCalibrationSourceId(chestSources.some((source) => source.id === recordSourceId) ? recordSourceId : "custom");
     setCalibrationCustomSourceName(recordSourceName);
-    setCalibrationNameDrafts(Object.fromEntries(items.map((item, index) => [index + 1, item.item_name ?? "待标注物品"])));
+    setCalibrationNameDrafts(Object.fromEntries(items.map((item, index) => [index + 1, item.item_name && item.item_name !== "待标注物品" ? item.item_name : ""])));
     setCalibrationDrafts(Object.fromEntries(items.map((item, index) => [index + 1, item.quantity == null ? "" : String(item.quantity)])));
+    setCalibrationCatalogItems([]);
+    void window.bsManager.chestUnlabeledItems()
+      .then((catalogItems) => setCalibrationCatalogItems(catalogItems.filter((item) => item.labeled)))
+      .catch((error) => props.setNotice(`读取已标记物品失败: ${String(error)}`));
     void Promise.all(items.map(async (item, index) => [index + 1, item.crop_path ? await window.bsManager.chestImage(item.crop_path) : null] as const))
       .then((images) => setCalibrationImages(Object.fromEntries(images)))
       .catch((error) => props.setNotice(`读取校准图片失败: ${String(error)}`));
+  };
+
+  const addCalibrationItem = () => {
+    setCalibrationItems((current) => [...current, { item_name: "", quantity: null }]);
+  };
+
+  const selectCalibrationItem = (slot: number, value: string) => {
+    if (value === "__custom__") {
+      setCalibrationNameDrafts((current) => ({ ...current, [slot]: "" }));
+      setCalibrationImages((current) => ({ ...current, [slot]: null }));
+      return;
+    }
+    const catalogItem = calibrationCatalogItems.find((item) => item.name === value);
+    setCalibrationNameDrafts((current) => ({ ...current, [slot]: value }));
+    if (catalogItem?.cropPath) {
+      void window.bsManager.chestImage(catalogItem.cropPath)
+        .then((image) => setCalibrationImages((current) => ({ ...current, [slot]: image })))
+        .catch((error) => props.setNotice(`读取物品图标失败: ${String(error)}`));
+    }
+  };
+
+  const removeCalibrationItem = (slot: number) => {
+    setCalibrationItems((current) => current.filter((_, index) => index + 1 !== slot));
+    setCalibrationNameDrafts((current) => Object.fromEntries(Object.entries(current)
+      .filter(([key]) => Number(key) !== slot)
+      .map(([key, value]) => [Number(key) > slot ? String(Number(key) - 1) : key, value])));
+    setCalibrationDrafts((current) => Object.fromEntries(Object.entries(current)
+      .filter(([key]) => Number(key) !== slot)
+      .map(([key, value]) => [Number(key) > slot ? String(Number(key) - 1) : key, value])));
+    setCalibrationImages((current) => Object.fromEntries(Object.entries(current)
+      .filter(([key]) => Number(key) !== slot)
+      .map(([key, value]) => [Number(key) > slot ? String(Number(key) - 1) : key, value])));
   };
 
   const saveCalibration = () => {
@@ -484,10 +659,22 @@ export function ChestPage(props: SharedProps) {
       return;
     }
     const corrections: ChestItemCorrection[] = calibrationItems.map((item, index) => {
+      const slot = index + 1;
       const raw = (calibrationDrafts[index + 1] ?? "").trim();
       const itemName = (calibrationNameDrafts[index + 1] ?? item.item_name ?? "").trim();
-      return { slot: index + 1, itemName: itemName || null, quantity: raw === "" ? null : Number(raw) };
+      const catalogItem = calibrationCatalogItems.find((candidate) => candidate.name === itemName);
+      return {
+        slot,
+        itemName: itemName || null,
+        itemId: catalogItem?.itemId ?? item.item_id ?? null,
+        iconCropPath: catalogItem?.cropPath ?? item.icon_crop_path ?? item.crop_path ?? null,
+        quantity: raw === "" ? null : Number(raw),
+      };
     });
+    if (corrections.some((item) => !item.itemName)) {
+      props.setNotice("请为每个校准物品选择名称或填写自定义名称");
+      return;
+    }
     if (corrections.some((item) => item.quantity !== null && (!Number.isInteger(item.quantity) || item.quantity < 0))) {
       props.setNotice("数量必须是非负整数");
       return;
@@ -523,15 +710,14 @@ export function ChestPage(props: SharedProps) {
   const summaryTitle = summaryRange === "day" ? "当日" : summaryRange === "7d" ? "最近 7 天" : summaryRange === "month" ? "最近 30 天" : "自定义范围";
   const summaryDetail = summaryRange === "day" ? selectedDay || "暂无日期" : summaryRange === "7d" ? "最近 7 天" : summaryRange === "month" ? "最近 30 天" : customStartDay && customEndDay ? `${customStartDay} 至 ${customEndDay}` : "请选择日期";
   const customRangeInvalid = summaryRange === "custom" && (!customStartDay || !customEndDay || customStartDay > customEndDay);
-  const startLabel = runMode === "capture_current" ? "保存当前物品" : "开始开宝箱";
+  const startLabel = runMode === "capture_current" ? "保存当前物品" : runMode === "skip_magnifier" ? "执行一次开箱" : "开始开宝箱";
   return <div className="page">
     <PageHeading title="开宝箱控制台" detail="保存每次开箱后的物品列表截图，并按天归档回看。"><div className="chest-heading-actions"><button className="button secondary" onClick={openUserManager}><UserRound size={16} />切换用户：{currentUser.name}</button><button className="button secondary" onClick={() => void props.refreshDevices()}><RefreshCw size={16} />刷新设备</button><button className="button secondary" onClick={() => void window.bsManager.openChestWindow(plan, userId, currentSource?.id, currentSource?.name)}><Play size={16} />多开开宝箱</button><button className="button secondary" onClick={() => void window.bsManager.chestOpenScreenshots()}><FolderOpen size={16} />打开截图</button><button className="button secondary" onClick={openLabelManager}><Tag size={16} />物品标注</button><button className="button secondary" onClick={exportSyncData}><Download size={16} />导出同步数据</button><button className="button secondary" onClick={importSyncData}><Upload size={16} />导入同步数据</button><button className="button secondary" disabled={reanalyzing} onClick={openReanalyze}><RefreshCw className={reanalyzing ? "spin" : ""} size={16} />{reanalyzing ? "正在识别" : "重新识别"}</button><button className="button secondary" disabled={reanalyzing || refreshingHistory} onClick={manualRefreshHistory}><RefreshCw className={refreshingHistory ? "spin" : ""} size={16} />{refreshingHistory ? "刷新中" : "刷新记录"}</button></div></PageHeading>
     <div className="chest-console-layout">
       <section className="panel form-panel">
         <label>计划<input readOnly value={plan || "未找到 开宝箱截图.json"} /></label>
         <label>设备<select value={device} onChange={(event) => selectDevice(event.target.value)}>{props.devices.map((name) => <option key={name}>{name}</option>)}</select></label>
-        <label>来源<select value={sourceId} onChange={(event) => setSourceId(event.target.value)}><option value="boss_jinjia">金甲</option><option value="boss_dayan">大眼</option><option value="custom">自定义</option></select></label>
-        {sourceId === "custom" ? <label>自定义来源<input value={customSourceName} onChange={(event) => setCustomSourceName(event.target.value)} placeholder="Boss 名称" /></label> : null}
+        <div className="chest-source-field"><label>来源<select value={sourceId} onChange={(event) => selectSource(event.target.value)}>{builtInChestSources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}{customSources.map((source) => <option key={source.sourceId} value={source.sourceId}>{source.sourceName}</option>)}</select></label><button className="icon-button" title="管理来源" onClick={() => setShowSourceManager(true)}><Settings2 size={16} /></button></div>
         {!running ? <button className="button primary full" disabled={!plan || !currentSource} onClick={() => void start()}>{runMode === "capture_current" ? <Camera size={16} /> : <Play size={16} />}{startLabel}</button> : <><button className="button secondary full" disabled={!currentSource} onClick={() => void syncActiveSource().then((source) => { if (source) props.setNotice(`后续宝箱来源已切换为 ${source.sourceName}`); }).catch((error) => props.setNotice(`切换来源失败: ${String(error)}`))}>切换来源</button><button className="button danger full" onClick={() => void window.bsManager.stopTask(taskId)}><CircleStop size={16} />停止开宝箱</button></>}
         <div className="chest-run-mode"><span>执行方式</span><div className="segmented-control" role="tablist" aria-label="开宝箱执行方式"><button type="button" role="tab" aria-selected={runMode === "normal"} className={runMode === "normal" ? "active" : ""} onClick={() => updateRunMode("normal")}>正常开箱</button><button type="button" role="tab" aria-selected={runMode === "skip_magnifier"} className={runMode === "skip_magnifier" ? "active" : ""} onClick={() => updateRunMode("skip_magnifier")}>跳过放大镜</button><button type="button" role="tab" aria-selected={runMode === "capture_current"} className={runMode === "capture_current" ? "active" : ""} onClick={() => updateRunMode("capture_current")}>保存当前物品</button></div></div>
         <LogPanel title="开宝箱日志" text={log} actions={<LogActions text={rawLog} showRealtimeLogs={showRealtimeLogs} onToggleRealtimeLogs={updateRealtimeLogs} onClear={() => props.clearTaskLog(taskId)} />} />
@@ -542,7 +728,7 @@ export function ChestPage(props: SharedProps) {
           <div className="metric-grid"><Metric label="当前用户" value={currentUser.name} /><Metric label="当前来源" value={currentSource?.name ?? "未设置"} /><Metric label="统计宝箱数" value={summaryBoxCount} detail={summaryDetail} /></div>
         </section>
         <section className="panel chest-current-status">
-          <div className="panel-title"><span>{summaryTitle}物品统计</span><div className="chest-summary-actions"><div className="segmented-control" role="tablist" aria-label="统计范围"><button className={summaryRange === "day" ? "active" : ""} onClick={() => activateSummaryRange("day")}>当日</button><button className={summaryRange === "7d" ? "active" : ""} onClick={() => activateSummaryRange("7d")}>最近7天</button><button className={summaryRange === "month" ? "active" : ""} onClick={() => activateSummaryRange("month")}>最近30天</button><button className={summaryRange === "custom" ? "active" : ""} onClick={() => activateSummaryRange("custom")}>自定义</button></div><button className="button secondary" disabled={!selectedDay || customRangeInvalid} onClick={exportReport}>导出报表</button><span className="counter">{summaryBoxCount} 箱</span></div></div>
+          <div className="panel-title"><span>{summaryTitle}物品统计</span><div className="chest-summary-actions"><div className="segmented-control" role="tablist" aria-label="统计范围"><button className={summaryRange === "day" ? "active" : ""} onClick={() => activateSummaryRange("day")}>当日</button><button className={summaryRange === "7d" ? "active" : ""} onClick={() => activateSummaryRange("7d")}>最近7天</button><button className={summaryRange === "month" ? "active" : ""} onClick={() => activateSummaryRange("month")}>最近30天</button><button className={summaryRange === "custom" ? "active" : ""} onClick={() => activateSummaryRange("custom")}>自定义</button></div><select className="chest-summary-source-select" aria-label="统计来源" value={summarySourceId} onChange={(event) => setSummarySourceId(event.target.value)}><option value="">全部来源</option>{builtInChestSources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}{customSources.map((source) => <option key={source.sourceId} value={source.sourceId}>{source.sourceName}</option>)}</select><button className="button secondary" disabled={!selectedDay || customRangeInvalid} onClick={openExportModal}>导出报表</button><span className="counter">{summaryBoxCount} 箱</span></div></div>
           {summaryRange === "custom" ? <div className="chest-custom-range"><label>开始日期<input type="date" value={customStartDay} max={customEndDay || undefined} onChange={(event) => setCustomStartDay(event.target.value)} /></label><span>至</span><label>结束日期<input type="date" value={customEndDay} min={customStartDay || undefined} onChange={(event) => setCustomEndDay(event.target.value)} /></label>{customRangeInvalid ? <small>请选择有效的日期范围</small> : null}</div> : null}
           {itemSummary.length ? <div className="chest-summary-table-wrap"><table className="chest-summary-table"><thead><tr><th>来源</th><th>物品</th><th>累计数量</th><th>掉落次数</th><th>掉落概率</th><th>期望/次开箱</th></tr></thead><tbody>{itemSummary.map((item) => { const imageKey = `${item.sourceId ?? ""}:${item.itemId}:${item.itemName}`; const image = itemSummaryImages[imageKey]; return <tr key={`${item.sourceId ?? ""}-${item.itemId}`}><td>{item.sourceName ?? "未分类"}</td><td className="item-name"><span className="chest-summary-item">{image ? <img src={image} alt="" /> : <span className="chest-summary-item-placeholder" aria-hidden="true" />}</span>{"\u00a0\u00a0"}<span>{item.itemName}</span></td><td>{item.totalQuantity || "待识别"}</td><td>{item.itemCount}</td><td>{item.dropProbability}%</td><td>{item.expectedQuantity == null ? "待识别" : item.expectedQuantity}</td></tr>; })}</tbody></table></div> : <p className="empty-note padded-note">截图识别完成后将显示当天物品和数量统计。</p>}
         </section>
@@ -553,9 +739,11 @@ export function ChestPage(props: SharedProps) {
       </section>
     </div>
     {showUserModal ? <div className="chest-label-backdrop" role="dialog" aria-modal="true" aria-labelledby="chest-user-title"><section className="chest-label-modal chest-user-modal"><header><div><strong id="chest-user-title">切换用户</strong><span>截图和开箱记录按用户分别保存，物品图鉴共用。</span></div><button className="icon-button" title="关闭" onClick={() => setShowUserModal(false)}><X size={17} /></button></header><div className="chest-label-list">{users.map((user) => <div key={user.id} className={`chest-user-row ${user.id === userId ? "selected" : ""}`}><button className="button secondary" onClick={() => selectUser(user.id)}>{user.id === userId ? "当前用户" : "切换"}</button><input autoComplete="off" value={userNameDrafts[user.id] ?? ""} onChange={(event) => setUserNameDrafts((current) => ({ ...current, [user.id]: event.target.value }))} /><button className="button secondary" disabled={!userNameDrafts[user.id]?.trim() || userNameDrafts[user.id] === user.name} onClick={() => renameUser(user)}>重命名</button></div>)}</div><footer><div className="chest-user-create"><input autoComplete="off" placeholder="新用户名" value={newUserName} onChange={(event) => setNewUserName(event.target.value)} /><button className="button primary" disabled={!newUserName.trim()} onClick={createUser}>新增用户</button></div><button className="button secondary" onClick={() => setShowUserModal(false)}>关闭</button></footer></section></div> : null}
+    {showSourceManager ? <div className="chest-label-backdrop" role="dialog" aria-modal="true" aria-labelledby="chest-source-title"><section className="chest-label-modal chest-source-modal"><header><div><strong id="chest-source-title">管理来源</strong><span>新增的来源会出现在来源下拉框中，删除不会影响历史记录。</span></div><button className="icon-button" title="关闭" onClick={() => setShowSourceManager(false)}><X size={17} /></button></header><div className="chest-label-list"><div className="chest-source-create"><input autoComplete="off" placeholder="来源名称" value={newCustomSourceName} onChange={(event) => setNewCustomSourceName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") createCustomSource(); }} /><button className="button primary" disabled={!newCustomSourceName.trim()} onClick={createCustomSource}>新增来源</button></div>{customSources.length ? customSources.map((source) => <div key={source.sourceId} className={`chest-source-row ${sourceId === source.sourceId ? "selected" : ""}`}><span>{source.sourceName}</span><button className="icon-button danger" title={`删除 ${source.sourceName}`} onClick={() => removeCustomSource(source)}><Trash2 size={15} /></button></div>) : <p className="empty-note padded-note">暂无自定义来源。</p>}</div><footer><span>内置来源不可删除</span><button className="button secondary" onClick={() => setShowSourceManager(false)}>关闭</button></footer></section></div> : null}
     {showLabelModal ? <div className="chest-label-backdrop" role="dialog" aria-modal="true" aria-labelledby="chest-label-title"><section className="chest-label-modal"><header><div><strong id="chest-label-title">物品标注</strong><span>已设置权重的物品优先显示，其次是待标注物品。</span></div><button className="icon-button" title="关闭" onClick={() => setShowLabelModal(false)}><X size={17} /></button></header><div className="chest-label-list">{unlabeledItems.length ? unlabeledItems.map((item) => <div key={item.itemId} className={`chest-label-row ${item.labeled ? "labeled" : ""}`}><img src={labelImages[item.itemId] ?? ""} alt={item.name} /><div><code>{item.itemId}</code><small>{item.labeled ? `已标注：${item.name}` : "待标注"}，出现 {item.occurrences} 次</small></div><input autoComplete="off" placeholder="物品名称" value={labelDrafts[item.itemId] ?? ""} onChange={(event) => setLabelDrafts((current) => ({ ...current, [item.itemId]: event.target.value }))} /><input inputMode="decimal" placeholder="权重" value={weightDrafts[item.itemId] ?? ""} onChange={(event) => setWeightDrafts((current) => ({ ...current, [item.itemId]: event.target.value.replace(/[^0-9.]/g, "") }))} /><button className="button primary" disabled={!labelDrafts[item.itemId]?.trim() || !!savingItemId} onClick={() => saveLabel(item)}>{savingItemId === item.itemId ? "保存中" : "保存"}</button><button className="icon-button danger" title="删除物品图鉴" onClick={() => deleteCatalogItem(item)}><Trash2 size={15} /></button></div>) : <p className="empty-note padded-note">尚无已识别的物品。</p>}</div><footer><span>{unlabeledItems.filter((item) => !item.labeled).length} 个待标注，{unlabeledItems.length} 个物品</span><button className="button secondary" onClick={() => setShowLabelModal(false)}>关闭</button></footer></section></div> : null}
     {showReanalyzeModal ? <div className="chest-label-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !reanalyzing) setShowReanalyzeModal(false); }}><section className="chest-label-modal chest-reanalyze-modal" role="dialog" aria-modal="true" aria-labelledby="chest-reanalyze-title"><header><div><strong id="chest-reanalyze-title">重新识别</strong></div><button className="icon-button" title="关闭" disabled={reanalyzing} onClick={() => setShowReanalyzeModal(false)}><X size={17} /></button></header><div className="chest-reanalyze-options"><div className="segmented-control" role="group" aria-label="重新识别范围"><button className={reanalyzeScope === "day" ? "active" : ""} disabled={!selectedDay} onClick={() => setReanalyzeScope("day")}>{selectedDay ? `当前日期 ${selectedDay}` : "当前日期"}</button><button className={reanalyzeScope === "all" ? "active" : ""} onClick={() => setReanalyzeScope("all")}>全部记录</button></div>{users.length > 1 ? <label className="chest-reanalyze-user">用户<select value={reanalyzeUserId} disabled={reanalyzing} onChange={(event) => setReanalyzeUserId(event.target.value)}>{users.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</select></label> : null}</div><footer><button className="button secondary" disabled={reanalyzing} onClick={() => setShowReanalyzeModal(false)}>取消</button><button className="button primary" disabled={reanalyzing || (reanalyzeScope === "day" && !selectedDay)} onClick={reanalyze}><RefreshCw className={reanalyzing ? "spin" : ""} size={16} />{reanalyzing ? "正在识别" : "开始识别"}</button></footer></section></div> : null}
-    {calibrationEvent ? <div className="chest-label-backdrop" role="dialog" aria-modal="true" aria-labelledby="chest-calibration-title"><section className="chest-label-modal chest-calibration-modal"><header><div><strong id="chest-calibration-title">开箱记录校准</strong><span>{String(calibrationEvent.before_saved_at ?? "")}，可修正归属、物品和数量。</span></div><button className="icon-button" title="关闭" onClick={() => setCalibrationEvent(null)}><X size={17} /></button></header><div className="chest-calibration-body"><div className="chest-calibration-metadata"><label>用户<select value={calibrationUserId} onChange={(event) => setCalibrationUserId(event.target.value)}>{users.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</select></label><label>Boss 来源<select value={calibrationSourceId} onChange={(event) => setCalibrationSourceId(event.target.value)}>{chestSources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}</select></label>{calibrationSourceId === "custom" ? <label>自定义来源<input autoComplete="off" value={calibrationCustomSourceName} placeholder="Boss 名称" onChange={(event) => setCalibrationCustomSourceName(event.target.value)} /></label> : null}</div><div className="chest-label-list">{calibrationItems.length ? calibrationItems.map((item, index) => <div key={index} className="chest-label-row chest-calibration-row"><img src={calibrationImages[index + 1] ?? ""} alt={item.item_name ?? "物品"} /><div><strong>{item.item_name ?? "待标注物品"}</strong><small>第 {index + 1} 个物品</small></div><input value={calibrationNameDrafts[index + 1] ?? ""} placeholder="物品名称" onChange={(input) => setCalibrationNameDrafts((current) => ({ ...current, [index + 1]: input.target.value }))} /><input inputMode="numeric" pattern="[0-9]*" value={calibrationDrafts[index + 1] ?? ""} placeholder="数量" onChange={(input) => setCalibrationDrafts((current) => ({ ...current, [index + 1]: input.target.value.replace(/[^0-9]/g, "") }))} /></div>) : <p className="empty-note padded-note">该截图暂未识别出物品。</p>}</div></div><footer><span>用户、来源、物品名称和数量都会写入本次记录</span><button className="button secondary" onClick={() => setCalibrationEvent(null)}>取消</button><button className="button primary" disabled={savingCalibration} onClick={saveCalibration}>{savingCalibration ? "保存中" : "保存校准"}</button></footer></section></div> : null}
+    {showExportModal ? <div className="chest-label-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !exporting) setShowExportModal(false); }}><section className="chest-label-modal chest-export-modal" role="dialog" aria-modal="true" aria-labelledby="chest-export-title"><header><div><strong id="chest-export-title">导出报表</strong><span>选择用户、统计范围和来源后生成 CSV 报表。</span></div><button className="icon-button" title="关闭" disabled={exporting} onClick={() => setShowExportModal(false)}><X size={17} /></button></header><div className="chest-export-options"><label>用户<select value={exportUserId} disabled={exporting} onChange={(event) => updateExportUser(event.target.value)}>{users.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</select></label><div className="chest-export-range"><span>统计范围</span><div className="segmented-control" role="group" aria-label="导出统计范围"><button className={exportRange === "day" ? "active" : ""} disabled={exporting} onClick={() => selectExportRange("day")}>当天</button><button className={exportRange === "7d" ? "active" : ""} disabled={exporting} onClick={() => selectExportRange("7d")}>最近7天</button><button className={exportRange === "month" ? "active" : ""} disabled={exporting} onClick={() => selectExportRange("month")}>最近30天</button><button className={exportRange === "custom" ? "active" : ""} disabled={exporting} onClick={() => selectExportRange("custom")}>自定义</button></div></div>{exportRange === "custom" ? <div className="chest-export-dates"><label>开始日期<input type="date" value={exportStartDay} disabled={exporting} max={exportEndDay || undefined} onChange={(event) => setExportStartDay(event.target.value)} /></label><span>至</span><label>结束日期<input type="date" value={exportEndDay} disabled={exporting} min={exportStartDay || undefined} onChange={(event) => setExportEndDay(event.target.value)} /></label></div> : null}<label>Boss 来源<select value={exportSourceId} disabled={exporting} onChange={(event) => setExportSourceId(event.target.value)}><option value="">全部来源</option>{builtInChestSources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}{exportSources.map((source) => <option key={source.sourceId} value={source.sourceId}>{source.sourceName}</option>)}</select></label>{exportRange === "day" ? <p className="field-note">统计日期：{exportEndDay || "暂无日期"}</p> : exportRange !== "custom" ? <p className="field-note">统计结束日期：{days[0]?.day || selectedDay || "暂无日期"}</p> : null}</div><footer><button className="button secondary" disabled={exporting} onClick={() => setShowExportModal(false)}>取消</button><button className="button primary" disabled={exporting || !exportEndDay || (exportRange === "custom" && (!exportStartDay || exportStartDay > exportEndDay))} onClick={exportReport}><Download size={16} />{exporting ? "导出中" : "开始导出"}</button></footer></section></div> : null}
+    {calibrationEvent ? <div className="chest-label-backdrop" role="dialog" aria-modal="true" aria-labelledby="chest-calibration-title"><section className="chest-label-modal chest-calibration-modal"><header><div><strong id="chest-calibration-title">开箱记录校准</strong><span>{String(calibrationEvent.before_saved_at ?? "")}，可修正归属、物品和数量。</span></div><button className="icon-button" title="关闭" onClick={() => setCalibrationEvent(null)}><X size={17} /></button></header><div className="chest-calibration-body"><div className="chest-calibration-metadata"><label>用户<select value={calibrationUserId} onChange={(event) => setCalibrationUserId(event.target.value)}>{users.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</select></label><label>Boss 来源<select value={calibrationSourceId} onChange={(event) => setCalibrationSourceId(event.target.value)}>{chestSources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}</select></label>{calibrationSourceId === "custom" ? <label>自定义来源<input autoComplete="off" value={calibrationCustomSourceName} placeholder="Boss 名称" onChange={(event) => setCalibrationCustomSourceName(event.target.value)} /></label> : null}</div><div className="chest-label-list">{calibrationItems.length ? calibrationItems.map((item, index) => { const slot = index + 1; const draft = calibrationNameDrafts[slot] ?? ""; const labeled = calibrationCatalogItems.some((catalogItem) => catalogItem.name === draft); return <div key={slot} className="chest-label-row chest-calibration-row"><img src={calibrationImages[slot] ?? ""} alt={draft || "物品"} /><div><strong>{draft || "待命名物品"}</strong><small>第 {slot} 个物品</small></div><select value={labeled ? draft : "__custom__"} onChange={(input) => selectCalibrationItem(slot, input.target.value)}><option value="__custom__">自定义名称</option>{calibrationCatalogItems.map((catalogItem) => <option key={catalogItem.itemId} value={catalogItem.name}>{catalogItem.name}</option>)}</select>{!labeled ? <input autoComplete="off" value={draft} placeholder="输入物品名称" onChange={(input) => { setCalibrationNameDrafts((current) => ({ ...current, [slot]: input.target.value })); setCalibrationImages((current) => ({ ...current, [slot]: null })); }} /> : <span className="chest-calibration-selected-name">已标记物品</span>}<input inputMode="numeric" pattern="[0-9]*" value={calibrationDrafts[slot] ?? ""} placeholder="数量" onChange={(input) => setCalibrationDrafts((current) => ({ ...current, [slot]: input.target.value.replace(/[^0-9]/g, "") }))} /><button className="icon-button danger" title={`删除第 ${slot} 个物品`} onClick={() => removeCalibrationItem(slot)}><Trash2 size={15} /></button></div>; }) : <p className="empty-note padded-note">该截图暂未识别出物品，请新增校准物品。</p>}<button className="button secondary calibration-add-item" onClick={addCalibrationItem}><Plus size={15} />新增物品</button></div></div><footer><span>可选择已标记物品，也可输入自定义名称；重新识别会按校准数量补扫。</span><button className="button secondary" onClick={() => setCalibrationEvent(null)}>取消</button><button className="button primary" disabled={savingCalibration} onClick={saveCalibration}>{savingCalibration ? "保存中" : "保存校准"}</button></footer></section></div> : null}
   </div>;
 }
 

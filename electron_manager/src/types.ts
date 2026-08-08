@@ -82,12 +82,15 @@ declare global {
       chestScreenshots(day: string, device?: string, userId?: string): Promise<Array<Record<string, unknown>>>;
       chestItemEvents(day: string, device?: string, userId?: string): Promise<Array<Record<string, unknown>>>;
       chestItemSummary(day: string, device?: string, userId?: string): Promise<Array<Record<string, unknown>>>;
-      chestSummaryRange(endDay: string, range: string, device?: string, userId?: string, startDay?: string): Promise<{ items: Array<Record<string, unknown>>; boxCount: number; startDay?: string; endDay?: string }>;
-      chestExportReport(endDay: string, range: string, device?: string, userId?: string, startDay?: string): Promise<{ file: string; boxCount: number }>;
+      chestSummaryRange(endDay: string, range: string, device?: string, userId?: string, startDay?: string, sourceId?: string): Promise<{ items: Array<Record<string, unknown>>; boxCount: number; startDay?: string; endDay?: string; sourceId?: string }>;
+      chestExportReport(endDay: string, range: string, device?: string, userId?: string, startDay?: string, sourceId?: string): Promise<{ file: string; boxCount: number }>;
       chestSyncExport(userId?: string): Promise<{ canceled: boolean; file?: string; events: number; icons: number }>;
       chestSyncImport(userId?: string): Promise<{ canceled: boolean; imported: number; skipped: number; icons: number }>;
       chestOpenReportDirectory(): Promise<void>;
       chestSetActiveSource(userId: string, taskId: string, sourceId: string, sourceName: string): Promise<{ sourceFile: string; sourceId: string; sourceName: string }>;
+      chestSources(userId?: string): Promise<Array<{ sourceId: string; sourceName: string }>>;
+      chestCreateSource(userId: string, sourceName: string): Promise<{ sourceId: string; sourceName: string }>;
+      chestDeleteSource(userId: string, sourceId: string): Promise<{ sourceId: string; sourceName: string }>;
       chestUsers(): Promise<Array<{ id: string; name: string; createdAt: string }>>;
       chestCreateUser(name: string): Promise<{ id: string; name: string; createdAt: string }>;
       chestRenameUser(userId: string, name: string): Promise<{ id: string; name: string; createdAt: string }>;
@@ -95,7 +98,7 @@ declare global {
       chestUnlabeledItems(): Promise<Array<{ itemId: string; name: string; labeled: boolean; weight?: number | null; cropPath: string; occurrences: number }>>;
       chestLabelItem(itemId: string, name: string): Promise<Record<string, unknown>>;
       chestSetItemWeight(itemId: string, weight: number | null): Promise<Record<string, unknown>>;
-      chestCorrectEvent(screenshotPath: string, corrections: Array<{ slot: number; itemName?: string | null; quantity: number | null }>, metadata?: { userId: string; sourceId: string; sourceName: string }): Promise<Record<string, unknown>>;
+      chestCorrectEvent(screenshotPath: string, corrections: Array<{ slot: number; itemName?: string | null; itemId?: string | null; iconCropPath?: string | null; quantity: number | null }>, metadata?: { userId: string; sourceId: string; sourceName: string }): Promise<Record<string, unknown>>;
       chestDeleteEvent(screenshotPath: string): Promise<Record<string, unknown>>;
       chestDeleteItem(itemId: string): Promise<Record<string, unknown>>;
       chestImage(filePath: string): Promise<string | null>;

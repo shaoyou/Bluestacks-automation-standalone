@@ -6,9 +6,16 @@
       "actions": [
         {
           "type": "if_image",
-          "template": "../image_templates/bl_baoxiaoxing.png",
+          "templates": [
+            "../image_templates/bl_baoxiaoxing_1080x1920.png",
+            "../image_templates/bl_baoxiaoxing.png"
+          ],
           "max_candidates": 32,
           "threshold": 0.8,
+          "min_color_similarity": 0.75,
+          "scales": [
+            1.0
+          ],
           "timeout_sec": 8,
           "interval_sec": 0.6,
           "remark": "全屏识别放大镜按钮",
@@ -60,6 +67,9 @@
                 {
                   "type": "save_screenshot",
                   "analyze_chest_items": true,
+                  "defer_chest_analysis": true,
+                  "storage_format": "webp",
+                  "crop_chest_result": true,
                   "dir": "../diagnostics/chest_results",
                   "pair_key": "chest_result",
                   "stage": "single",
@@ -75,6 +85,11 @@
                   "x": 530,
                   "y": 1450,
                   "remark": "关闭物品列表弹框"
+                },
+                {
+                  "type": "analyze_chest_results",
+                  "dir": "../diagnostics/chest_results",
+                  "remark": "关闭弹框后更新开宝箱记录"
                 },
                 {
                   "type": "wait",
@@ -113,6 +128,9 @@
                     {
                       "type": "save_screenshot",
                       "analyze_chest_items": true,
+                      "defer_chest_analysis": true,
+                      "storage_format": "webp",
+                      "crop_chest_result": true,
                       "dir": "../diagnostics/chest_results",
                       "pair_key": "chest_video_extra",
                       "stage": "single",
@@ -141,6 +159,9 @@
                     {
                       "type": "save_screenshot",
                       "analyze_chest_items": true,
+                      "defer_chest_analysis": true,
+                      "storage_format": "webp",
+                      "crop_chest_result": true,
                       "dir": "../diagnostics/chest_results",
                       "pair_key": "chest_normal",
                       "stage": "single",
@@ -156,6 +177,11 @@
                       "x": 530,
                       "y": 1450,
                       "remark": "关闭普通宝箱奖励弹框"
+                    },
+                    {
+                      "type": "analyze_chest_results",
+                      "dir": "../diagnostics/chest_results",
+                      "remark": "关闭弹框后更新开宝箱记录"
                     },
                     {
                       "type": "wait",

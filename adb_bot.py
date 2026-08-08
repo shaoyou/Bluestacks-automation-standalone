@@ -29,6 +29,7 @@ LAST_IF_IMAGE_SCREENSHOT_KEY = "last_if_image_screenshot"
 LAST_RED_LIGHT_SCREENSHOT_KEY = "last_red_light_screenshot"
 LAST_SCREENSHOT_PAIR_KEY = "_latest_screenshot_pair"
 BACKGROUND_TASKS_KEY = "_background_tasks"
+CHEST_ANALYSIS_TASK_KEY = "_chest_analysis_task"
 
 
 class BotError(RuntimeError):
@@ -348,11 +349,9 @@ def resolve_plan_env_value(value: Any, path: str = "plan", variables: Optional[D
 
 
 def skip_magnifier_actions(actions: List[Any]) -> List[Any]:
-    """Replace the magnifier gate with its confirmation flow when explicitly requested."""
-    updated: List[Any] = []
+    """Extract the confirmation flow after the magnifier gate for one-shot execution."""
     for action in actions:
         if not isinstance(action, dict):
-            updated.append(action)
             continue
         action_type = str(action.get("type", "")).strip().lower()
         template = str(action.get("template", "")).replace("\\", "/").rsplit("/", 1)[-1]
@@ -368,15 +367,14 @@ def skip_magnifier_actions(actions: List[Any]) -> List[Any]:
                     None,
                 )
                 if confirmation is not None:
-                    updated.append(skip_magnifier_actions([confirmation])[0])
-                    continue
-        cloned = dict(action)
+                    return [dict(confirmation)]
         for key in ("actions", "then_actions", "else_actions"):
-            nested = cloned.get(key)
+            nested = action.get(key)
             if isinstance(nested, list):
-                cloned[key] = skip_magnifier_actions(nested)
-        updated.append(cloned)
-    return updated
+                extracted = skip_magnifier_actions(nested)
+                if extracted:
+                    return extracted
+    return []
 
 
 def current_chest_capture_actions(actions: List[Any]) -> List[Dict[str, Any]]:
@@ -695,6 +693,17 @@ def active_chest_source(ctx: RunContext) -> Dict[str, str]:
     return source
 
 
+def chest_result_crop_box(image_size: Tuple[int, int]) -> Tuple[int, int, int, int]:
+    """Keep the reward dialog while dropping unrelated game UI."""
+    width, height = image_size
+    return (
+        round(width * 0.05),
+        round(height * 0.33),
+        round(width * 0.95),
+        round(height * 0.70),
+    )
+
+
 def do_save_screenshot(ctx: RunContext, action: Dict[str, Any]) -> None:
     if ctx.dry_run:
         log(with_action_remark("[DRY-RUN] save_screenshot skipped", action))
@@ -767,8 +776,20 @@ def do_save_screenshot(ctx: RunContext, action: Dict[str, Any]) -> None:
     if image is None:
         image = capture_device_screenshot(ctx)
 
-    destination = output_dir / f"{filename}.png"
-    image.save(destination)
+    crop_metadata: Dict[str, Any] = {}
+    saved_image = image
+    if bool_value(action.get("crop_chest_result"), default=False):
+        crop_box = chest_result_crop_box(image.size)
+        saved_image = image.crop(crop_box)
+        crop_metadata = {"source_size": list(image.size), "crop_box": list(crop_box)}
+
+    storage_format = str(action.get("storage_format", "png")).strip().lower()
+    if storage_format in {"webp", "webp_lossless"}:
+        destination = output_dir / f"{filename}.webp"
+        saved_image.save(destination, format="WEBP", lossless=True, method=6)
+    else:
+        destination = output_dir / f"{filename}.png"
+        saved_image.save(destination, format="PNG", optimize=True)
     saved_at = time.strftime("%Y-%m-%d %H:%M:%S")
 
     if pair_key:
@@ -777,6 +798,7 @@ def do_save_screenshot(ctx: RunContext, action: Dict[str, Any]) -> None:
             active_pair["before_label"] = label
             active_pair["before_path"] = str(destination)
             active_pair["before_saved_at"] = saved_at
+            active_pair.update(crop_metadata)
         elif stage == "after":
             record = dict(active_pair)
             record["after_label"] = label
@@ -804,6 +826,7 @@ def do_save_screenshot(ctx: RunContext, action: Dict[str, Any]) -> None:
                     "before_label": label,
                     "before_path": str(destination),
                     "before_saved_at": saved_at,
+                    **crop_metadata,
                     "after_label": "",
                     "after_path": "",
                     "after_saved_at": "",
@@ -812,7 +835,9 @@ def do_save_screenshot(ctx: RunContext, action: Dict[str, Any]) -> None:
                 },
             )
     log(with_action_remark(f"Saved screenshot: {destination} ({image_source})", action))
-    if bool_value(action.get("analyze_chest_items"), default=False):
+    if bool_value(action.get("analyze_chest_items"), default=False) and not bool_value(
+        action.get("defer_chest_analysis"), default=False
+    ):
         try:
             from chest_analyzer import analyze_results
             summary = analyze_results(output_dir)
@@ -822,6 +847,44 @@ def do_save_screenshot(ctx: RunContext, action: Dict[str, Any]) -> None:
             ))
         except Exception as error:
             log(with_action_remark(f"Chest item analysis failed: {error}", action))
+
+
+def chest_analysis_worker(ctx: RunContext, action: Dict[str, Any], output_dir: Path) -> None:
+    try:
+        from chest_analyzer import analyze_results
+        summary = analyze_results(output_dir)
+        log(
+            with_action_remark(
+                f"Chest item analysis: {summary['analyzed']} new, "
+                f"{summary['events']} total, {summary['unknown_items']} pending labels",
+                action,
+            )
+        )
+    except Exception as error:
+        log(with_action_remark(f"Chest item analysis failed: {error}", action))
+
+
+def do_analyze_chest_results(ctx: RunContext, action: Dict[str, Any]) -> None:
+    if ctx.dry_run:
+        log(with_action_remark("[DRY-RUN] analyze_chest_results skipped", action))
+        return
+    output_dir = screenshot_output_dir(ctx, action)
+    previous = ctx.runtime_values.get(CHEST_ANALYSIS_TASK_KEY)
+    if isinstance(previous, threading.Thread) and previous.is_alive():
+        log(with_action_remark("Chest item analysis already running; skip duplicate schedule", action))
+        return
+    thread = threading.Thread(
+        target=chest_analysis_worker,
+        args=(ctx, dict(action), output_dir),
+        name="chest-item-analysis",
+        daemon=True,
+    )
+    tasks = ctx.runtime_values.setdefault(BACKGROUND_TASKS_KEY, [])
+    if isinstance(tasks, list):
+        tasks.append(thread)
+    ctx.runtime_values[CHEST_ANALYSIS_TASK_KEY] = thread
+    thread.start()
+    log(with_action_remark("Chest item analysis scheduled in background", action))
 
 
 def save_screenshot_pair_composite(output_dir: Path, record: Dict[str, Any]) -> Optional[Path]:
@@ -1971,6 +2034,12 @@ def perform_find_image(
     while True:
         check_stop(ctx)
         attempt += 1
+        log(
+            with_action_remark(
+                f"{action_name} attempt {attempt} started; matching {len(template_paths)} template(s)",
+                action,
+            )
+        )
         screenshot = capture_device_screenshot(ctx)
         search = prepare_search_image(ctx, screenshot, search_action, minimum_size=minimum_template_size)
         search_size = (search.gray.shape[1], search.gray.shape[0])
@@ -2989,6 +3058,8 @@ def execute_action(ctx: RunContext, action: Dict[str, Any]) -> None:
         do_record_draw_event(ctx, action)
     elif action_type == "save_screenshot":
         do_save_screenshot(ctx, action)
+    elif action_type == "analyze_chest_results":
+        do_analyze_chest_results(ctx, action)
     elif action_type == "find_image":
         do_find_image(ctx, action)
     elif action_type == "find_image_click":
@@ -3230,6 +3301,8 @@ def main() -> int:
         raise BotError("Plan must contain an 'actions' array")
     if args.skip_magnifier:
         actions = skip_magnifier_actions(actions)
+        if not actions:
+            raise BotError("Plan does not contain a magnifier confirmation flow")
         log("Temporary override enabled: skip magnifier detection")
     elif args.capture_current_chest:
         actions = current_chest_capture_actions(actions)
