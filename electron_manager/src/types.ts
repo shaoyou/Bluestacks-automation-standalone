@@ -73,9 +73,15 @@ declare global {
       templatesOpenFolder(): Promise<void>;
       templatesImport(): Promise<string | null>;
       templatesSaveCapture(name: string, dataUrl: string): Promise<string>;
-      drawListSessions(): Promise<Array<{ file: string; summary: Record<string, unknown> }>>;
-      drawEvents(sessionId: string): Promise<Array<Record<string, unknown>>>;
-      drawScreenshotPairs(sessionId: string): Promise<Array<Record<string, unknown>>>;
+      drawUsers(): Promise<Array<{ id: string; name: string; createdAt: string }>>;
+      drawCreateUser(name: string): Promise<{ id: string; name: string; createdAt: string }>;
+      drawRenameUser(userId: string, name: string): Promise<{ id: string; name: string; createdAt: string }>;
+      drawListSessions(userId?: string): Promise<Array<{ file: string; summary: Record<string, unknown> }>>;
+      drawEvents(sessionId: string, userId?: string): Promise<Array<Record<string, unknown>>>;
+      drawScreenshotPairs(sessionId: string, userId?: string): Promise<Array<Record<string, unknown>>>;
+      drawCorrectResult(pairPrefix: string, roleName: string, userId?: string): Promise<Record<string, unknown>>;
+      drawExportReport(endDay: string, range: string, userId?: string, startDay?: string): Promise<Record<string, unknown>>;
+      drawOpenReportDirectory(): Promise<void>;
       drawImage(filePath: string): Promise<string | null>;
       drawOpenScreenshots(): Promise<void>;
       chestListDays(device?: string, userId?: string): Promise<Array<{ day: string; count: number; latestAt: string }>>;
@@ -103,7 +109,9 @@ declare global {
       chestDeleteItem(itemId: string): Promise<Record<string, unknown>>;
       chestImage(filePath: string): Promise<string | null>;
       chestOpenScreenshots(): Promise<void>;
+      historyMigrate(): Promise<Record<string, unknown>>;
       devicesList(adbPath: string): Promise<string[]>;
+      devicesForceRefresh(adbPath: string): Promise<string[]>;
       adbRun(adbPath: string, args: string[]): Promise<{ code: number; text: string }>;
       screenshot(adbPath: string, device: string): Promise<string>;
       openRunWindow(initialPlan?: string): Promise<void>;

@@ -1038,6 +1038,7 @@ def record_draw_stats_event(
         event_record: Dict[str, Any] = {
             "timestamp": now,
             "session_id": session_id,
+            "user_id": ctx.user_id,
             "event": event,
             "draw_type": draw_type,
             "matched_template": matched_template,
@@ -1053,6 +1054,7 @@ def record_draw_stats_event(
 
         summary = {
             "session_id": session_id,
+            "user_id": ctx.user_id,
             "updated_at": now,
             "draw_started_count": int(counts["draw_started"]),
             "target_seen_count": int(counts["target_seen"]),

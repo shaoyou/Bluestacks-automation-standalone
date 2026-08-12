@@ -78,6 +78,10 @@
         "to": "runtime/chest_analyzer.py"
       },
       {
+        "from": "../data_store.py",
+        "to": "runtime/data_store.py"
+      },
+      {
         "from": "default_plans",
         "to": "runtime/plans"
       },

@@ -137,7 +137,7 @@ function runtimeRoot(): string {
   const source = bundledRuntimeRoot();
   mkdirSync(target, { recursive: true });
 
-  for (const file of ["adb_bot.py", "record_touch.py", "chest_analyzer.py"]) {
+  for (const file of ["adb_bot.py", "record_touch.py", "chest_analyzer.py", "data_store.py"]) {
     const sourceFile = path.join(source, file);
     if (existsSync(sourceFile)) copyFileAtomic(sourceFile, path.join(target, file));
   }
@@ -682,21 +682,25 @@ app.whenReady().then(() => {
     return `../image_templates/${name}`;
   });
 
-  ipcMain.handle("draw:list-sessions", () => {
+  ipcMain.handle("draw:users", () => chestUsers());
+  ipcMain.handle("draw:user-create", (_, name: string) => createChestUser(name));
+  ipcMain.handle("draw:user-rename", (_, userId: string, name: string) => renameChestUser(userId, name));
+  ipcMain.handle("draw:list-sessions", (_, userId = "default") => {
     const directory = path.join(runtimeRoot(), "diagnostics", "draw_stats");
     if (!existsSync(directory)) return [];
     return readdirSync(directory)
       .filter((name) => name !== "latest_summary.json" && name.endsWith("_summary.json"))
       .flatMap((name) => {
         try {
-          return [{ file: name, summary: JSON.parse(readFileSync(path.join(directory, name), "utf8")) }];
+          const summary = JSON.parse(readFileSync(path.join(directory, name), "utf8")) as Record<string, unknown>;
+          return String(summary.user_id ?? "default") === userId ? [{ file: name, summary }] : [];
         } catch {
           return [];
         }
       })
       .sort((a, b) => String(b.summary.updated_at ?? "").localeCompare(String(a.summary.updated_at ?? "")));
   });
-  ipcMain.handle("draw:events", (_, sessionId: string) => {
+  ipcMain.handle("draw:events", (_, sessionId: string, userId = "default") => {
     const safeId = path.basename(sessionId).replace(/[^a-zA-Z0-9_.-]/g, "");
     if (!safeId) return [];
     const eventsFile = path.join(runtimeRoot(), "diagnostics", "draw_stats", `${safeId}_events.jsonl`);
@@ -705,10 +709,13 @@ app.whenReady().then(() => {
       .split(/\r?\n/)
       .filter(Boolean)
       .flatMap((line) => {
-        try { return [JSON.parse(line)]; } catch { return []; }
+        try {
+          const event = JSON.parse(line) as Record<string, unknown>;
+          return String(event.user_id ?? "default") === userId ? [event] : [];
+        } catch { return []; }
       });
   });
-  ipcMain.handle("draw:screenshot-pairs", (_, sessionId: string) => {
+  ipcMain.handle("draw:screenshot-pairs", (_, sessionId: string, userId = "default") => {
     const safeId = path.basename(sessionId).replace(/[^a-zA-Z0-9_.-]/g, "");
     if (!safeId) return [];
     const indexFile = path.join(runtimeRoot(), "diagnostics", "draw_result_pairs", "index.jsonl");
@@ -719,7 +726,7 @@ app.whenReady().then(() => {
       .flatMap((line) => {
         try {
           const pair = JSON.parse(line) as Record<string, unknown>;
-          return String(pair.session_id ?? "") === safeId ? [pair] : [];
+          return String(pair.session_id ?? "") === safeId && String(pair.user_id ?? "default") === userId ? [pair] : [];
         } catch {
           return [];
         }
@@ -739,6 +746,15 @@ app.whenReady().then(() => {
     mkdirSync(directory, { recursive: true });
     void shell.openPath(directory);
   });
+  ipcMain.handle("draw:correct-result", (_, pairPrefix: string, roleName: string, userId = "default") => correctDrawResult(pairPrefix, roleName, userId));
+  ipcMain.handle("draw:export-report", (_, endDay: string, range: string, userId = "default", startDay?: string) => exportDrawReport(endDay, range, userId, startDay));
+  ipcMain.handle("draw:open-report-directory", async () => {
+    const directory = path.join(drawResultsRoot(), "reports");
+    mkdirSync(directory, { recursive: true });
+    const error = await shell.openPath(directory);
+    if (error) throw new Error(error);
+  });
+  ipcMain.handle("history:migrate", () => migrateHistoryToDatabase());
   ipcMain.handle("chest:users", () => chestUsers());
   ipcMain.handle("chest:user-create", (_, name: string) => createChestUser(name));
   ipcMain.handle("chest:user-rename", (_, userId: string, name: string) => renameChestUser(userId, name));
@@ -815,12 +831,15 @@ ipcMain.handle("chest:reanalyze", (_event, day?: string, userId?: string) =>
   ipcMain.handle("adb:list-devices", async (_, adbPath: string) => {
     const result = await runCommand(adbPath || getSettings().adbPath, ["devices"]);
     if (result.code !== 0) throw new Error(result.text);
-    return result.text
-      .split(/\r?\n/)
-      .slice(1)
-      .map((line) => line.trim().split(/\s+/))
-      .filter((parts) => parts[1] === "device")
-      .map((parts) => parts[0]);
+    return parseAdbDevices(result.text);
+  });
+  ipcMain.handle("adb:force-refresh-devices", async (_, adbPath: string) => {
+    const executable = adbPath || getSettings().adbPath;
+    const stopped = await runCommand(executable, ["kill-server"]);
+    const started = await runCommand(executable, ["start-server"]);
+    const listed = await runCommand(executable, ["devices"]);
+    if (listed.code !== 0) throw new Error(listed.text || started.text || stopped.text);
+    return parseAdbDevices(listed.text);
   });
   ipcMain.handle("adb:run", (_, adbPath: string, args: string[]) => runCommand(adbPath || getSettings().adbPath, args));
   ipcMain.handle("adb:screenshot", async (_, adbPath: string, device: string) => {
@@ -1769,6 +1788,154 @@ function runtimeDiagnosticImage(directory: string, rawPath: string): string | nu
       ? "image/webp"
       : "image/png";
   return `data:${mime};base64,${readFileSync(target).toString("base64")}`;
+}
+
+function parseAdbDevices(output: string): string[] {
+  return output
+    .split(/\r?\n/)
+    .slice(1)
+    .map((line) => line.trim().split(/\s+/))
+    .filter((parts) => parts[1] === "device")
+    .map((parts) => parts[0]);
+}
+
+function drawResultsRoot() {
+  return path.join(runtimeRoot(), "diagnostics", "draw_result_pairs");
+}
+
+function drawStatsRoot() {
+  return path.join(runtimeRoot(), "diagnostics", "draw_stats");
+}
+
+function historyDatabaseFile() {
+  return path.join(app.getPath("userData"), "history.sqlite");
+}
+
+function readJsonLines(file: string): Array<Record<string, unknown>> {
+  if (!existsSync(file)) return [];
+  return readFileSync(file, "utf8").split(/\r?\n/).filter(Boolean).flatMap((line) => {
+    try { return [JSON.parse(line) as Record<string, unknown>]; } catch { return []; }
+  });
+}
+
+function drawDateRange(endDay: string, range: string, customStartDay?: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(endDay)) throw new Error("统计结束日期无效");
+  if (range === "custom") {
+    const startDay = String(customStartDay ?? "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(startDay) || startDay > endDay) throw new Error("自定义统计日期无效");
+    return { startDay, endDay };
+  }
+  const span = range === "month" ? 30 : range === "7d" ? 7 : 1;
+  const end = new Date(`${endDay}T00:00:00Z`);
+  end.setUTCDate(end.getUTCDate() - span + 1);
+  return { startDay: end.toISOString().slice(0, 10), endDay };
+}
+
+function drawSessionsForUser(userId: string) {
+  const root = drawStatsRoot();
+  if (!existsSync(root)) return [];
+  return readdirSync(root)
+    .filter((name) => name !== "latest_summary.json" && name.endsWith("_summary.json"))
+    .flatMap((name) => {
+      try {
+        const summary = JSON.parse(readFileSync(path.join(root, name), "utf8")) as Record<string, unknown>;
+        return String(summary.user_id ?? "default") === userId ? [summary] : [];
+      } catch { return []; }
+    });
+}
+
+function correctDrawResult(rawPairPrefix: string, rawRoleName: string, rawUserId = "default") {
+  const pairPrefix = String(rawPairPrefix ?? "").trim();
+  const roleName = String(rawRoleName ?? "").trim();
+  const userId = String(rawUserId ?? "default");
+  if (!pairPrefix || !roleName) throw new Error("请选择需要校准的红卡角色");
+  const indexFile = path.join(drawResultsRoot(), "index.jsonl");
+  const pairs = readJsonLines(indexFile);
+  const pair = pairs.find((item) => String(item.pair_prefix ?? "") === pairPrefix && String(item.user_id ?? "default") === userId);
+  if (!pair) throw new Error("未找到需要校准的抽卡截图");
+  const sessionId = String(pair.session_id ?? "");
+  const eventsFile = path.join(drawStatsRoot(), `${path.basename(sessionId)}_events.jsonl`);
+  const events = readJsonLines(eventsFile);
+  const candidates = events.filter((event) => String(event.pair_prefix ?? "") === pairPrefix && String(event.user_id ?? "default") === userId);
+  const target = candidates.find((event) => String(event.matched_template ?? "") === "unknown_red_role") ?? candidates[candidates.length - 1];
+  if (!target) throw new Error("该截图没有可校准的抽卡结果");
+  target.matched_template = roleName;
+  target.matched_role_note = roleName;
+  target.calibrated_at = new Date().toISOString();
+  target.calibrated = true;
+  writeFileSync(eventsFile, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`, "utf8");
+  const summaryFile = path.join(drawStatsRoot(), `${path.basename(sessionId)}_summary.json`);
+  if (existsSync(summaryFile)) {
+    const summary = JSON.parse(readFileSync(summaryFile, "utf8")) as Record<string, unknown>;
+    const counts = summary.role_hit_counts && typeof summary.role_hit_counts === "object" ? summary.role_hit_counts as Record<string, number> : {};
+    counts.unknown_red_role = Math.max(0, Number(counts.unknown_red_role ?? 0) - 1);
+    counts[roleName] = Number(counts[roleName] ?? 0) + 1;
+    summary.role_hit_counts = counts;
+    summary.updated_at = new Date().toISOString().replace("T", " ").slice(0, 19);
+    writeFileSync(summaryFile, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+  }
+  return { pairPrefix, roleName, sessionId };
+}
+
+function exportDrawReport(endDay: string, range: string, userId = "default", customStartDay?: string) {
+  const { startDay, endDay: normalizedEndDay } = drawDateRange(endDay, range, customStartDay);
+  const sessions = drawSessionsForUser(userId).filter((session) => {
+    const day = String(session.updated_at ?? "").slice(0, 10);
+    return day >= startDay && day <= normalizedEndDay;
+  });
+  const totals = sessions.reduce<{ draws: number; seen: number; hits: number }>((value, session) => ({
+    draws: value.draws + Number(session.draw_started_count ?? 0),
+    seen: value.seen + Number(session.target_seen_count ?? 0),
+    hits: value.hits + Number(session.target_hit_count ?? 0),
+  }), { draws: 0, seen: 0, hits: 0 });
+  const roles = new Map<string, number>();
+  for (const session of sessions) {
+    const counts = session.role_hit_counts && typeof session.role_hit_counts === "object" ? session.role_hit_counts as Record<string, unknown> : {};
+    for (const [role, count] of Object.entries(counts)) roles.set(role, (roles.get(role) ?? 0) + Number(count ?? 0));
+  }
+  const directory = path.join(drawResultsRoot(), "reports");
+  mkdirSync(directory, { recursive: true });
+  const file = path.join(directory, `抽卡报表_${userId}_${startDay}_${normalizedEndDay}.csv`);
+  const rows = [
+    ["用户", userId],
+    ["统计日期", `${startDay} 至 ${normalizedEndDay}`],
+    ["抽卡次数", String(totals.draws)],
+    ["红卡出现次数", String(totals.seen)],
+    ["红卡命中次数", String(totals.hits)],
+    ["红卡出现概率", totals.draws ? `${(totals.seen / totals.draws * 100).toFixed(2)}%` : "0.00%"],
+    ["红卡命中概率", totals.draws ? `${(totals.hits / totals.draws * 100).toFixed(2)}%` : "0.00%"],
+    [],
+    ["红卡角色", "命中次数", "在抽卡中的概率"],
+    ...[...roles.entries()].sort((a, b) => b[1] - a[1]).map(([role, count]) => [role, String(count), totals.draws ? `${(count / totals.draws * 100).toFixed(2)}%` : "0.00%"]),
+  ];
+  writeFileSync(file, `\ufeff${rows.map((row) => row.map((value) => `"${String(value).replace(/"/g, "\"\"")}"`).join(",")).join("\n")}\n`, "utf8");
+  return { file, startDay, endDay: normalizedEndDay, ...totals };
+}
+
+async function migrateHistoryToDatabase() {
+  const drawPairs = readJsonLines(path.join(drawResultsRoot(), "index.jsonl"));
+  const drawEvents = existsSync(drawStatsRoot())
+    ? readdirSync(drawStatsRoot()).filter((name) => name.endsWith("_events.jsonl")).flatMap((name) => readJsonLines(path.join(drawStatsRoot(), name)))
+    : [];
+  const drawSessions = existsSync(drawStatsRoot())
+    ? readdirSync(drawStatsRoot()).filter((name) => name !== "latest_summary.json" && name.endsWith("_summary.json")).flatMap((name) => {
+      try { return [JSON.parse(readFileSync(path.join(drawStatsRoot(), name), "utf8")) as Record<string, unknown>]; } catch { return []; }
+    }) : [];
+  const chestRecords = chestItemEventsFromFile();
+  const payload = JSON.stringify({ database: historyDatabaseFile(), operation: "import", data: { users: chestUsers(), chestRecords, drawSessions, drawEvents, drawPairs } });
+  const script = path.join(runtimeRoot(), "data_store.py");
+  const executable = resolveExecutable(getSettings().pythonPath, process.platform === "win32" ? "python.exe" : "python3");
+  const result = await new Promise<string>((resolve, reject) => {
+    const process = spawn(executable, [script], { windowsHide: true, env: runtimeEnvironment() });
+    let output = "";
+    let errors = "";
+    process.stdout.on("data", (data) => (output += data.toString("utf8")));
+    process.stderr.on("data", (data) => (errors += data.toString("utf8")));
+    process.on("error", reject);
+    process.on("close", (code) => code === 0 ? resolve(output) : reject(new Error(errors || output || `数据库迁移退出码 ${code}`)));
+    process.stdin.end(payload);
+  });
+  return JSON.parse(result) as Record<string, unknown>;
 }
 
 app.on("window-all-closed", () => {

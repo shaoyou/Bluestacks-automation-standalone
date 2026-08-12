@@ -75,6 +75,16 @@ export function App() {
       setNotice(`ADB 连接失败: ${String(error)}`);
     }
   };
+  const forceRefreshDevices = async () => {
+    try {
+      const found = await window.bsManager.devicesForceRefresh(settings.adbPath);
+      setDevices(found);
+      setNotice(found.length ? `ADB 已强制重启，发现 ${found.length} 个设备` : "ADB 已强制重启，未发现可用设备");
+    } catch (error) {
+      setDevices([]);
+      setNotice(`ADB 强制刷新失败: ${String(error)}`);
+    }
+  };
 
   const refreshPlans = async () => {
     const names = await window.bsManager.plansList();
@@ -136,8 +146,14 @@ export function App() {
           ...current,
           [event.id]: `${current[event.id] ?? ""}[${logTime()}] 进程结束，退出码 ${event.code ?? "未知"}\n`,
         }));
-        if (event.id === "draw") window.dispatchEvent(new Event("draw-task-finished"));
-        if (event.id === "chest" || event.id.startsWith("chest-")) window.dispatchEvent(new Event("chest-task-finished"));
+        if (event.id === "draw") {
+          void window.bsManager.historyMigrate().catch(() => undefined);
+          window.dispatchEvent(new Event("draw-task-finished"));
+        }
+        if (event.id === "chest" || event.id.startsWith("chest-")) {
+          void window.bsManager.historyMigrate().catch(() => undefined);
+          window.dispatchEvent(new Event("chest-task-finished"));
+        }
       }
     });
     const removeEnvironmentListener = window.bsManager.onEnvironmentEvent((event: EnvironmentState) => setEnvironment(event));
@@ -290,6 +306,7 @@ export function App() {
     clearTaskLog,
     devices,
     refreshDevices,
+    forceRefreshDevices,
   };
 
   if (!environment || (environment.required && !environment.ready)) {

@@ -126,6 +126,7 @@ export function ChestPage(props: SharedProps) {
   const [calibrationUserId, setCalibrationUserId] = useState("default");
   const [calibrationSourceId, setCalibrationSourceId] = useState("boss_jinjia");
   const [calibrationCustomSourceName, setCalibrationCustomSourceName] = useState("");
+  const [calibrationSources, setCalibrationSources] = useState<CustomChestSource[]>([]);
   const [savingCalibration, setSavingCalibration] = useState(false);
   const [selectedDay, setSelectedDay] = useState("");
   const selectedDayRef = useRef("");
@@ -596,7 +597,7 @@ export function ChestPage(props: SharedProps) {
     setCalibrationEvent(record);
     setCalibrationItems(items);
     setCalibrationUserId(recordUserId);
-    setCalibrationSourceId(chestSources.some((source) => source.id === recordSourceId) ? recordSourceId : "custom");
+    setCalibrationSourceId(recordSourceId || "custom");
     setCalibrationCustomSourceName(recordSourceName);
     setCalibrationNameDrafts(Object.fromEntries(items.map((item, index) => [index + 1, item.item_name && item.item_name !== "待标注物品" ? item.item_name : ""])));
     setCalibrationDrafts(Object.fromEntries(items.map((item, index) => [index + 1, item.quantity == null ? "" : String(item.quantity)])));
@@ -604,6 +605,16 @@ export function ChestPage(props: SharedProps) {
     void window.bsManager.chestUnlabeledItems()
       .then((catalogItems) => setCalibrationCatalogItems(catalogItems.filter((item) => item.labeled)))
       .catch((error) => props.setNotice(`读取已标记物品失败: ${String(error)}`));
+    void window.bsManager.chestSources(recordUserId)
+      .then((sources) => {
+        const existingRecordSource = recordSourceId.startsWith("custom_") && recordSourceName
+          ? { sourceId: recordSourceId, sourceName: recordSourceName }
+          : null;
+        setCalibrationSources(existingRecordSource && !sources.some((source) => source.sourceId === existingRecordSource.sourceId)
+          ? [...sources, existingRecordSource]
+          : sources);
+      })
+      .catch((error) => props.setNotice(`读取校准来源失败: ${String(error)}`));
     void Promise.all(items.map(async (item, index) => [index + 1, item.crop_path ? await window.bsManager.chestImage(item.crop_path) : null] as const))
       .then((images) => setCalibrationImages(Object.fromEntries(images)))
       .catch((error) => props.setNotice(`读取校准图片失败: ${String(error)}`));
@@ -641,21 +652,35 @@ export function ChestPage(props: SharedProps) {
       .map(([key, value]) => [Number(key) > slot ? String(Number(key) - 1) : key, value])));
   };
 
+  const selectCalibrationUser = (nextUserId: string) => {
+    setCalibrationUserId(nextUserId);
+    void window.bsManager.chestSources(nextUserId)
+      .then((sources) => {
+        setCalibrationSources(sources);
+        setCalibrationSourceId((current) => (
+          builtInChestSources.some((source) => source.id === current) || sources.some((source) => source.sourceId === current)
+            ? current
+            : "custom"
+        ));
+      })
+      .catch((error) => props.setNotice(`读取校准来源失败: ${String(error)}`));
+  };
+
+  const selectCalibrationSource = (nextSourceId: string) => {
+    setCalibrationSourceId(nextSourceId);
+    const saved = calibrationSources.find((source) => source.sourceId === nextSourceId);
+    setCalibrationCustomSourceName(saved?.sourceName ?? "");
+  };
+
   const saveCalibration = () => {
     if (!calibrationEvent || savingCalibration) return;
     const screenshotPath = String(calibrationEvent.before_path ?? "");
-    const sourceName = calibrationSourceId === "custom"
-      ? calibrationCustomSourceName.trim()
-      : chestSources.find((source) => source.id === calibrationSourceId)?.name ?? "";
-    const sourceId = calibrationSourceId === "custom"
-      ? `custom_${sourceName.replace(/[^a-zA-Z0-9\u4e00-\u9fff]+/g, "_")}`
-      : calibrationSourceId;
-    if (!users.some((user) => user.id === calibrationUserId)) {
-      props.setNotice("请选择有效用户");
+    if (!screenshotPath) {
+      props.setNotice("未找到本次开箱截图，无法保存校准");
       return;
     }
-    if (!sourceName || !sourceId) {
-      props.setNotice("请填写宝箱来源");
+    if (!users.some((user) => user.id === calibrationUserId)) {
+      props.setNotice("请选择有效用户");
       return;
     }
     const corrections: ChestItemCorrection[] = calibrationItems.map((item, index) => {
@@ -680,13 +705,34 @@ export function ChestPage(props: SharedProps) {
       return;
     }
     setSavingCalibration(true);
-    void window.bsManager.chestCorrectEvent(screenshotPath, corrections, {
-      userId: calibrationUserId,
-      sourceId,
-      sourceName,
-    })
-      .then(() => refreshHistory())
-      .then(() => setCalibrationEvent(null))
+    void (async () => {
+      const builtIn = builtInChestSources.find((source) => source.id === calibrationSourceId);
+      const saved = calibrationSources.find((source) => source.sourceId === calibrationSourceId);
+      let source: { sourceId: string; sourceName: string };
+      if (builtIn) {
+        source = { sourceId: builtIn.id, sourceName: builtIn.name };
+      } else if (saved) {
+        source = saved;
+      } else if (calibrationSourceId === "custom") {
+        const customName = calibrationCustomSourceName.trim();
+        if (!customName) throw new Error("请填写宝箱来源");
+        source = await window.bsManager.chestCreateSource(calibrationUserId, customName);
+      } else if (calibrationSourceId.startsWith("custom_") && calibrationCustomSourceName.trim()) {
+        source = await window.bsManager.chestCreateSource(calibrationUserId, calibrationCustomSourceName.trim());
+      } else {
+        throw new Error("来源已失效，请重新选择宝箱来源");
+      }
+      if (!source?.sourceId || !source.sourceName) throw new Error("请填写宝箱来源");
+      setCalibrationSources((current) => current.some((item) => item.sourceId === source.sourceId) ? current : [...current, source]);
+      if (calibrationUserId === userId) setCustomSources((current) => current.some((item) => item.sourceId === source.sourceId) ? current : [...current, source]);
+      await window.bsManager.chestCorrectEvent(screenshotPath, corrections, {
+        userId: calibrationUserId,
+        sourceId: source.sourceId,
+        sourceName: source.sourceName,
+      });
+      await refreshHistory();
+      setCalibrationEvent(null);
+    })()
       .catch((error) => props.setNotice(`保存物品校准失败: ${String(error)}`))
       .finally(() => setSavingCalibration(false));
   };
@@ -743,7 +789,7 @@ export function ChestPage(props: SharedProps) {
     {showLabelModal ? <div className="chest-label-backdrop" role="dialog" aria-modal="true" aria-labelledby="chest-label-title"><section className="chest-label-modal"><header><div><strong id="chest-label-title">物品标注</strong><span>已设置权重的物品优先显示，其次是待标注物品。</span></div><button className="icon-button" title="关闭" onClick={() => setShowLabelModal(false)}><X size={17} /></button></header><div className="chest-label-list">{unlabeledItems.length ? unlabeledItems.map((item) => <div key={item.itemId} className={`chest-label-row ${item.labeled ? "labeled" : ""}`}><img src={labelImages[item.itemId] ?? ""} alt={item.name} /><div><code>{item.itemId}</code><small>{item.labeled ? `已标注：${item.name}` : "待标注"}，出现 {item.occurrences} 次</small></div><input autoComplete="off" placeholder="物品名称" value={labelDrafts[item.itemId] ?? ""} onChange={(event) => setLabelDrafts((current) => ({ ...current, [item.itemId]: event.target.value }))} /><input inputMode="decimal" placeholder="权重" value={weightDrafts[item.itemId] ?? ""} onChange={(event) => setWeightDrafts((current) => ({ ...current, [item.itemId]: event.target.value.replace(/[^0-9.]/g, "") }))} /><button className="button primary" disabled={!labelDrafts[item.itemId]?.trim() || !!savingItemId} onClick={() => saveLabel(item)}>{savingItemId === item.itemId ? "保存中" : "保存"}</button><button className="icon-button danger" title="删除物品图鉴" onClick={() => deleteCatalogItem(item)}><Trash2 size={15} /></button></div>) : <p className="empty-note padded-note">尚无已识别的物品。</p>}</div><footer><span>{unlabeledItems.filter((item) => !item.labeled).length} 个待标注，{unlabeledItems.length} 个物品</span><button className="button secondary" onClick={() => setShowLabelModal(false)}>关闭</button></footer></section></div> : null}
     {showReanalyzeModal ? <div className="chest-label-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !reanalyzing) setShowReanalyzeModal(false); }}><section className="chest-label-modal chest-reanalyze-modal" role="dialog" aria-modal="true" aria-labelledby="chest-reanalyze-title"><header><div><strong id="chest-reanalyze-title">重新识别</strong></div><button className="icon-button" title="关闭" disabled={reanalyzing} onClick={() => setShowReanalyzeModal(false)}><X size={17} /></button></header><div className="chest-reanalyze-options"><div className="segmented-control" role="group" aria-label="重新识别范围"><button className={reanalyzeScope === "day" ? "active" : ""} disabled={!selectedDay} onClick={() => setReanalyzeScope("day")}>{selectedDay ? `当前日期 ${selectedDay}` : "当前日期"}</button><button className={reanalyzeScope === "all" ? "active" : ""} onClick={() => setReanalyzeScope("all")}>全部记录</button></div>{users.length > 1 ? <label className="chest-reanalyze-user">用户<select value={reanalyzeUserId} disabled={reanalyzing} onChange={(event) => setReanalyzeUserId(event.target.value)}>{users.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</select></label> : null}</div><footer><button className="button secondary" disabled={reanalyzing} onClick={() => setShowReanalyzeModal(false)}>取消</button><button className="button primary" disabled={reanalyzing || (reanalyzeScope === "day" && !selectedDay)} onClick={reanalyze}><RefreshCw className={reanalyzing ? "spin" : ""} size={16} />{reanalyzing ? "正在识别" : "开始识别"}</button></footer></section></div> : null}
     {showExportModal ? <div className="chest-label-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !exporting) setShowExportModal(false); }}><section className="chest-label-modal chest-export-modal" role="dialog" aria-modal="true" aria-labelledby="chest-export-title"><header><div><strong id="chest-export-title">导出报表</strong><span>选择用户、统计范围和来源后生成 CSV 报表。</span></div><button className="icon-button" title="关闭" disabled={exporting} onClick={() => setShowExportModal(false)}><X size={17} /></button></header><div className="chest-export-options"><label>用户<select value={exportUserId} disabled={exporting} onChange={(event) => updateExportUser(event.target.value)}>{users.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</select></label><div className="chest-export-range"><span>统计范围</span><div className="segmented-control" role="group" aria-label="导出统计范围"><button className={exportRange === "day" ? "active" : ""} disabled={exporting} onClick={() => selectExportRange("day")}>当天</button><button className={exportRange === "7d" ? "active" : ""} disabled={exporting} onClick={() => selectExportRange("7d")}>最近7天</button><button className={exportRange === "month" ? "active" : ""} disabled={exporting} onClick={() => selectExportRange("month")}>最近30天</button><button className={exportRange === "custom" ? "active" : ""} disabled={exporting} onClick={() => selectExportRange("custom")}>自定义</button></div></div>{exportRange === "custom" ? <div className="chest-export-dates"><label>开始日期<input type="date" value={exportStartDay} disabled={exporting} max={exportEndDay || undefined} onChange={(event) => setExportStartDay(event.target.value)} /></label><span>至</span><label>结束日期<input type="date" value={exportEndDay} disabled={exporting} min={exportStartDay || undefined} onChange={(event) => setExportEndDay(event.target.value)} /></label></div> : null}<label>Boss 来源<select value={exportSourceId} disabled={exporting} onChange={(event) => setExportSourceId(event.target.value)}><option value="">全部来源</option>{builtInChestSources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}{exportSources.map((source) => <option key={source.sourceId} value={source.sourceId}>{source.sourceName}</option>)}</select></label>{exportRange === "day" ? <p className="field-note">统计日期：{exportEndDay || "暂无日期"}</p> : exportRange !== "custom" ? <p className="field-note">统计结束日期：{days[0]?.day || selectedDay || "暂无日期"}</p> : null}</div><footer><button className="button secondary" disabled={exporting} onClick={() => setShowExportModal(false)}>取消</button><button className="button primary" disabled={exporting || !exportEndDay || (exportRange === "custom" && (!exportStartDay || exportStartDay > exportEndDay))} onClick={exportReport}><Download size={16} />{exporting ? "导出中" : "开始导出"}</button></footer></section></div> : null}
-    {calibrationEvent ? <div className="chest-label-backdrop" role="dialog" aria-modal="true" aria-labelledby="chest-calibration-title"><section className="chest-label-modal chest-calibration-modal"><header><div><strong id="chest-calibration-title">开箱记录校准</strong><span>{String(calibrationEvent.before_saved_at ?? "")}，可修正归属、物品和数量。</span></div><button className="icon-button" title="关闭" onClick={() => setCalibrationEvent(null)}><X size={17} /></button></header><div className="chest-calibration-body"><div className="chest-calibration-metadata"><label>用户<select value={calibrationUserId} onChange={(event) => setCalibrationUserId(event.target.value)}>{users.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</select></label><label>Boss 来源<select value={calibrationSourceId} onChange={(event) => setCalibrationSourceId(event.target.value)}>{chestSources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}</select></label>{calibrationSourceId === "custom" ? <label>自定义来源<input autoComplete="off" value={calibrationCustomSourceName} placeholder="Boss 名称" onChange={(event) => setCalibrationCustomSourceName(event.target.value)} /></label> : null}</div><div className="chest-label-list">{calibrationItems.length ? calibrationItems.map((item, index) => { const slot = index + 1; const draft = calibrationNameDrafts[slot] ?? ""; const labeled = calibrationCatalogItems.some((catalogItem) => catalogItem.name === draft); return <div key={slot} className="chest-label-row chest-calibration-row"><img src={calibrationImages[slot] ?? ""} alt={draft || "物品"} /><div><strong>{draft || "待命名物品"}</strong><small>第 {slot} 个物品</small></div><select value={labeled ? draft : "__custom__"} onChange={(input) => selectCalibrationItem(slot, input.target.value)}><option value="__custom__">自定义名称</option>{calibrationCatalogItems.map((catalogItem) => <option key={catalogItem.itemId} value={catalogItem.name}>{catalogItem.name}</option>)}</select>{!labeled ? <input autoComplete="off" value={draft} placeholder="输入物品名称" onChange={(input) => { setCalibrationNameDrafts((current) => ({ ...current, [slot]: input.target.value })); setCalibrationImages((current) => ({ ...current, [slot]: null })); }} /> : <span className="chest-calibration-selected-name">已标记物品</span>}<input inputMode="numeric" pattern="[0-9]*" value={calibrationDrafts[slot] ?? ""} placeholder="数量" onChange={(input) => setCalibrationDrafts((current) => ({ ...current, [slot]: input.target.value.replace(/[^0-9]/g, "") }))} /><button className="icon-button danger" title={`删除第 ${slot} 个物品`} onClick={() => removeCalibrationItem(slot)}><Trash2 size={15} /></button></div>; }) : <p className="empty-note padded-note">该截图暂未识别出物品，请新增校准物品。</p>}<button className="button secondary calibration-add-item" onClick={addCalibrationItem}><Plus size={15} />新增物品</button></div></div><footer><span>可选择已标记物品，也可输入自定义名称；重新识别会按校准数量补扫。</span><button className="button secondary" onClick={() => setCalibrationEvent(null)}>取消</button><button className="button primary" disabled={savingCalibration} onClick={saveCalibration}>{savingCalibration ? "保存中" : "保存校准"}</button></footer></section></div> : null}
+    {calibrationEvent ? <div className="chest-label-backdrop" role="dialog" aria-modal="true" aria-labelledby="chest-calibration-title"><section className="chest-label-modal chest-calibration-modal"><header><div><strong id="chest-calibration-title">开箱记录校准</strong><span>{String(calibrationEvent.before_saved_at ?? "")}，可修正归属、物品和数量。</span></div><button className="icon-button" title="关闭" onClick={() => setCalibrationEvent(null)}><X size={17} /></button></header><div className="chest-calibration-body"><div className="chest-calibration-metadata"><label>用户<select value={calibrationUserId} onChange={(event) => selectCalibrationUser(event.target.value)}>{users.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</select></label><label>Boss 来源<select value={calibrationSourceId} onChange={(event) => selectCalibrationSource(event.target.value)}>{builtInChestSources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}{calibrationSources.map((source) => <option key={source.sourceId} value={source.sourceId}>{source.sourceName}</option>)}<option value="custom">自定义</option></select></label>{calibrationSourceId === "custom" ? <label>自定义来源<input autoComplete="off" value={calibrationCustomSourceName} placeholder="Boss 名称" onChange={(event) => setCalibrationCustomSourceName(event.target.value)} /></label> : null}</div><div className="chest-label-list">{calibrationItems.length ? calibrationItems.map((item, index) => { const slot = index + 1; const draft = calibrationNameDrafts[slot] ?? ""; const labeled = calibrationCatalogItems.some((catalogItem) => catalogItem.name === draft); return <div key={slot} className="chest-label-row chest-calibration-row"><img src={calibrationImages[slot] ?? ""} alt={draft || "物品"} /><div><strong>{draft || "待命名物品"}</strong><small>第 {slot} 个物品</small></div><select value={labeled ? draft : "__custom__"} onChange={(input) => selectCalibrationItem(slot, input.target.value)}><option value="__custom__">自定义名称</option>{calibrationCatalogItems.map((catalogItem) => <option key={catalogItem.itemId} value={catalogItem.name}>{catalogItem.name}</option>)}</select>{!labeled ? <input autoComplete="off" value={draft} placeholder="输入物品名称" onChange={(input) => { setCalibrationNameDrafts((current) => ({ ...current, [slot]: input.target.value })); setCalibrationImages((current) => ({ ...current, [slot]: null })); }} /> : <span className="chest-calibration-selected-name">已标记物品</span>}<input inputMode="numeric" pattern="[0-9]*" value={calibrationDrafts[slot] ?? ""} placeholder="数量" onChange={(input) => setCalibrationDrafts((current) => ({ ...current, [slot]: input.target.value.replace(/[^0-9]/g, "") }))} /><button className="icon-button danger" title={`删除第 ${slot} 个物品`} onClick={() => removeCalibrationItem(slot)}><Trash2 size={15} /></button></div>; }) : <p className="empty-note padded-note">该截图暂未识别出物品，请新增校准物品。</p>}<button className="button secondary calibration-add-item" onClick={addCalibrationItem}><Plus size={15} />新增物品</button></div></div><footer><span>可选择已保存来源，也可新增自定义来源；保存后会写入本次记录。</span><button className="button secondary" onClick={() => setCalibrationEvent(null)}>取消</button><button className="button primary" disabled={savingCalibration} onClick={saveCalibration}>{savingCalibration ? "保存中" : "保存校准"}</button></footer></section></div> : null}
   </div>;
 }
 

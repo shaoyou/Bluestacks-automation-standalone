@@ -852,12 +852,14 @@ def find_reward_slots_in_cropped_capture(
         first_start = round(source_height * 0.43)
         first_end = round(source_height * 0.49)
         row_pitch = round(source_height * 0.0807)
+        color_threshold = 0.50
     else:
         size = max(82, round(source_width * 0.136))
         original_lefts = [round(source_width * fraction) for fraction in (0.1085, 0.2737, 0.4388, 0.6041, 0.7690)]
         first_start = round(source_height * 0.40)
         first_end = round(source_height * 0.50)
         row_pitch = round(source_height * 0.0744)
+        color_threshold = 0.45
     lefts = [left - crop_left for left in original_lefts]
 
     def row_at(top: int) -> Tuple[int, float]:
@@ -876,7 +878,7 @@ def find_reward_slots_in_cropped_capture(
             # The dimmed scene behind the reward panel can be colorful enough
             # to pass a loose color test. Real tiles have both saturated
             # content and a continuous dark frame around all four edges.
-            if color_ratio < 0.45 or border_ratio < 0.15:
+            if color_ratio < color_threshold or border_ratio < 0.15:
                 break
             count += 1
             score += color_ratio + border_ratio
