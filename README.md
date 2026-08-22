@@ -96,8 +96,7 @@ swift run BSManagerApp
 ```
 
 输出目录：
-- `dist/BSManagerApp.app`（可双击运行）
-- `dist/BSManagerApp`（可执行文件）
+- `dist/BSManagerApp.dmg`
 
 ## 3.3 录制触摸并生成可循环脚本
 

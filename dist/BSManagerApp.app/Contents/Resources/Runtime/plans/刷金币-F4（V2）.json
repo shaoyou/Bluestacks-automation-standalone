@@ -1,0 +1,160 @@
+{
+  "actions" : [
+    {
+      "actions" : [
+        {
+          "remark" : "点击(311,1315)",
+          "type" : "click",
+          "x" : 311,
+          "y" : 1315
+        },
+        {
+          "remark" : "等待0.5秒",
+          "seconds" : 0.5,
+          "type" : "wait"
+        },
+        {
+          "remark" : "点击(647,723)",
+          "type" : "click",
+          "x" : 647,
+          "y" : 723
+        },
+        {
+          "remark" : "跨城，传送中...",
+          "seconds" : "$recall_time",
+          "type" : "wait"
+        },
+        {
+          "max_segment_ms" : 1000,
+          "min_segment_ms" : 1,
+          "mode" : "motion",
+          "points" : [
+            {
+              "t_ms" : 0,
+              "x" : 540,
+              "y" : 1720
+            },
+            {
+              "t_ms" : 100,
+              "x" : 437,
+              "y" : 1867
+            },
+            {
+              "t_ms" : 6200,
+              "x" : 437,
+              "y" : 1867
+            }
+          ],
+          "remark" : "向-125度移动6.2秒,目的地：粉矛+冰锤",
+          "type" : "trace"
+        },
+        {
+          "remark" : "等待6秒，打冰锤",
+          "seconds" : 6,
+          "type" : "wait"
+        },
+        {
+          "max_segment_ms" : 1000,
+          "min_segment_ms" : 1,
+          "mode" : "motion",
+          "points" : [
+            {
+              "t_ms" : 0,
+              "x" : 540,
+              "y" : 1720
+            },
+            {
+              "t_ms" : 100,
+              "x" : 478,
+              "y" : 1551
+            },
+            {
+              "t_ms" : 2500,
+              "x" : 478,
+              "y" : 1551
+            }
+          ],
+          "remark" : "向110度移动2.5秒",
+          "type" : "trace"
+        },
+        {
+          "remark" : "等待3秒",
+          "seconds" : 3,
+          "type" : "wait"
+        },
+        {
+          "max_segment_ms" : 1000,
+          "min_segment_ms" : 1,
+          "mode" : "motion",
+          "points" : [
+            {
+              "t_ms" : 0,
+              "x" : 540,
+              "y" : 1720
+            },
+            {
+              "t_ms" : 100,
+              "x" : 363,
+              "y" : 1751
+            },
+            {
+              "t_ms" : 1000,
+              "x" : 363,
+              "y" : 1751
+            }
+          ],
+          "remark" : "向-170度移动1秒",
+          "type" : "trace"
+        },
+        {
+          "remark" : "等待8秒,打2个boss",
+          "seconds" : 4,
+          "type" : "wait"
+        },
+        {
+          "remark" : "点击回城",
+          "type" : "click",
+          "x" : 989,
+          "y" : 1709
+        },
+        {
+          "seconds" : 1,
+          "type" : "wait"
+        },
+        {
+          "remark" : "点击(OK)",
+          "type" : "click",
+          "x" : 744,
+          "y" : 1123
+        },
+        {
+          "remark" : "跨城，传送中...",
+          "seconds" : "$recall_time",
+          "type" : "wait"
+        },
+        {
+          "remark" : "点击传送阵",
+          "type" : "click",
+          "x" : 649,
+          "y" : 831
+        },
+        {
+          "seconds" : 1.081,
+          "type" : "wait"
+        }
+      ],
+      "count" : -1,
+      "type" : "loop"
+    }
+  ],
+  "device" : "127.0.0.1:5555",
+  "jitter_px" : 3,
+  "max_runtime_sec" : 0,
+  "variables" : [
+    {
+      "name" : "recall_time",
+      "note" : "跨城传送时间",
+      "value" : "12"
+    }
+  ]
+}

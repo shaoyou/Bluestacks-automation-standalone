@@ -2,9 +2,6 @@ import { contextBridge, ipcRenderer } from "electron";
 
 contextBridge.exposeInMainWorld("bsManager", {
   runtimeState: () => ipcRenderer.invoke("runtime:state"),
-  environmentState: () => ipcRenderer.invoke("environment:state"),
-  environmentBootstrap: () => ipcRenderer.invoke("environment:bootstrap"),
-  environmentCancel: () => ipcRenderer.invoke("environment:cancel"),
   settingsGet: () => ipcRenderer.invoke("settings:get"),
   settingsSave: (settings: unknown) => ipcRenderer.invoke("settings:save", settings),
   updateState: () => ipcRenderer.invoke("update:state"),
@@ -60,10 +57,10 @@ contextBridge.exposeInMainWorld("bsManager", {
   chestImage: (filePath: string) => ipcRenderer.invoke("chest:image", filePath),
   chestOpenScreenshots: () => ipcRenderer.invoke("chest:open-screenshots"),
   historyMigrate: () => ipcRenderer.invoke("history:migrate"),
-  devicesList: (adbPath: string) => ipcRenderer.invoke("adb:list-devices", adbPath),
-  devicesForceRefresh: (adbPath: string) => ipcRenderer.invoke("adb:force-refresh-devices", adbPath),
-  adbRun: (adbPath: string, args: string[]) => ipcRenderer.invoke("adb:run", adbPath, args),
-  screenshot: (adbPath: string, device: string) => ipcRenderer.invoke("adb:screenshot", adbPath, device),
+  devicesList: (paths: unknown) => ipcRenderer.invoke("adb:list-devices", paths),
+  devicesForceRefresh: (paths: unknown) => ipcRenderer.invoke("adb:force-refresh-devices", paths),
+  adbRun: (paths: unknown, args: string[], backend?: "adb" | "hdc") => ipcRenderer.invoke("adb:run", paths, args, backend),
+  screenshot: (paths: unknown, device: string) => ipcRenderer.invoke("adb:screenshot", paths, device),
   openRunWindow: (initialPlan?: string) => ipcRenderer.invoke("run-window:open", initialPlan),
   openChestWindow: (initialPlan?: string, userId?: string, sourceId?: string, sourceName?: string) => ipcRenderer.invoke("chest:open-window", initialPlan, userId, sourceId, sourceName),
   startTask: (request: unknown) => ipcRenderer.invoke("task:start", request),
@@ -73,10 +70,15 @@ contextBridge.exposeInMainWorld("bsManager", {
     ipcRenderer.on("task:event", callback);
     return () => ipcRenderer.removeListener("task:event", callback);
   },
-  onEnvironmentEvent: (listener: (event: unknown) => void) => {
-    const callback = (_: Electron.IpcRendererEvent, event: unknown) => listener(event);
-    ipcRenderer.on("environment:event", callback);
-    return () => ipcRenderer.removeListener("environment:event", callback);
+  onDevicesEvent: (listener: (devices: unknown) => void) => {
+    const callback = (_: Electron.IpcRendererEvent, devices: unknown) => listener(devices);
+    ipcRenderer.on("devices:event", callback);
+    return () => ipcRenderer.removeListener("devices:event", callback);
+  },
+  onSettingsEvent: (listener: (settings: unknown) => void) => {
+    const callback = (_: Electron.IpcRendererEvent, settings: unknown) => listener(settings);
+    ipcRenderer.on("settings:event", callback);
+    return () => ipcRenderer.removeListener("settings:event", callback);
   },
   onUpdateEvent: (listener: (event: unknown) => void) => {
     const callback = (_: Electron.IpcRendererEvent, event: unknown) => listener(event);

@@ -96,7 +96,7 @@ export function DrawPage(props: SharedProps) {
   };
   const start = () => {
     if (!props.runtime || !plan) return props.setNotice("找不到 choukaka.json 计划");
-    const args = [`${props.runtime.root}/adb_bot.py`, "--plan", `${props.runtime.plansDir}/${plan}`, "--adb", props.settings.adbPath, "--user-id", userId];
+    const args = [`${props.runtime.root}/adb_bot.py`, "--plan", `${props.runtime.plansDir}/${plan}`, "--adb", props.settings.adbPath, "--hdc", props.settings.hdcPath, "--user-id", userId];
     if (device) args.push("--device", device);
     void props.startTask("draw", args);
   };

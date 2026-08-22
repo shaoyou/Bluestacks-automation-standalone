@@ -11,7 +11,6 @@ import random
 import re
 import shlex
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -39,6 +38,8 @@ class BotError(RuntimeError):
 @dataclass
 class RunContext:
     adb_path: str
+    hdc_path: str
+    device_backend: str
     device: Optional[str]
     user_id: str
     source_id: str
@@ -85,10 +86,6 @@ SCREENSHOT_ACTIVE_KEY = "_save_screenshot_active_pairs"
 
 
 def runtime_data_root() -> Path:
-    # PyInstaller one-file apps run from a temporary _MEI directory. On Windows 7,
-    # resolving that virtual path can fail, and diagnostics must outlive the process.
-    if getattr(sys, "frozen", False):
-        return Path.cwd()
     return Path(__file__).parent
 
 
@@ -122,6 +119,7 @@ DRAW_STATS_EVENTS_JSONL_SUFFIX = "_events.jsonl"
 DRAW_STATS_SUMMARY_SUFFIX = "_summary.json"
 DRAW_STATS_LATEST_SUMMARY = "latest_summary.json"
 DEFAULT_RED_LIGHT_DEBUG_DIR = RUNTIME_DATA_ROOT / "diagnostics" / "red_light_debug"
+HDC_DEVICE_SUFFIX = " [HarmonyOS/HDC]"
 DEFAULT_RED_LIGHT_REGIONS = [
     {"name": "left", "x": 110, "y": 300, "width": 250, "height": 760},
     {"name": "center", "x": 390, "y": 220, "width": 300, "height": 860},
@@ -354,8 +352,21 @@ def skip_magnifier_actions(actions: List[Any]) -> List[Any]:
         if not isinstance(action, dict):
             continue
         action_type = str(action.get("type", "")).strip().lower()
-        template = str(action.get("template", "")).replace("\\", "/").rsplit("/", 1)[-1]
-        if action_type == "if_image" and template == "bl_baoxiaoxing.png":
+        templates: List[str] = []
+        raw_template = action.get("template")
+        if isinstance(raw_template, str) and raw_template.strip():
+            templates.append(raw_template)
+        raw_templates = action.get("templates")
+        if isinstance(raw_templates, list):
+            templates.extend(item for item in raw_templates if isinstance(item, str) and item.strip())
+        normalized_templates = {
+            str(template).replace("\\", "/").rsplit("/", 1)[-1]
+            for template in templates
+        }
+        if action_type == "if_image" and (
+            "bl_baoxiaoxing.png" in normalized_templates
+            or "bl_baoxiaoxing_1080x1920.png" in normalized_templates
+        ):
             then_actions = action.get("then_actions")
             if isinstance(then_actions, list):
                 confirmation = next(
@@ -400,6 +411,43 @@ def run_cmd(cmd: List[str], check: bool = True) -> subprocess.CompletedProcess[s
     return subprocess.run(cmd, text=True, encoding="utf-8", errors="replace", capture_output=True, check=check)
 
 
+def split_device_backend(raw_device: Optional[str], preferred_backend: str = "auto") -> Tuple[str, Optional[str]]:
+    backend = preferred_backend if preferred_backend in {"adb", "hdc"} else "adb"
+    device = raw_device.strip() if isinstance(raw_device, str) and raw_device.strip() else None
+    if device and device.endswith(HDC_DEVICE_SUFFIX):
+        return "hdc", device[: -len(HDC_DEVICE_SUFFIX)].strip() or None
+    if device and device.startswith("hdc:"):
+        return "hdc", device[4:].strip() or None
+    return backend, device
+
+
+def build_backend_cmd(ctx: RunContext, extra: List[str]) -> List[str]:
+    if ctx.device_backend == "hdc":
+        cmd = [ctx.hdc_path]
+        if ctx.device:
+            cmd += ["-t", ctx.device]
+        cmd.extend(extra)
+        return cmd
+    return build_adb_cmd(ctx, extra)
+
+
+def hdc_ui_input_args(shell_args: List[str]) -> Optional[List[str]]:
+    if not shell_args or shell_args[0] != "input":
+        return None
+    if len(shell_args) >= 4 and shell_args[1] in {"tap", "click"}:
+        return ["uitest", "uiInput", "click", shell_args[2], shell_args[3]]
+    if len(shell_args) >= 6 and shell_args[1] == "swipe":
+        return ["uitest", "uiInput", "swipe", shell_args[2], shell_args[3], shell_args[4], shell_args[5], *(shell_args[6:7])]
+    if len(shell_args) >= 3 and shell_args[1] in {"keyevent", "key"}:
+        return ["uitest", "uiInput", "keyEvent", shell_args[2]]
+    if len(shell_args) >= 3 and shell_args[1] == "text":
+        return ["uitest", "uiInput", "text", *shell_args[2:]]
+    if len(shell_args) >= 2 and shell_args[1] in {"back", "home"}:
+        key = "Back" if shell_args[1] == "back" else "Home"
+        return ["uitest", "uiInput", "keyEvent", key]
+    return None
+
+
 def adb_output_is_transient(text: str) -> bool:
     lowered = text.lower()
     return any(
@@ -437,9 +485,18 @@ def build_adb_cmd(ctx: RunContext, extra: List[str]) -> List[str]:
 def adb_shell(ctx: RunContext, shell_args: List[str]) -> None:
     pretty = " ".join(shlex.quote(p) for p in shell_args)
     if ctx.dry_run:
-        log(f"[DRY-RUN] adb shell {pretty}")
+        log(f"[DRY-RUN] {ctx.device_backend} shell {pretty}")
         return
-    log(f"CMD adb shell {pretty}")
+    log(f"CMD {ctx.device_backend} shell {pretty}")
+    if ctx.device_backend == "hdc":
+        hdc_args = hdc_ui_input_args(shell_args)
+        if hdc_args is None:
+            raise BotError(f"HDC backend only supports simple input actions for now: {pretty}")
+        result = run_cmd(build_backend_cmd(ctx, ["shell"] + hdc_args), check=False)
+        if result.returncode != 0:
+            text = (result.stderr or result.stdout or "").strip()
+            raise BotError(f"HDC shell failed: hdc shell {' '.join(shlex.quote(p) for p in hdc_args)}\n{text}")
+        return
     cmd = build_adb_cmd(ctx, ["shell"] + shell_args)
     try:
         run_cmd(cmd)
@@ -482,6 +539,11 @@ def adb_shell(ctx: RunContext, shell_args: List[str]) -> None:
 def adb_shell_result(ctx: RunContext, shell_args: List[str]) -> subprocess.CompletedProcess[str]:
     if ctx.dry_run:
         return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+    if ctx.device_backend == "hdc":
+        hdc_args = hdc_ui_input_args(shell_args)
+        if hdc_args is None:
+            return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="unsupported hdc shell command")
+        return run_cmd(build_backend_cmd(ctx, ["shell"] + hdc_args), check=False)
     cmd = build_adb_cmd(ctx, ["shell"] + shell_args)
     return run_cmd(cmd, check=False)
 
@@ -489,6 +551,8 @@ def adb_shell_result(ctx: RunContext, shell_args: List[str]) -> subprocess.Compl
 def adb_exec_out_result(ctx: RunContext, extra: List[str]) -> subprocess.CompletedProcess[bytes]:
     if ctx.dry_run:
         return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"", stderr=b"")
+    if ctx.device_backend == "hdc":
+        return subprocess.CompletedProcess(args=[], returncode=1, stdout=b"", stderr=b"HDC screenshot is not supported in this runtime path.")
     cmd = build_adb_cmd(ctx, ["exec-out"] + extra)
     return subprocess.run(cmd, capture_output=True, check=False)
 
@@ -556,6 +620,9 @@ def clamp_device_region(raw_region: Dict[str, Any], image_size: Tuple[int, int],
 def supports_motionevent(ctx: RunContext) -> bool:
     if ctx.motionevent_supported is not None:
         return ctx.motionevent_supported
+    if ctx.device_backend == "hdc":
+        ctx.motionevent_supported = False
+        return False
     if ctx.dry_run:
         ctx.motionevent_supported = True
         return True
@@ -616,6 +683,52 @@ def tap_absolute(ctx: RunContext, x: int, y: int) -> Tuple[int, int]:
 def do_click_absolute(ctx: RunContext, x: int, y: int) -> None:
     x, y = tap_absolute(ctx, x, y)
     log(f"Click OCR target ({x}, {y})")
+
+
+def do_input(ctx: RunContext, action: Dict[str, Any]) -> None:
+    command = str(action.get("command") or action.get("name") or "").strip().lower()
+    raw_args = action.get("args", [])
+    if isinstance(raw_args, list):
+        input_args = [str(item) for item in raw_args]
+    elif raw_args in (None, ""):
+        input_args = []
+    else:
+        input_args = [str(raw_args)]
+
+    if command in {"tap", "click"}:
+        x = int(action.get("x", input_args[0] if len(input_args) > 0 else 0))
+        y = int(action.get("y", input_args[1] if len(input_args) > 1 else 0))
+        x, y = map_input_point(ctx, x, y)
+        x = apply_jitter(x, ctx.jitter)
+        y = apply_jitter(y, ctx.jitter)
+        adb_shell(ctx, ["input", "tap", str(x), str(y)])
+        log(with_action_remark(f"Input tap ({x}, {y})", action))
+        return
+
+    if command == "swipe":
+        do_swipe(ctx, action)
+        return
+
+    if command in {"keyevent", "key"}:
+        key = str(action.get("key") or (input_args[0] if input_args else "")).strip()
+        if not key:
+            raise BotError("input keyevent requires 'key' or args[0]")
+        adb_shell(ctx, ["input", "keyevent", key])
+        log(with_action_remark(f"Input keyevent {key}", action))
+        return
+
+    if command in {"back", "home"}:
+        adb_shell(ctx, ["input", command])
+        log(with_action_remark(f"Input {command}", action))
+        return
+
+    if command == "text":
+        text = str(action.get("text") or (input_args[0] if input_args else ""))
+        adb_shell(ctx, ["input", "text", text])
+        log(with_action_remark("Input text", action))
+        return
+
+    raise BotError("input action requires command: tap/click/swipe/keyevent/back/home/text")
 
 
 def do_click_match(ctx: RunContext, action: Dict[str, Any]) -> None:
@@ -3080,6 +3193,8 @@ def execute_action(ctx: RunContext, action: Dict[str, Any]) -> None:
         do_swipe(ctx, action)
     elif action_type == "trace":
         do_trace(ctx, action)
+    elif action_type == "input":
+        do_input(ctx, action)
     elif action_type == "log":
         do_log_action(action)
     elif action_type == "wait":
@@ -3138,6 +3253,13 @@ def _list_connected_devices(adb_path: str) -> List[str]:
     return [line.split()[0] for line in lines if "\tdevice" in line]
 
 
+def _list_hdc_devices(hdc_path: str) -> List[str]:
+    result = run_cmd([hdc_path, "list", "targets"], check=True)
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    skipped = ("[empty]", "empty", "list of targets")
+    return [line.split()[0] for line in lines if not line.lower().startswith(skipped)]
+
+
 def _is_device_shell_healthy(adb_path: str, device: str) -> bool:
     # Some BlueStacks builds are flaky on one-off shell probes; retry a few times.
     for _ in range(3):
@@ -3147,6 +3269,34 @@ def _is_device_shell_healthy(adb_path: str, device: str) -> bool:
             return True
         time.sleep(0.2)
     return False
+
+
+def _is_hdc_shell_healthy(hdc_path: str, device: str) -> bool:
+    result = run_cmd([hdc_path, "-t", device, "shell", "echo", "ok"], check=False)
+    output = f"{result.stdout}\n{result.stderr}".lower()
+    return result.returncode == 0 and "ok" in output
+
+
+def ensure_hdc_device_connected(hdc_path: str, device: Optional[str]) -> Optional[str]:
+    try:
+        connected = _list_hdc_devices(hdc_path)
+    except FileNotFoundError as exc:
+        raise BotError(f"hdc not found: {hdc_path}") from exc
+
+    if device is None:
+        if not connected:
+            raise BotError("No connected HarmonyOS/HDC device found. Check hdc list targets.")
+        for target in connected:
+            if _is_hdc_shell_healthy(hdc_path, target):
+                log(f"Use HarmonyOS/HDC device: {target}")
+                return target
+        raise BotError("All connected HDC devices are unhealthy for hdc shell.")
+
+    if device not in connected:
+        raise BotError(f"Unable to find HarmonyOS/HDC device {device}. Check hdc list targets.")
+    if _is_hdc_shell_healthy(hdc_path, device):
+        return device
+    raise BotError(f"HarmonyOS/HDC device shell unhealthy: {device}")
 
 
 def ensure_device_connected(adb_path: str, device: Optional[str]) -> Optional[str]:
@@ -3228,9 +3378,9 @@ def get_device_screen_size(adb_path: str, device: Optional[str]) -> Tuple[int, i
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="BlueStacks ADB automation bot")
+    parser = argparse.ArgumentParser(description="BlueStacks/HarmonyOS automation bot")
     parser.add_argument("--plan", required=True, help="Path to plan JSON file")
-    parser.add_argument("--device", help="ADB device serial, e.g. 127.0.0.1:5555")
+    parser.add_argument("--device", help="Device serial/target, e.g. 127.0.0.1:5555 or HarmonyOS target with HDC suffix")
     parser.add_argument("--user-id", default="default", help="Chest user identifier")
     parser.add_argument("--source-id", default="", help="Chest source identifier")
     parser.add_argument("--source-name", default="", help="Chest source display name")
@@ -3247,6 +3397,8 @@ def main() -> int:
         help="Immediately save the current chest item list without image matching or taps",
     )
     parser.add_argument("--adb", default="adb", help="ADB binary path")
+    parser.add_argument("--hdc", default="hdc", help="HDC binary path for HarmonyOS devices")
+    parser.add_argument("--device-backend", choices=["auto", "adb", "hdc"], default="auto", help="Device backend")
     parser.add_argument("--dry-run", action="store_true", help="Print actions without executing")
     parser.add_argument("--max-runtime-sec", type=int, default=0, help="Stop after N seconds (0 means unlimited)")
     args = parser.parse_args()
@@ -3256,7 +3408,8 @@ def main() -> int:
     default_device = plan.get("device")
     cli_device = args.device.strip() if isinstance(args.device, str) else None
     plan_device = default_device.strip() if isinstance(default_device, str) else default_device
-    device = cli_device or plan_device or None
+    raw_device = cli_device or plan_device or None
+    device_backend, device = split_device_backend(raw_device, args.device_backend)
     jitter = int(plan.get("jitter_px", 0))
     trace_time_scale = float(plan.get("trace_time_scale", 1.0))
     runtime_limit = args.max_runtime_sec or int(plan.get("max_runtime_sec", 0))
@@ -3273,15 +3426,22 @@ def main() -> int:
     dst_screen_h = -1
 
     if not args.dry_run:
-        device = ensure_device_connected(args.adb, device)
-        dst_screen_w, dst_screen_h = get_device_screen_size(args.adb, device)
-        if not has_screen_cfg:
-            src_screen_w, src_screen_h = DEFAULT_SCREEN_WIDTH, DEFAULT_SCREEN_HEIGHT
+        if device_backend == "hdc":
+            device = ensure_hdc_device_connected(args.hdc, device)
+            dst_screen_w, dst_screen_h = src_screen_w, src_screen_h
+            log("HarmonyOS/HDC backend enabled; screenshot/image actions are not supported in this mode.")
+        else:
+            device = ensure_device_connected(args.adb, device)
+            dst_screen_w, dst_screen_h = get_device_screen_size(args.adb, device)
+            if not has_screen_cfg:
+                src_screen_w, src_screen_h = DEFAULT_SCREEN_WIDTH, DEFAULT_SCREEN_HEIGHT
     elif not has_screen_cfg:
         dst_screen_w, dst_screen_h = DEFAULT_SCREEN_WIDTH, DEFAULT_SCREEN_HEIGHT
 
     ctx = RunContext(
         adb_path=args.adb,
+        hdc_path=args.hdc,
+        device_backend=device_backend,
         device=device,
         user_id=str(args.user_id or "default"),
         source_id=str(args.source_id or ""),
@@ -3313,6 +3473,7 @@ def main() -> int:
         log("Temporary override enabled: save current chest items immediately")
 
     log("Bot start")
+    log(f"Device backend={ctx.device_backend} device={ctx.device or 'default'}")
     log(f"Config jitter_px={ctx.jitter}")
     log(f"Config trace_time_scale={ctx.trace_time_scale}")
     log(f"Screen scale {ctx.src_screen_w}x{ctx.src_screen_h} -> {ctx.dst_screen_w}x{ctx.dst_screen_h}")

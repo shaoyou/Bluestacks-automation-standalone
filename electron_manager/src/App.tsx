@@ -9,9 +9,9 @@ import {
   Radio,
   Settings2,
 } from "lucide-react";
-import type { AppSettings, EnvironmentState, LicenseStatus, TaskEvent, UpdateState } from "./types";
+import type { AppSettings, LicenseStatus, TaskEvent, UpdateState } from "./types";
 import { appendPlanAction, type Page, type PickedCoordinate, type SharedProps } from "./app/shared";
-import { EnvironmentSetup, LicenseActivationDialog } from "./components/layout";
+import { LicenseActivationDialog } from "./components/layout";
 import { ScriptsPage, RunnerPage } from "./pages/ScriptsRunnerPage";
 import { CalibrationPage, DiagnosticsPage, RecorderPage, SettingsPage } from "./pages/DevicePages";
 import { DrawPage } from "./pages/DrawPage";
@@ -28,7 +28,7 @@ const navItems: { id: Page; label: string; icon: typeof Code2 }[] = [
   { id: "settings", label: "设置", icon: Settings2 },
 ];
 
-const defaultSettings: AppSettings = { adbPath: "adb", pythonPath: "python3", language: "zh" };
+const defaultSettings: AppSettings = { adbPath: "adb", hdcPath: "hdc", pythonPath: "python3", language: "zh" };
 
 function logTime() {
   return new Date().toLocaleTimeString("zh-CN", { hour12: false });
@@ -53,36 +53,31 @@ export function App() {
   const [running, setRunning] = useState<Record<string, boolean>>({});
   const [pickedCoordinates, setPickedCoordinates] = useState<PickedCoordinate[]>([]);
   const [devices, setDevices] = useState<string[]>([]);
-  const [environment, setEnvironment] = useState<EnvironmentState | null>(null);
   const [license, setLicense] = useState<LicenseStatus | null>(null);
   const [activationOpen, setActivationOpen] = useState(false);
   const [activationError, setActivationError] = useState("");
   const [update, setUpdate] = useState<UpdateState | null>(null);
 
-  const bootstrapEnvironment = async () => {
-    setEnvironment((current) => current ? { ...current, phase: "running", progress: 0, message: "正在准备运行环境" } : current);
-    const result = await window.bsManager.environmentBootstrap();
-    setEnvironment(result);
-  };
-
   const refreshDevices = async () => {
     try {
-      const found = await window.bsManager.devicesList(settings.adbPath);
+      const found = await window.bsManager.devicesList({ adbPath: settings.adbPath, hdcPath: settings.hdcPath });
       setDevices(found);
-      setNotice(found.length ? `已发现 ${found.length} 个 ADB 设备` : "未发现可用 ADB 设备");
+      setNotice(found.length ? `已发现 ${found.length} 个设备` : "未发现可用设备");
     } catch (error) {
       setDevices([]);
-      setNotice(`ADB 连接失败: ${String(error)}`);
+      setNotice(`设备连接失败: ${String(error)}`);
     }
   };
-  const forceRefreshDevices = async () => {
+  const forceRefreshDevices = async (silent = false) => {
     try {
-      const found = await window.bsManager.devicesForceRefresh(settings.adbPath);
+      const found = await window.bsManager.devicesForceRefresh({ adbPath: settings.adbPath, hdcPath: settings.hdcPath });
       setDevices(found);
-      setNotice(found.length ? `ADB 已强制重启，发现 ${found.length} 个设备` : "ADB 已强制重启，未发现可用设备");
+      if (!silent) setNotice(found.length ? `已刷新调试工具，发现 ${found.length} 个设备` : "已刷新调试工具，未发现可用设备");
+      return found;
     } catch (error) {
       setDevices([]);
-      setNotice(`ADB 强制刷新失败: ${String(error)}`);
+      if (!silent) setNotice(`设备强制刷新失败: ${String(error)}`);
+      return [];
     }
   };
 
@@ -102,23 +97,20 @@ export function App() {
   useEffect(() => {
     void (async () => {
       try {
-        const [state, savedSettings, names, environmentState, licenseState, updateState] = await Promise.all([
+        const [state, savedSettings, names, licenseState, updateState] = await Promise.all([
           window.bsManager.runtimeState(),
           window.bsManager.settingsGet(),
           window.bsManager.plansList(),
-          window.bsManager.environmentState(),
           window.bsManager.licenseGet(),
           window.bsManager.updateState(),
         ]);
         setRuntime(state);
         setSettings(savedSettings);
         setPlans(names);
-        setEnvironment(environmentState);
         setLicense(licenseState);
         setUpdate(updateState);
         if (names[0]) await loadPlan(names[0]);
         setNotice("运行环境已就绪");
-        if (environmentState.required && !environmentState.ready) void bootstrapEnvironment();
       } catch (error) {
         setNotice(`启动失败: ${String(error)}`);
       }
@@ -156,14 +148,15 @@ export function App() {
         }
       }
     });
-    const removeEnvironmentListener = window.bsManager.onEnvironmentEvent((event: EnvironmentState) => setEnvironment(event));
+    const removeDevicesListener = window.bsManager.onDevicesEvent((nextDevices: string[]) => setDevices(nextDevices));
+    const removeSettingsListener = window.bsManager.onSettingsEvent((nextSettings: AppSettings) => setSettings(nextSettings));
     const removeUpdateListener = window.bsManager.onUpdateEvent((event: UpdateState) => setUpdate(event));
-    return () => { removeTaskListener(); removeEnvironmentListener(); removeUpdateListener(); };
+    return () => { removeTaskListener(); removeDevicesListener(); removeSettingsListener(); removeUpdateListener(); };
   }, []);
 
   useEffect(() => {
     if (runtime) void refreshDevices();
-  }, [runtime, settings.adbPath]);
+  }, [runtime, settings.adbPath, settings.hdcPath]);
 
   const selectPage = (nextPage: Page) => {
     setPage(nextPage);
@@ -308,10 +301,6 @@ export function App() {
     refreshDevices,
     forceRefreshDevices,
   };
-
-  if (!environment || (environment.required && !environment.ready)) {
-    return <EnvironmentSetup state={environment} onRetry={() => void bootstrapEnvironment()} onCancel={() => void window.bsManager.environmentCancel()} />;
-  }
 
   if (windowMode === "runner") {
     return <main className="runner-window-shell"><RunnerPage {...context} runnerId={runnerId} initialPlan={initialRunnerPlan} standalone /></main>;

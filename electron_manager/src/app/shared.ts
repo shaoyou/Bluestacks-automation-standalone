@@ -38,7 +38,7 @@ export type SharedProps = {
   clearTaskLog: (id: string) => void;
   devices: string[];
   refreshDevices: () => Promise<void>;
-  forceRefreshDevices: () => Promise<void>;
+  forceRefreshDevices: (silent?: boolean) => Promise<string[]>;
   chestTaskId?: string;
   chestUserId?: string;
   chestSourceId?: string;

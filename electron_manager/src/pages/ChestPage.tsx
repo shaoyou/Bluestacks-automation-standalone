@@ -507,7 +507,7 @@ export function ChestPage(props: SharedProps) {
       }
       const activeSource = await syncActiveSource();
       if (!activeSource) return;
-      const args = [`${props.runtime.root}/adb_bot.py`, "--plan", `${props.runtime.plansDir}/${plan}`, "--adb", props.settings.adbPath];
+      const args = [`${props.runtime.root}/adb_bot.py`, "--plan", `${props.runtime.plansDir}/${plan}`, "--adb", props.settings.adbPath, "--hdc", props.settings.hdcPath];
       if (device) args.push("--device", device);
       args.push("--user-id", userId, "--source-id", source.id, "--source-name", source.name, "--source-file", activeSource.sourceFile);
       if (runMode === "skip_magnifier") args.push("--skip-magnifier");

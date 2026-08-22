@@ -1,5 +1,6 @@
 export type AppSettings = {
   adbPath: string;
+  hdcPath: string;
   pythonPath: string;
   language: "zh" | "en";
 };
@@ -18,15 +19,6 @@ export type TaskRequest = {
   kind: TaskKind;
   args: string[];
   cwd?: string;
-};
-
-export type EnvironmentState = {
-  required: boolean;
-  ready: boolean;
-  phase: "ready" | "required" | "running" | "cancelled" | "failed";
-  progress: number;
-  message: string;
-  error?: string;
 };
 
 export type LicenseStatus = {
@@ -52,9 +44,6 @@ declare global {
   interface Window {
     bsManager: {
       runtimeState(): Promise<{ root: string; plansDir: string; templatesDir: string }>;
-      environmentState(): Promise<EnvironmentState>;
-      environmentBootstrap(): Promise<EnvironmentState>;
-      environmentCancel(): Promise<void>;
       settingsGet(): Promise<AppSettings>;
       settingsSave(settings: AppSettings): Promise<AppSettings>;
       updateState(): Promise<UpdateState>;
@@ -110,16 +99,17 @@ declare global {
       chestImage(filePath: string): Promise<string | null>;
       chestOpenScreenshots(): Promise<void>;
       historyMigrate(): Promise<Record<string, unknown>>;
-      devicesList(adbPath: string): Promise<string[]>;
-      devicesForceRefresh(adbPath: string): Promise<string[]>;
-      adbRun(adbPath: string, args: string[]): Promise<{ code: number; text: string }>;
-      screenshot(adbPath: string, device: string): Promise<string>;
+      devicesList(paths: { adbPath: string; hdcPath: string }): Promise<string[]>;
+      devicesForceRefresh(paths: { adbPath: string; hdcPath: string }): Promise<string[]>;
+      adbRun(paths: { adbPath: string; hdcPath: string }, args: string[], backend?: "adb" | "hdc"): Promise<{ code: number; text: string }>;
+      screenshot(paths: { adbPath: string; hdcPath: string }, device: string): Promise<string>;
       openRunWindow(initialPlan?: string): Promise<void>;
       openChestWindow(initialPlan?: string, userId?: string, sourceId?: string, sourceName?: string): Promise<void>;
       startTask(request: TaskRequest): Promise<void>;
       stopTask(id: string): Promise<void>;
       onTaskEvent(listener: (event: TaskEvent) => void): () => void;
-      onEnvironmentEvent(listener: (event: EnvironmentState) => void): () => void;
+      onDevicesEvent(listener: (devices: string[]) => void): () => void;
+      onSettingsEvent(listener: (settings: AppSettings) => void): () => void;
       onUpdateEvent(listener: (event: UpdateState) => void): () => void;
     };
   }

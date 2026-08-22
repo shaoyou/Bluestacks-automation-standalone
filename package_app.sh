@@ -12,8 +12,7 @@ APP_BUNDLE="$DIST_DIR/${APP_NAME}.app"
 APP_EXEC="$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 BUNDLE_RUNTIME_DIR="$APP_BUNDLE/Contents/Resources/Runtime"
 RELEASE_BIN="$SWIFT_DIR/.build/release/$APP_NAME"
-STANDALONE_BIN="$DIST_DIR/$APP_NAME"
-STANDALONE_RUNTIME_DIR="$DIST_DIR/runtime"
+DMG_FILE="$DIST_DIR/${APP_NAME}.dmg"
 
 if ! command -v swift >/dev/null 2>&1; then
   echo "ERROR: swift not found. Please install Xcode Command Line Tools."
@@ -50,6 +49,7 @@ fi
 echo "[2/5] Preparing dist folder..."
 mkdir -p "$DIST_DIR"
 rm -rf "$APP_BUNDLE"
+rm -f "$DMG_FILE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
 
 echo "[3/5] Creating .app bundle..."
@@ -85,14 +85,10 @@ PLIST
 
 echo "[4/5] Bundling runtime resources..."
 copy_runtime_tree "$BUNDLE_RUNTIME_DIR"
-copy_runtime_tree "$STANDALONE_RUNTIME_DIR"
 
-echo "[5/5] Exporting standalone executable..."
-cp "$RELEASE_BIN" "$STANDALONE_BIN"
-chmod +x "$STANDALONE_BIN"
+echo "[5/5] Creating DMG package..."
+hdiutil create -volname "$APP_NAME" -srcfolder "$APP_BUNDLE" -ov -format UDZO "$DMG_FILE"
 
 echo ""
 echo "Done."
-echo "App bundle: $APP_BUNDLE"
-echo "Executable: $STANDALONE_BIN"
-echo "Run app: open \"$APP_BUNDLE\""
+echo "DMG package: $DMG_FILE"

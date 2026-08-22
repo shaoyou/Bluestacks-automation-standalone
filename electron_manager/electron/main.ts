@@ -3,7 +3,6 @@ import electronUpdater from "electron-updater";
 import { ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, copyFileSync, renameSync, writeFileSync, unlinkSync } from "node:fs";
-import { copyFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +12,7 @@ const { autoUpdater } = electronUpdater;
 
 type Settings = {
   adbPath: string;
+  hdcPath: string;
   pythonPath: string;
   language: "zh" | "en";
 };
@@ -22,15 +22,6 @@ type TaskRequest = {
   kind: "runner" | "draw" | "chest" | "recorder" | "clickPicker" | "diagnostic";
   args: string[];
   cwd?: string;
-};
-
-type EnvironmentState = {
-  required: boolean;
-  ready: boolean;
-  phase: "ready" | "required" | "running" | "cancelled" | "failed";
-  progress: number;
-  message: string;
-  error?: string;
 };
 
 type UpdateState = {
@@ -50,29 +41,18 @@ const taskOwners = new Map<string, number>();
 const runnerWindows = new Set<number>();
 let mainWindow: BrowserWindow | null = null;
 let isQuitting = false;
-let bootstrapCancelled = false;
-let bootstrapRunning = false;
-const isLegacyWindowsBuild = process.platform === "win32" && app.getName().includes("Win7");
 const supportsAutoUpdatePlatform = process.platform === "win32" || process.platform === "darwin";
 let updateState: UpdateState = {
   currentVersion: app.getVersion(),
-  supported: app.isPackaged && supportsAutoUpdatePlatform && !isLegacyWindowsBuild,
-  phase: app.isPackaged && supportsAutoUpdatePlatform && !isLegacyWindowsBuild ? "idle" : "unsupported",
+  supported: app.isPackaged && supportsAutoUpdatePlatform,
+  phase: app.isPackaged && supportsAutoUpdatePlatform ? "idle" : "unsupported",
   message: app.isPackaged
-    ? isLegacyWindowsBuild
-      ? "Windows 7 兼容版暂不支持自动更新"
-      : supportsAutoUpdatePlatform
-        ? "尚未检查更新"
-        : "当前平台暂不支持自动更新"
+    ? supportsAutoUpdatePlatform
+      ? "尚未检查更新"
+      : "当前平台暂不支持自动更新"
     : "开发环境不检查更新",
 };
-const WINDOWS_RUNTIME_VERSION = "5";
-const RUNTIME_RESOURCE_MIGRATION_VERSION = 23;
-const RUNTIME_RESOURCE_MIGRATION_FILES = [
-  path.join("plans", "choukaka.json"),
-  path.join("plans", "开宝箱截图.json"),
-  path.join("image_templates", "role_done.png"),
-];
+const HDC_DEVICE_SUFFIX = " [HarmonyOS/HDC]";
 
 function bundledRuntimeRoot(): string {
   return isDevelopment
@@ -84,12 +64,6 @@ function bundledPlansRoot(): string {
   return isDevelopment
     ? path.resolve(thisDir, "../default_plans")
     : path.join(bundledRuntimeRoot(), "plans");
-}
-
-function bundledResourcePath(relativePath: string): string {
-  const parts = relativePath.split(path.sep);
-  if (parts[0] === "plans") return path.join(bundledPlansRoot(), ...parts.slice(1));
-  return path.join(bundledRuntimeRoot(), relativePath);
 }
 
 function copyMissingResources(sourceDir: string, targetDir: string) {
@@ -104,26 +78,6 @@ function copyMissingResources(sourceDir: string, targetDir: string) {
       copyFileSync(source, target);
     }
   }
-}
-
-function applyRuntimeResourceMigration(targetRoot: string) {
-  const marker = path.join(targetRoot, ".bundled-resource-migration-version");
-  let appliedVersion = 0;
-  try {
-    appliedVersion = Number.parseInt(readFileSync(marker, "utf8"), 10) || 0;
-  } catch {
-    // A missing marker means this installation predates the targeted migration.
-  }
-  if (appliedVersion >= RUNTIME_RESOURCE_MIGRATION_VERSION) return;
-
-  for (const relativePath of RUNTIME_RESOURCE_MIGRATION_FILES) {
-    const source = bundledResourcePath(relativePath);
-    const target = path.join(targetRoot, relativePath);
-    if (!existsSync(source)) continue;
-    mkdirSync(path.dirname(target), { recursive: true });
-    copyFileAtomic(source, target);
-  }
-  writeFileSync(marker, String(RUNTIME_RESOURCE_MIGRATION_VERSION), "utf8");
 }
 
 function copyFileAtomic(source: string, target: string) {
@@ -146,54 +100,28 @@ function runtimeRoot(): string {
     const targetDir = path.join(target, dir);
     copyMissingResources(sourceDir, targetDir);
   }
-  applyRuntimeResourceMigration(target);
   for (const dir of ["diagnostics", "recording_profiles"]) {
     mkdirSync(path.join(target, dir), { recursive: true });
   }
   return target;
 }
 
-function requiresWindowsBootstrap() {
-  return process.platform === "win32" && app.isPackaged;
-}
-
-function bundledWindowsToolsRoot() {
-  return path.join(bundledRuntimeRoot(), "windows", "x64");
-}
-
-function installedWindowsToolsRoot() {
-  return path.join(runtimeRoot(), "windows", "x64");
-}
-
-function windowsToolFiles() {
-  return ["adb_bot.exe", "record_touch.exe", "adb.exe", "AdbWinApi.dll", "AdbWinUsbApi.dll"];
-}
-
-function environmentState(): EnvironmentState {
-  if (!requiresWindowsBootstrap()) {
-    return { required: false, ready: true, phase: "ready", progress: 100, message: "当前平台使用已配置的运行环境" };
-  }
-  if (bootstrapRunning) return { required: true, ready: false, phase: "running", progress: 0, message: "正在准备 Windows 运行环境" };
-  const root = installedWindowsToolsRoot();
-  const marker = path.join(root, ".runtime-version");
-  const complete = windowsToolFiles().every((file) => existsSync(path.join(root, file)));
-  const version = existsSync(marker) ? readFileSync(marker, "utf8").trim() : "";
-  if (complete && version === WINDOWS_RUNTIME_VERSION) {
-    return { required: true, ready: true, phase: "ready", progress: 100, message: "内置自动化环境已就绪" };
-  }
-  return { required: true, ready: false, phase: "required", progress: 0, message: "需要准备内置自动化环境" };
-}
-
-function sendEnvironmentEvent(state: EnvironmentState) {
-  for (const window of BrowserWindow.getAllWindows()) {
-    window.webContents.send("environment:event", state);
-  }
-}
-
 function sendUpdateEvent(state: UpdateState) {
   updateState = state;
   for (const window of BrowserWindow.getAllWindows()) {
     window.webContents.send("update:event", state);
+  }
+}
+
+function sendSettingsEvent(settings: Settings) {
+  for (const window of BrowserWindow.getAllWindows()) {
+    window.webContents.send("settings:event", settings);
+  }
+}
+
+function sendDevicesEvent(devices: string[]) {
+  for (const window of BrowserWindow.getAllWindows()) {
+    window.webContents.send("devices:event", devices);
   }
 }
 
@@ -262,104 +190,11 @@ async function downloadUpdate() {
   return updateState;
 }
 
-function allFiles(directory: string, base = directory): string[] {
-  if (!existsSync(directory)) return [];
-  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-    const source = path.join(directory, entry.name);
-    return entry.isDirectory() ? allFiles(source, base) : entry.isFile() ? [path.relative(base, source)] : [];
-  });
-}
-
-function waitForWindowsFileRelease(milliseconds: number) {
-  return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
-}
-
-async function deployStagedWindowsTools(stagingRoot: string, targetRoot: string, files: string[]) {
-  const existingAdb = path.join(targetRoot, "adb.exe");
-  if (existsSync(existingAdb)) {
-    // An old adb server can keep its executable and DLLs locked on Windows 7.
-    await runCommand(existingAdb, ["kill-server"]);
-    await waitForWindowsFileRelease(300);
-  }
-
-  for (let index = 0; index < files.length; index += 1) {
-    const relative = files[index];
-    const source = path.join(stagingRoot, relative);
-    const target = path.join(targetRoot, relative);
-    mkdirSync(path.dirname(target), { recursive: true });
-
-    let lastError: unknown;
-    for (let attempt = 0; attempt < 6; attempt += 1) {
-      try {
-        await copyFile(source, target);
-        lastError = undefined;
-        break;
-      } catch (error) {
-        lastError = error;
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES") break;
-        await waitForWindowsFileRelease(250 * (attempt + 1));
-      }
-    }
-    if (lastError) throw new Error(`无法更新内置组件 ${relative}: ${String(lastError)}`);
-    sendEnvironmentEvent({ required: true, ready: false, phase: "running", progress: 90 + Math.round((index + 1) / files.length * 8), message: `正在更新 ${relative}` });
-  }
-}
-
-async function bootstrapWindowsEnvironment(): Promise<EnvironmentState> {
-  if (!requiresWindowsBootstrap()) return environmentState();
-  if (bootstrapRunning) throw new Error("环境初始化正在进行");
-  bootstrapRunning = true;
-  bootstrapCancelled = false;
-  try {
-    const sourceRoot = bundledWindowsToolsRoot();
-    const files = allFiles(sourceRoot);
-    const missing = windowsToolFiles().filter((file) => !files.includes(file));
-    if (missing.length) throw new Error(`安装包缺少内置组件: ${missing.join(", ")}`);
-    const targetRoot = installedWindowsToolsRoot();
-    const stagingRoot = `${targetRoot}.staging`;
-    rmSync(stagingRoot, { recursive: true, force: true });
-    for (let index = 0; index < files.length; index += 1) {
-      if (bootstrapCancelled) {
-        rmSync(stagingRoot, { recursive: true, force: true });
-        return { required: true, ready: false, phase: "cancelled", progress: 0, message: "已取消环境准备" };
-      }
-      const relative = files[index];
-      const source = path.join(sourceRoot, relative);
-      const target = path.join(stagingRoot, relative);
-      mkdirSync(path.dirname(target), { recursive: true });
-      await copyFile(source, target);
-      sendEnvironmentEvent({ required: true, ready: false, phase: "running", progress: Math.round((index + 1) / files.length * 80), message: `正在部署 ${relative}` });
-    }
-    writeFileSync(path.join(stagingRoot, ".runtime-version"), WINDOWS_RUNTIME_VERSION, "utf8");
-    sendEnvironmentEvent({ required: true, ready: false, phase: "running", progress: 90, message: "正在验证 ADB 工具" });
-    const check = await runCommand(path.join(stagingRoot, "adb.exe"), ["version"]);
-    if (check.code !== 0) throw new Error(check.text || "adb version 执行失败");
-    if (bootstrapCancelled) {
-      rmSync(stagingRoot, { recursive: true, force: true });
-      return { required: true, ready: false, phase: "cancelled", progress: 0, message: "已取消环境准备" };
-    }
-    await deployStagedWindowsTools(stagingRoot, targetRoot, files);
-    writeFileSync(path.join(targetRoot, ".runtime-version"), WINDOWS_RUNTIME_VERSION, "utf8");
-    rmSync(stagingRoot, { recursive: true, force: true });
-    bootstrapRunning = false;
-    const ready = environmentState();
-    sendEnvironmentEvent(ready);
-    return ready;
-  } catch (error) {
-    rmSync(`${installedWindowsToolsRoot()}.staging`, { recursive: true, force: true });
-    const failed: EnvironmentState = { required: true, ready: false, phase: "failed", progress: 0, message: "环境准备失败", error: String(error) };
-    sendEnvironmentEvent(failed);
-    return failed;
-  } finally {
-    bootstrapRunning = false;
-  }
-}
-
 function getSettings(): Settings {
   const settingsFile = path.join(app.getPath("userData"), "settings.json");
   const defaults: Settings = {
     adbPath: process.platform === "win32" ? "adb.exe" : "adb",
+    hdcPath: process.platform === "win32" ? "hdc.exe" : "hdc",
     pythonPath: process.platform === "win32" ? "python.exe" : "python3",
     language: "zh",
   };
@@ -372,9 +207,6 @@ function getSettings(): Settings {
 
 function runtimeEnvironment(): NodeJS.ProcessEnv {
   const environment = { ...process.env };
-  if (requiresWindowsBootstrap()) {
-    environment.PATH = [installedWindowsToolsRoot(), environment.PATH ?? ""].filter(Boolean).join(path.delimiter);
-  }
   if (process.platform !== "win32") {
     const extraPaths = [
       "/opt/homebrew/bin",
@@ -418,22 +250,21 @@ function resolveExecutable(rawPath: string, fallback: string): string {
 }
 
 function resolveAdbExecutable(rawPath: string): string {
-  const requested = (rawPath || "").trim();
-  if (requiresWindowsBootstrap() && (!requested || requested === "adb" || requested === "adb.exe")) {
-    const bundled = path.join(installedWindowsToolsRoot(), "adb.exe");
-    if (!existsSync(bundled)) throw new Error(`内置 ADB 不存在: ${bundled}`);
-    return bundled;
-  }
-  return resolveExecutable(requested, process.platform === "win32" ? "adb.exe" : "adb");
+  return resolveExecutable((rawPath || "").trim(), process.platform === "win32" ? "adb.exe" : "adb");
+}
+
+function resolveHdcExecutable(rawPath: string): string {
+  return resolveExecutable((rawPath || "").trim(), process.platform === "win32" ? "hdc.exe" : "hdc");
 }
 
 function saveSettings(settings: Settings): Settings {
+  const normalized = { ...getSettings(), ...settings };
   writeFileSync(
     path.join(app.getPath("userData"), "settings.json"),
-    JSON.stringify(settings, null, 2),
+    JSON.stringify(normalized, null, 2),
     "utf8",
   );
-  return settings;
+  return normalized;
 }
 
 function safePlanPath(name: string): string {
@@ -464,16 +295,8 @@ function spawnTask(request: TaskRequest, ownerWebContentsId?: number) {
   if (tasks.has(request.id)) throw new Error("Task is already running");
   if (request.kind === "runner") assertRunnerCapacity();
   const settings = getSettings();
-  const windowsEnvironment = environmentState();
-  if (windowsEnvironment.required && !windowsEnvironment.ready) throw new Error("Windows 运行环境尚未准备完成");
-  const scriptName = path.basename(request.args[0] ?? "");
-  const bundledExecutable = requiresWindowsBootstrap() && scriptName === "adb_bot.py"
-    ? path.join(installedWindowsToolsRoot(), "adb_bot.exe")
-    : requiresWindowsBootstrap() && scriptName === "record_touch.py"
-      ? path.join(installedWindowsToolsRoot(), "record_touch.exe")
-      : "";
-  const executable = bundledExecutable || resolveExecutable(settings.pythonPath, process.platform === "win32" ? "python.exe" : "python3");
-  const args = bundledExecutable ? request.args.slice(1) : ["-u", ...request.args];
+  const executable = resolveExecutable(settings.pythonPath, process.platform === "win32" ? "python.exe" : "python3");
+  const args = ["-u", ...request.args];
   const task = spawn(executable, args, {
     cwd: request.cwd ?? runtimeRoot(),
     env: {
@@ -504,11 +327,24 @@ function spawnTask(request: TaskRequest, ownerWebContentsId?: number) {
   });
 }
 
-async function runCommand(command: string, args: string[]) {
+function commandToolPaths(raw: unknown): { adbPath: string; hdcPath: string } {
+  const settings = getSettings();
+  if (typeof raw === "string") return { adbPath: raw, hdcPath: settings.hdcPath };
+  if (raw && typeof raw === "object") {
+    const value = raw as Partial<Settings>;
+    return {
+      adbPath: String(value.adbPath || settings.adbPath),
+      hdcPath: String(value.hdcPath || settings.hdcPath),
+    };
+  }
+  return { adbPath: settings.adbPath, hdcPath: settings.hdcPath };
+}
+
+async function runCommand(command: string, args: string[], backend: "adb" | "hdc" = "adb") {
   return new Promise<{ code: number; text: string }>((resolve) => {
     let executable: string;
     try {
-      executable = resolveAdbExecutable(command);
+      executable = backend === "hdc" ? resolveHdcExecutable(command) : resolveAdbExecutable(command);
     } catch (error) {
       resolve({ code: -1, text: String(error) });
       return;
@@ -520,6 +356,25 @@ async function runCommand(command: string, args: string[]) {
     proc.on("error", (error) => resolve({ code: -1, text: error.message }));
     proc.on("close", (code) => resolve({ code: code ?? -1, text }));
   });
+}
+
+async function listAdbDevices(adbPath: string): Promise<string[]> {
+  const result = await runCommand(adbPath || getSettings().adbPath, ["devices"]);
+  if (result.code !== 0) throw new Error(result.text);
+  return parseAdbDevices(result.text);
+}
+
+async function listHdcDevices(hdcPath: string): Promise<string[]> {
+  const result = await runCommand(hdcPath || getSettings().hdcPath, ["list", "targets"], "hdc");
+  if (result.code !== 0) return [];
+  return parseHdcDevices(result.text).map((target) => `${target}${HDC_DEVICE_SUFFIX}`);
+}
+
+function splitDeviceBackend(device: string): { backend: "adb" | "hdc"; target: string } {
+  const raw = String(device || "").trim();
+  if (raw.endsWith(HDC_DEVICE_SUFFIX)) return { backend: "hdc", target: raw.slice(0, -HDC_DEVICE_SUFFIX.length).trim() };
+  if (raw.startsWith("hdc:")) return { backend: "hdc", target: raw.slice(4).trim() };
+  return { backend: "adb", target: raw };
 }
 
 function loadRenderer(window: BrowserWindow, mode: "main" | "runner" | "chest", runnerId?: string, initialPlan?: string, userId?: string, sourceId?: string, sourceName?: string) {
@@ -615,13 +470,12 @@ app.whenReady().then(() => {
     const root = runtimeRoot();
     return { root, plansDir: path.join(root, "plans"), templatesDir: path.join(root, "image_templates") };
   });
-  ipcMain.handle("environment:state", () => environmentState());
-  ipcMain.handle("environment:bootstrap", () => bootstrapWindowsEnvironment());
-  ipcMain.handle("environment:cancel", () => {
-    bootstrapCancelled = true;
-  });
   ipcMain.handle("settings:get", () => getSettings());
-  ipcMain.handle("settings:save", (_, settings: Settings) => saveSettings(settings));
+  ipcMain.handle("settings:save", (_, settings: Settings) => {
+    const saved = saveSettings(settings);
+    sendSettingsEvent(saved);
+    return saved;
+  });
   ipcMain.handle("update:state", () => updateState);
   ipcMain.handle("update:check", () => checkForUpdates());
   ipcMain.handle("update:download", () => downloadUpdate());
@@ -828,24 +682,40 @@ ipcMain.handle("chest:reanalyze", (_event, day?: string, userId?: string) =>
     void shell.openPath(directory);
   });
 
-  ipcMain.handle("adb:list-devices", async (_, adbPath: string) => {
-    const result = await runCommand(adbPath || getSettings().adbPath, ["devices"]);
-    if (result.code !== 0) throw new Error(result.text);
-    return parseAdbDevices(result.text);
+  ipcMain.handle("adb:list-devices", async (_, rawToolPaths: unknown) => {
+    const { adbPath, hdcPath } = commandToolPaths(rawToolPaths);
+    const [adbDevices, hdcDevices] = await Promise.all([
+      listAdbDevices(adbPath).catch(() => []),
+      listHdcDevices(hdcPath).catch(() => []),
+    ]);
+    const devices = [...adbDevices, ...hdcDevices];
+    sendDevicesEvent(devices);
+    return devices;
   });
-  ipcMain.handle("adb:force-refresh-devices", async (_, adbPath: string) => {
+  ipcMain.handle("adb:force-refresh-devices", async (_, rawToolPaths: unknown) => {
+    const { adbPath, hdcPath } = commandToolPaths(rawToolPaths);
     const executable = adbPath || getSettings().adbPath;
-    const stopped = await runCommand(executable, ["kill-server"]);
-    const started = await runCommand(executable, ["start-server"]);
-    const listed = await runCommand(executable, ["devices"]);
-    if (listed.code !== 0) throw new Error(listed.text || started.text || stopped.text);
-    return parseAdbDevices(listed.text);
+    await runCommand(executable, ["kill-server"]);
+    await runCommand(executable, ["start-server"]);
+    const [adbDevices, hdcDevices] = await Promise.all([
+      listAdbDevices(executable).catch(() => []),
+      listHdcDevices(hdcPath).catch(() => []),
+    ]);
+    const devices = [...adbDevices, ...hdcDevices];
+    sendDevicesEvent(devices);
+    return devices;
   });
-  ipcMain.handle("adb:run", (_, adbPath: string, args: string[]) => runCommand(adbPath || getSettings().adbPath, args));
-  ipcMain.handle("adb:screenshot", async (_, adbPath: string, device: string) => {
+  ipcMain.handle("adb:run", (_, rawToolPaths: unknown, args: string[], requestedBackend?: "adb" | "hdc") => {
+    const { adbPath, hdcPath } = commandToolPaths(rawToolPaths);
+    return runCommand(requestedBackend === "hdc" ? hdcPath : adbPath, args, requestedBackend === "hdc" ? "hdc" : "adb");
+  });
+  ipcMain.handle("adb:screenshot", async (_, rawToolPaths: unknown, device: string) => {
+    const { backend, target } = splitDeviceBackend(device);
+    if (backend === "hdc") throw new Error("HarmonyOS/HDC 设备暂不支持此截图路径");
+    const { adbPath } = commandToolPaths(rawToolPaths);
     const executable = resolveAdbExecutable(adbPath || getSettings().adbPath);
     const result = await new Promise<Buffer>((resolve, reject) => {
-      const proc = spawn(executable, ["-s", device, "exec-out", "screencap", "-p"], { windowsHide: true, env: runtimeEnvironment() });
+      const proc = spawn(executable, ["-s", target, "exec-out", "screencap", "-p"], { windowsHide: true, env: runtimeEnvironment() });
       const chunks: Buffer[] = [];
       let stderr = "";
       proc.stdout.on("data", (data) => chunks.push(data));
@@ -1797,6 +1667,18 @@ function parseAdbDevices(output: string): string[] {
     .map((line) => line.trim().split(/\s+/))
     .filter((parts) => parts[1] === "device")
     .map((parts) => parts[0]);
+}
+
+function parseHdcDevices(output: string): string[] {
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => {
+      const lowered = line.toLowerCase();
+      return line && !lowered.startsWith("[empty]") && !lowered.startsWith("empty") && !lowered.startsWith("list of targets");
+    })
+    .map((line) => line.split(/\s+/)[0])
+    .filter(Boolean);
 }
 
 function drawResultsRoot() {

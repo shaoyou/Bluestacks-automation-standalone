@@ -3,6 +3,24 @@ import { Activity, Check, CircleStop, Copy, Crosshair, Download, FolderOpen, Key
 import { LogPanel, PageHeading, Toggle } from "../components/layout";
 import type { SharedProps } from "../app/shared";
 
+const hdcDeviceSuffix = " [HarmonyOS/HDC]";
+
+function splitDeviceBackend(device: string): { backend: "adb" | "hdc"; target: string } {
+  const value = device.trim();
+  if (value.endsWith(hdcDeviceSuffix)) return { backend: "hdc", target: value.slice(0, -hdcDeviceSuffix.length).trim() };
+  if (value.startsWith("hdc:")) return { backend: "hdc", target: value.slice(4).trim() };
+  return { backend: "adb", target: value };
+}
+
+function hdcCommandArgs(args: string[]): string[] {
+  if (args[0] === "get-state") return ["shell", "echo", "ok"];
+  if (args[0] !== "shell" || args[1] !== "input") return args;
+  if (args[2] === "tap" && args.length >= 5) return ["shell", "uitest", "uiInput", "click", args[3], args[4]];
+  if (args[2] === "swipe" && args.length >= 7) return ["shell", "uitest", "uiInput", "swipe", args[3], args[4], args[5], args[6], ...(args[7] ? [args[7]] : [])];
+  if (args[2] === "keyevent" && args[3]) return ["shell", "uitest", "uiInput", "keyEvent", args[3]];
+  return args;
+}
+
 export function RecorderPage(props: SharedProps) {
   const [device, setDevice] = useState("");
   const [name, setName] = useState("recorded.json");
@@ -36,8 +54,8 @@ export function CalibrationPage(props: SharedProps) {
   const [cropHeight, setCropHeight] = useState("1920");
   useEffect(() => { if (!device && props.devices.length === 1) setDevice(props.devices[0]); }, [device, props.devices]);
   const picking = !!props.running["click-picker"];
-  const command = async (args: string[]) => { try { const output = await window.bsManager.adbRun(props.settings.adbPath, device ? ["-s", device, ...args] : args); setScreen(output.text || `exit code ${output.code}`); if (output.code !== 0) props.setNotice(`ADB 命令失败，退出码 ${output.code}`); } catch (error) { setScreen(String(error)); props.setNotice(`ADB 命令失败: ${String(error)}`); } };
-  const capture = async () => { if (!device) return props.setNotice("请填写目标设备序列号"); try { setImage(await window.bsManager.screenshot(props.settings.adbPath, device)); } catch (error) { setScreen(String(error)); } };
+  const command = async (args: string[]) => { try { const selected = splitDeviceBackend(device); const backendArgs = selected.backend === "hdc" ? hdcCommandArgs(args) : args; const commandArgs = selected.backend === "hdc" ? ["-t", selected.target, ...backendArgs] : device ? ["-s", selected.target, ...backendArgs] : backendArgs; const output = await window.bsManager.adbRun({ adbPath: props.settings.adbPath, hdcPath: props.settings.hdcPath }, commandArgs, selected.backend); setScreen(output.text || `exit code ${output.code}`); if (output.code !== 0) props.setNotice(`设备命令失败，退出码 ${output.code}`); } catch (error) { setScreen(String(error)); props.setNotice(`设备命令失败: ${String(error)}`); } };
+  const capture = async () => { if (!device) return props.setNotice("请填写目标设备序列号"); try { setImage(await window.bsManager.screenshot({ adbPath: props.settings.adbPath, hdcPath: props.settings.hdcPath }, device)); } catch (error) { setScreen(String(error)); } };
   const saveCrop = async () => {
     if (!image) return;
     const source = new Image(); source.src = image;
@@ -68,6 +86,7 @@ export function SettingsPage(props: SharedProps) {
   const save = async () => { const saved = await window.bsManager.settingsSave(props.settings); props.setSettings(saved); props.setNotice("设置已保存"); };
   const [code, setCode] = useState("");
   const [copied, setCopied] = useState(false);
+  const [refreshingDevices, setRefreshingDevices] = useState(false);
   const license = props.license;
   const isPro = license?.tier === "pro" && license.valid;
   const update = props.update;
@@ -91,5 +110,21 @@ export function SettingsPage(props: SharedProps) {
       props.setNotice(`复制安装 ID 失败: ${String(error)}`);
     }
   };
-  return <div className="page"><PageHeading title="环境设置" detail="配置跨平台运行时使用的 ADB 与 Python 可执行文件。" /><div className="settings-stack"><section className="panel form-panel"><label>ADB 可执行文件<input value={props.settings.adbPath} onChange={(event) => props.setSettings({ ...props.settings, adbPath: event.target.value })} /></label><label>Python 可执行文件<input value={props.settings.pythonPath} onChange={(event) => props.setSettings({ ...props.settings, pythonPath: event.target.value })} /></label><p className="field-note">Windows 可以填 `adb.exe` / `python.exe` 或完整路径；macOS 可填 `adb` / `python3`。</p><div className="button-grid"><button className="button primary" onClick={() => void save()}><Save size={16} />保存设置</button><button className="button secondary" onClick={() => void props.forceRefreshDevices()}><RefreshCw size={16} />强制刷新设备</button></div></section><section className="panel form-panel"><div className="panel-title"><span>历史数据</span></div><p className="field-note">将现有开宝箱和抽卡记录写入本地 SQLite 数据库。截图仅作为可选关联资源，清理截图不会删除历史记录和统计。</p><button className="button secondary" onClick={() => void migrateHistory()}><Save size={16} />迁移历史数据</button></section><section className="panel form-panel"><div className="panel-title"><span>应用更新</span><span className={`run-state ${update?.phase === "available" || update?.phase === "downloaded" ? "live" : ""}`}>{update?.currentVersion ? `v${update.currentVersion}` : "读取中"}</span></div><p className="field-note">{update?.message ?? "正在读取更新状态..."}</p>{update?.releaseNotes && <pre className="command-result">{update.releaseNotes}</pre>}{update?.phase === "downloading" && <div className="progress-track"><i style={{ width: `${update.progress ?? 0}%` }} /></div>}<div className="button-grid">{update?.phase === "available" && <button className="button primary" onClick={() => void props.downloadUpdate()}><Download size={16} />下载 {update.version ? `v${update.version}` : "更新"}</button>}{update?.phase === "downloaded" && <button className="button primary" onClick={() => void props.installUpdate()}><RefreshCw size={16} />重启安装</button>}<button className="button secondary" disabled={!update?.supported || updateBusy} onClick={() => void props.checkForUpdates()}><RefreshCw size={16} />{updateBusy ? "处理中" : "检查更新"}</button></div></section><section className="panel form-panel"><div className="panel-title"><span>专业版授权</span><span className={`run-state ${isPro ? "live" : ""}`}>{isPro ? "专业版" : "免费版"}</span></div><p className="field-note">{license?.message ?? "正在读取授权状态..."}</p><label>安装 ID<div className="inline-input-action"><input readOnly value={license?.installId ?? ""} /><button className="icon-button" title="复制安装 ID" disabled={!license?.installId} onClick={() => void copyInstallId()}>{copied ? <Check size={15} /> : <Copy size={15} />}</button></div>{copied && <small className="copy-success">已复制</small>}</label>{!isPro ? <><label>激活码<textarea className="license-code-input" value={code} placeholder="粘贴专业版激活码" onChange={(event) => setCode(event.target.value)} /></label><button className="button primary" disabled={!code.trim()} onClick={() => void props.activateLicense(code)}><KeyRound size={16} />激活专业版</button></> : <><p className="field-note">最多可同时运行 {license?.maxConcurrentRunners ?? 3} 个自动化任务。</p><button className="button quiet danger" onClick={() => void props.clearLicense()}><Trash2 size={15} />移除本机授权</button></>}</section><section className="panel path-panel"><span className="eyebrow">用户运行目录</span><code>{props.runtime?.root ?? "加载中..."}</code><p>脚本、模板、录制配置和诊断数据都存放在这里；应用升级不会覆盖用户创建的计划文件。</p><button className="button secondary" onClick={() => void window.bsManager.templatesList().then(() => props.setNotice("模板目录可通过系统文件管理器查看"))}><FolderOpen size={16} />检查模板</button></section></div></div>;
+  const forceRefresh = async () => {
+    if (refreshingDevices) return;
+    setRefreshingDevices(true);
+    try {
+      const devices = await props.forceRefreshDevices(true);
+      window.setTimeout(() => {
+        props.setNotice(devices.length ? `发现 ${devices.length} 个设备` : "未发现可用设备");
+        setRefreshingDevices(false);
+      }, 2000);
+    } catch (error) {
+      window.setTimeout(() => {
+        props.setNotice(`设备强制刷新失败: ${String(error)}`);
+        setRefreshingDevices(false);
+      }, 2000);
+    }
+  };
+  return <div className="page"><PageHeading title="环境设置" detail="配置跨平台运行时使用的 ADB、HDC 与 Python 可执行文件。" /><div className="settings-stack"><section className="panel form-panel"><label>ADB 可执行文件<input value={props.settings.adbPath} onChange={(event) => props.setSettings({ ...props.settings, adbPath: event.target.value })} /></label><label>HDC 可执行文件<input value={props.settings.hdcPath} onChange={(event) => props.setSettings({ ...props.settings, hdcPath: event.target.value })} /></label><label>Python 可执行文件<input value={props.settings.pythonPath} onChange={(event) => props.setSettings({ ...props.settings, pythonPath: event.target.value })} /></label><p className="field-note">Windows 可以填 `adb.exe` / `hdc.exe` / `python.exe` 或完整路径；macOS 可填 `adb` / `hdc` / `python3`。</p><div className="button-grid"><button className="button primary" onClick={() => void save()}><Save size={16} />保存设置</button><button className="button secondary" disabled={refreshingDevices} onClick={() => void forceRefresh()}><RefreshCw className={refreshingDevices ? "spin" : ""} size={16} />{refreshingDevices ? "刷新中" : "强制刷新设备"}</button></div></section><section className="panel form-panel"><div className="panel-title"><span>历史数据</span></div><p className="field-note">将现有开宝箱和抽卡记录写入本地 SQLite 数据库。截图仅作为可选关联资源，清理截图不会删除历史记录和统计。</p><button className="button secondary" onClick={() => void migrateHistory()}><Save size={16} />迁移历史数据</button></section><section className="panel form-panel"><div className="panel-title"><span>应用更新</span><span className={`run-state ${update?.phase === "available" || update?.phase === "downloaded" ? "live" : ""}`}>{update?.currentVersion ? `v${update.currentVersion}` : "读取中"}</span></div><p className="field-note">{update?.message ?? "正在读取更新状态..."}</p>{update?.releaseNotes && <pre className="command-result">{update.releaseNotes}</pre>}{update?.phase === "downloading" && <div className="progress-track"><i style={{ width: `${update.progress ?? 0}%` }} /></div>}<div className="button-grid">{update?.phase === "available" && <button className="button primary" onClick={() => void props.downloadUpdate()}><Download size={16} />下载 {update.version ? `v${update.version}` : "更新"}</button>}{update?.phase === "downloaded" && <button className="button primary" onClick={() => void props.installUpdate()}><RefreshCw size={16} />重启安装</button>}<button className="button secondary" disabled={!update?.supported || updateBusy} onClick={() => void props.checkForUpdates()}><RefreshCw size={16} />{updateBusy ? "处理中" : "检查更新"}</button></div></section><section className="panel form-panel"><div className="panel-title"><span>专业版授权</span><span className={`run-state ${isPro ? "live" : ""}`}>{isPro ? "专业版" : "免费版"}</span></div><p className="field-note">{license?.message ?? "正在读取授权状态..."}</p><label>安装 ID<div className="inline-input-action"><input readOnly value={license?.installId ?? ""} /><button className="icon-button" title="复制安装 ID" disabled={!license?.installId} onClick={() => void copyInstallId()}>{copied ? <Check size={15} /> : <Copy size={15} />}</button></div>{copied && <small className="copy-success">已复制</small>}</label>{!isPro ? <><label>激活码<textarea className="license-code-input" value={code} placeholder="粘贴专业版激活码" onChange={(event) => setCode(event.target.value)} /></label><button className="button primary" disabled={!code.trim()} onClick={() => void props.activateLicense(code)}><KeyRound size={16} />激活专业版</button></> : <><p className="field-note">最多可同时运行 {license?.maxConcurrentRunners ?? 3} 个自动化任务。</p><button className="button quiet danger" onClick={() => void props.clearLicense()}><Trash2 size={15} />移除本机授权</button></>}</section><section className="panel path-panel"><span className="eyebrow">用户运行目录</span><code>{props.runtime?.root ?? "加载中..."}</code><p>脚本、模板、录制配置和诊断数据都存放在这里；应用升级不会覆盖用户创建的计划文件。</p><button className="button secondary" onClick={() => void window.bsManager.templatesList().then(() => props.setNotice("模板目录可通过系统文件管理器查看"))}><FolderOpen size={16} />检查模板</button></section></div></div>;
 }

@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "events": {
+    "2026-08-01 18:53:22": [
+      {"slot": 1, "item_name": "黄石头", "quantity": 2},
+      {"slot": 2, "item_name": "蓝色石头", "quantity": 1},
+      {"slot": 3, "item_name": "普通召唤石", "quantity": 8},
+      {"slot": 4, "item_name": "精英召唤石", "quantity": 7},
+      {"slot": 5, "item_name": "藏品", "quantity": 1}
+    ],
+    "2026-08-01 18:54:40": [
+      {"slot": 1, "item_name": "蓝色石头", "quantity": 1},
+      {"slot": 2, "item_name": "普通召唤石", "quantity": 8},
+      {"slot": 3, "item_name": "蓝色召唤券", "quantity": 1},
+      {"slot": 4, "item_name": "藏品", "quantity": 1},
+      {"slot": 5, "item_name": "宝石", "quantity": 1}
+    ],
+    "2026-08-01 18:56:50": [
+      {"slot": 1, "item_name": "金币", "quantity": 102},
+      {"slot": 2, "item_name": "黄石头", "quantity": 2},
+      {"slot": 3, "item_name": "蓝色石头", "quantity": 1},
+      {"slot": 4, "item_name": "普通召唤石", "quantity": 9},
+      {"slot": 5, "item_name": "藏品", "quantity": 1},
+      {"slot": 6, "item_name": "蓝色护符", "quantity": 1}
+    ],
+    "2026-08-01 18:59:01": [
+      {"slot": 1, "item_name": "普通召唤石", "quantity": 10},
+      {"slot": 2, "item_name": "宝阁钥匙", "quantity": 2},
+      {"slot": 3, "item_name": "藏品", "quantity": 1}
+    ],
+    "2026-08-01 19:01:58": [
+      {"slot": 1, "item_name": "金币", "quantity": 110},
+      {"slot": 2, "item_name": "蓝色石头", "quantity": 1},
+      {"slot": 3, "item_name": "普通召唤石", "quantity": 7}
+    ],
+    "2026-08-01 19:04:34": [
+      {"slot": 1, "item_name": "普通召唤石", "quantity": 7},
+      {"slot": 2, "item_name": "藏品", "quantity": 1},
+      {"slot": 3, "item_name": "装备", "quantity": 1},
+      {"slot": 4, "item_name": "紫色护符", "quantity": 1}
+    ],
+    "2026-08-01 19:06:27": [
+      {"slot": 1, "item_name": "黄石头", "quantity": 3},
+      {"slot": 2, "item_name": "灰石头", "quantity": 1},
+      {"slot": 3, "item_name": "普通召唤石", "quantity": 8},
+      {"slot": 4, "item_name": "紫色护符", "quantity": 1}
+    ],
+    "2026-08-01 19:09:36": [
+      {"slot": 1, "item_name": "普通召唤石", "quantity": 9},
+      {"slot": 2, "item_name": "精英召唤石", "quantity": 7},
+      {"slot": 3, "item_name": "宝石", "quantity": 1}
+    ],
+    "2026-08-01 19:11:54": [
+      {"slot": 1, "item_name": "黄石头", "quantity": 5},
+      {"slot": 2, "item_name": "普通召唤石", "quantity": 10}
+    ],
+    "2026-08-01 19:15:17": [
+      {"slot": 1, "item_name": "普通召唤石", "quantity": 9},
+      {"slot": 2, "item_name": "精英召唤石", "quantity": 7},
+      {"slot": 3, "item_name": "灰石头", "quantity": 1},
+      {"slot": 4, "item_name": "宝阁钥匙", "quantity": 1},
+      {"slot": 5, "item_name": "藏品", "quantity": 1},
+      {"slot": 6, "item_name": "装备", "quantity": 1},
+      {"slot": 7, "item_name": "蓝色护符", "quantity": 1}
+    ],
+    "2026-08-01 19:24:39": [
+      {"slot": 1, "item_name": "普通召唤石", "quantity": 9},
+      {"slot": 2, "item_name": "精英召唤石", "quantity": 7},
+      {"slot": 3, "item_name": "噩梦召唤石", "quantity": 6},
+      {"slot": 4, "item_name": "藏品", "quantity": 1},
+      {"slot": 5, "item_name": "冰系宝石", "quantity": 1}
+    ]
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "template": "/Users/admins/Documents/Playground/Bluestacks-automation-standalone/image_templates/bl_baoxiaoxing.png",
+  "status": "if_false",
+  "threshold": 0.885,
+  "attempt": 2,
+  "note": "if_image best candidate before false branch",
+  "overlay_path": "/Users/admins/Documents/Playground/Bluestacks-automation-standalone/diagnostics/image_match_debug/20260801-164338-565_bl_baoxiaoxing_if_false_overlay.png",
+  "crop_path": "/Users/admins/Documents/Playground/Bluestacks-automation-standalone/diagnostics/image_match_debug/20260801-164338-565_bl_baoxiaoxing_if_false_crop.png",
+  "region": null,
+  "match": {
+    "x": 182.0,
+    "y": 1001.0,
+    "width": 74.0,
+    "height": 71.0,
+    "similarity": 0.8501077106009776,
+    "shape_similarity": 1.0,
+    "color_similarity": 0.5003590353365921,
+    "scale": 1.25
+  }
+}

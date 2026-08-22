@@ -3,52 +3,73 @@
     {
       "actions" : [
         {
-          "remark" : "点击(824,1379)",
-          "type" : "click",
-          "x" : 824,
-          "y" : 1379
-        },
-        {
-          "remark" : "等待2秒",
-          "seconds" : 2,
-          "type" : "wait"
-        },
-        {
-          "remark" : "点击(179,1576)",
-          "type" : "click",
-          "x" : 179,
-          "y" : 1576
-        },
-        {
-          "remark" : "等待2秒",
-          "seconds" : 2,
-          "type" : "wait"
-        },
-        {
-          "remark" : "点击(422,1590)",
-          "type" : "click",
-          "x" : 422,
-          "y" : 1590
-        },
-        {
-          "remark" : "等待0.5秒",
-          "seconds" : 0.5,
-          "type" : "wait"
-        },
-        {
-          "remark" : "点击(422,1590)",
-          "type" : "click",
-          "x" : 422,
-          "y" : 1590
-        },
-        {
-          "remark" : "等待2秒",
-          "seconds" : 2,
-          "type" : "wait"
+          "max_segment_ms" : 1000,
+          "min_segment_ms" : 1,
+          "mode" : "motion",
+          "points" : [
+            {
+              "t_ms" : 0,
+              "x" : 182,
+              "y" : 1579
+            },
+            {
+              "t_ms" : 100,
+              "x" : 2,
+              "y" : 1579
+            },
+            {
+              "t_ms" : 500,
+              "x" : 2,
+              "y" : 1579
+            }
+          ],
+          "remark" : "向左移动0.5秒",
+          "type" : "trace"
         }
       ],
-      "count" : 1,
+      "count" : 2,
+      "remark" : "拖动小地图",
       "type" : "loop"
+    },
+    {
+      "remark" : "点击第4个地图",
+      "type" : "click",
+      "x" : 900,
+      "y" : 1613
+    },
+    {
+      "seconds" : 1.5,
+      "type" : "wait"
+    },
+    {
+      "remark" : "通过点击取消引导箭头",
+      "type" : "click",
+      "x" : 547,
+      "y" : 865
+    },
+    {
+      "seconds" : 0.36699999999999999,
+      "type" : "wait"
+    },
+    {
+      "remark" : "点击对应传送图标，弹出菜单",
+      "type" : "click",
+      "x" : 547,
+      "y" : 865
+    },
+    {
+      "seconds" : 0.5,
+      "type" : "wait"
+    },
+    {
+      "remark" : "点击前往，开始传送",
+      "type" : "click",
+      "x" : 559,
+      "y" : 750
+    },
+    {
+      "seconds" : 6,
+      "type" : "wait"
     }
   ],
   "device" : "127.0.0.1:5555",

@@ -1,0 +1,118 @@
+{
+  "actions": [
+    {
+      "type": "loop",
+      "count": -1,
+      "actions": [
+        {
+          "type": "if_image",
+          "template": "../image_templates/bl_baoxiaoxing.png",
+          "max_candidates": 32,
+          "threshold": 0.885,
+          "timeout_sec": 8,
+          "interval_sec": 0.6,
+          "remark": "全屏识别放大镜按钮",
+          "then_actions": [
+            {
+              "type": "log",
+              "message": "全屏检测到放大镜按钮，点击本次匹配坐标"
+            },
+            {
+              "type": "click_match",
+              "remark": "点击放大镜按钮"
+            },
+            {
+              "type": "wait",
+              "seconds": 1,
+              "remark": "放大镜已点击，等待确定弹框"
+            },
+            {
+              "type": "log",
+              "message": "开始识别确定按钮，依次尝试 bl_baoxiaoxing-done.png 和 baoxiang_done_2.png"
+            },
+            {
+              "type": "if_image",
+              "templates": [
+                "../image_templates/bl_baoxiaoxing-done.png",
+                "../image_templates/baoxiang_done_2.png"
+              ],
+              "region": {
+                "x": 137,
+                "y": 378,
+                "width": 828,
+                "height": 1191
+              },
+              "threshold": 0.88,
+              "timeout_sec": 8,
+              "interval_sec": 0.6,
+              "remark": "识别确定按钮",
+              "then_actions": [
+                {
+                  "type": "click_match",
+                  "remark": "点击识别到的确定按钮"
+                },
+                {
+                  "type": "wait",
+                  "seconds": 2,
+                  "remark": "确定已点击，等待物品列表弹框"
+                },
+                {
+                  "type": "log",
+                  "message": "物品列表弹框预计已出现，开始保存截图"
+                },
+                {
+                  "type": "save_screenshot",
+                  "dir": "../diagnostics/chest_results",
+                  "pair_key": "chest_result",
+                  "stage": "single",
+                  "label": "items",
+                  "remark": "保存开宝箱物品列表"
+                },
+                {
+                  "type": "log",
+                  "message": "物品列表截图已保存，准备关闭弹框"
+                },
+                {
+                  "type": "click",
+                  "x": 530,
+                  "y": 1450,
+                  "remark": "关闭物品列表弹框"
+                },
+                {
+                  "type": "wait",
+                  "seconds": 60,
+                  "remark": "等待下一次开宝箱"
+                }
+              ],
+              "else_actions": [
+                {
+                  "type": "log",
+                  "message": "确定按钮未识别到，本轮不截图也不关闭弹框"
+                },
+                {
+                  "type": "wait",
+                  "seconds": 5,
+                  "remark": "等待下一次检测"
+                }
+              ]
+            }
+          ],
+          "else_actions": [
+            {
+              "type": "log",
+              "message": "全屏未检测到放大镜按钮，本轮跳过"
+            },
+            {
+              "type": "wait",
+              "seconds": 5,
+              "remark": "等待下一次检测"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "device": "127.0.0.1:5555",
+  "jitter_px": 3,
+  "max_runtime_sec": 0
+}

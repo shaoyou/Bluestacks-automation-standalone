@@ -31,10 +31,7 @@ if (!window.bsManager) {
   const notify = (event: { id: string; type: "started" | "log" | "exit"; code?: number; text?: string }) => listeners.forEach((listener) => listener(event));
   window.bsManager = {
     runtimeState: async () => ({ root: "/preview/runtime", plansDir: "/preview/runtime/plans", templatesDir: "/preview/runtime/image_templates" }),
-    environmentState: async () => ({ required: false, ready: true, phase: "ready", progress: 100, message: "预览环境已就绪" }),
-    environmentBootstrap: async () => ({ required: false, ready: true, phase: "ready", progress: 100, message: "预览环境已就绪" }),
-    environmentCancel: async () => {},
-    settingsGet: async () => ({ adbPath: "adb", pythonPath: "python3", language: "zh" }),
+    settingsGet: async () => ({ adbPath: "adb", hdcPath: "hdc", pythonPath: "python3", language: "zh" }),
     settingsSave: async (settings) => settings,
     updateState: async () => ({ currentVersion: "1.2.14", supported: false, phase: "unsupported", message: "预览环境不检查更新" }),
     updateCheck: async () => ({ currentVersion: "1.2.14", supported: false, phase: "unsupported", message: "预览环境不检查更新" }),
@@ -83,7 +80,8 @@ if (!window.bsManager) {
     openChestWindow: async () => {},
     chestImage: async () => null,
     chestOpenScreenshots: async () => {},
-    devicesList: async () => ["emulator-5554", "127.0.0.1:5555"],
+    devicesList: async () => ["emulator-5554", "127.0.0.1:5555", "ABC123 [HarmonyOS/HDC]"],
+    devicesForceRefresh: async () => ["emulator-5554", "127.0.0.1:5555", "ABC123 [HarmonyOS/HDC]"],
     adbRun: async () => ({ code: 0, text: "Physical size: 1080x1920\n" }),
     screenshot: async () => "",
     startTask: async (request) => {
@@ -92,7 +90,8 @@ if (!window.bsManager) {
     },
     stopTask: async (id) => notify({ id, type: "exit", code: 0 }),
     onTaskEvent: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
-    onEnvironmentEvent: () => () => {},
+    onDevicesEvent: () => () => {},
+    onSettingsEvent: () => () => {},
     onUpdateEvent: () => () => {},
   };
 }
