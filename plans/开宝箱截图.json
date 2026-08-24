@@ -67,7 +67,6 @@
                 {
                   "type": "save_screenshot",
                   "analyze_chest_items": true,
-                  "defer_chest_analysis": true,
                   "storage_format": "webp",
                   "crop_chest_result": true,
                   "dir": "../diagnostics/chest_results",
@@ -85,11 +84,6 @@
                   "x": 530,
                   "y": 1450,
                   "remark": "关闭物品列表弹框"
-                },
-                {
-                  "type": "analyze_chest_results",
-                  "dir": "../diagnostics/chest_results",
-                  "remark": "关闭弹框后更新开宝箱记录"
                 },
                 {
                   "type": "wait",
@@ -128,7 +122,6 @@
                     {
                       "type": "save_screenshot",
                       "analyze_chest_items": true,
-                      "defer_chest_analysis": true,
                       "storage_format": "webp",
                       "crop_chest_result": true,
                       "dir": "../diagnostics/chest_results",
@@ -159,7 +152,6 @@
                     {
                       "type": "save_screenshot",
                       "analyze_chest_items": true,
-                      "defer_chest_analysis": true,
                       "storage_format": "webp",
                       "crop_chest_result": true,
                       "dir": "../diagnostics/chest_results",
@@ -177,11 +169,6 @@
                       "x": 530,
                       "y": 1450,
                       "remark": "关闭普通宝箱奖励弹框"
-                    },
-                    {
-                      "type": "analyze_chest_results",
-                      "dir": "../diagnostics/chest_results",
-                      "remark": "关闭弹框后更新开宝箱记录"
                     },
                     {
                       "type": "wait",

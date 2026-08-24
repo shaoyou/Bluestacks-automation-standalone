@@ -66,15 +66,15 @@ function bundledPlansRoot(): string {
     : path.join(bundledRuntimeRoot(), "plans");
 }
 
-function copyMissingResources(sourceDir: string, targetDir: string) {
+function copyResources(sourceDir: string, targetDir: string, overwriteExisting = false) {
   if (!existsSync(sourceDir)) return;
   mkdirSync(targetDir, { recursive: true });
   for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
     const source = path.join(sourceDir, entry.name);
     const target = path.join(targetDir, entry.name);
     if (entry.isDirectory()) {
-      copyMissingResources(source, target);
-    } else if (entry.isFile() && !existsSync(target)) {
+      copyResources(source, target, overwriteExisting);
+    } else if (entry.isFile() && (overwriteExisting || !existsSync(target))) {
       copyFileSync(source, target);
     }
   }
@@ -98,7 +98,7 @@ function runtimeRoot(): string {
   for (const dir of ["plans", "image_templates"]) {
     const sourceDir = dir === "plans" ? bundledPlansRoot() : path.join(source, dir);
     const targetDir = path.join(target, dir);
-    copyMissingResources(sourceDir, targetDir);
+    copyResources(sourceDir, targetDir, dir === "plans");
   }
   for (const dir of ["diagnostics", "recording_profiles"]) {
     mkdirSync(path.join(target, dir), { recursive: true });

@@ -29,6 +29,7 @@ LAST_RED_LIGHT_SCREENSHOT_KEY = "last_red_light_screenshot"
 LAST_SCREENSHOT_PAIR_KEY = "_latest_screenshot_pair"
 BACKGROUND_TASKS_KEY = "_background_tasks"
 CHEST_ANALYSIS_TASK_KEY = "_chest_analysis_task"
+CHEST_ANALYSIS_QUEUE_KEY = "_chest_analysis_queue"
 
 
 class BotError(RuntimeError):
@@ -948,33 +949,56 @@ def do_save_screenshot(ctx: RunContext, action: Dict[str, Any]) -> None:
                 },
             )
     log(with_action_remark(f"Saved screenshot: {destination} ({image_source})", action))
-    if bool_value(action.get("analyze_chest_items"), default=False) and not bool_value(
-        action.get("defer_chest_analysis"), default=False
-    ):
-        try:
-            from chest_analyzer import analyze_results
-            summary = analyze_results(output_dir)
-            log(with_action_remark(
-                f"Chest item analysis: {summary['analyzed']} new, {summary['events']} total, {summary['unknown_items']} pending labels",
-                action,
-            ))
-        except Exception as error:
-            log(with_action_remark(f"Chest item analysis failed: {error}", action))
+    if bool_value(action.get("analyze_chest_items"), default=False):
+        schedule_chest_analysis(ctx, action, output_dir)
 
 
 def chest_analysis_worker(ctx: RunContext, action: Dict[str, Any], output_dir: Path) -> None:
-    try:
-        from chest_analyzer import analyze_results
-        summary = analyze_results(output_dir)
-        log(
-            with_action_remark(
-                f"Chest item analysis: {summary['analyzed']} new, "
-                f"{summary['events']} total, {summary['unknown_items']} pending labels",
-                action,
+    while True:
+        try:
+            from chest_analyzer import analyze_results
+            summary = analyze_results(output_dir)
+            log(
+                with_action_remark(
+                    f"Chest item analysis: {summary['analyzed']} new, "
+                    f"{summary['events']} total, {summary['unknown_items']} pending labels",
+                    action,
+                )
             )
+        except Exception as error:
+            log(with_action_remark(f"Chest item analysis failed: {error}", action))
+
+        with ctx.stats_lock:
+            queue = ctx.runtime_values.get(CHEST_ANALYSIS_QUEUE_KEY)
+            if not isinstance(queue, list) or not queue:
+                ctx.runtime_values.pop(CHEST_ANALYSIS_TASK_KEY, None)
+                return
+            output_dir = Path(str(queue.pop(0)))
+
+
+def schedule_chest_analysis(ctx: RunContext, action: Dict[str, Any], output_dir: Path) -> None:
+    with ctx.stats_lock:
+        queue = ctx.runtime_values.get(CHEST_ANALYSIS_QUEUE_KEY)
+        if not isinstance(queue, list):
+            queue = []
+            ctx.runtime_values[CHEST_ANALYSIS_QUEUE_KEY] = queue
+        queue.append(output_dir)
+        previous = ctx.runtime_values.get(CHEST_ANALYSIS_TASK_KEY)
+        if isinstance(previous, threading.Thread) and previous.is_alive():
+            log(with_action_remark("Chest item analysis queued in background", action))
+            return
+        thread = threading.Thread(
+            target=chest_analysis_worker,
+            args=(ctx, dict(action), output_dir),
+            name="chest-item-analysis",
+            daemon=False,
         )
-    except Exception as error:
-        log(with_action_remark(f"Chest item analysis failed: {error}", action))
+        tasks = ctx.runtime_values.setdefault(BACKGROUND_TASKS_KEY, [])
+        if isinstance(tasks, list):
+            tasks.append(thread)
+        ctx.runtime_values[CHEST_ANALYSIS_TASK_KEY] = thread
+        thread.start()
+    log(with_action_remark("Chest item analysis scheduled in background", action))
 
 
 def do_analyze_chest_results(ctx: RunContext, action: Dict[str, Any]) -> None:
@@ -982,22 +1006,7 @@ def do_analyze_chest_results(ctx: RunContext, action: Dict[str, Any]) -> None:
         log(with_action_remark("[DRY-RUN] analyze_chest_results skipped", action))
         return
     output_dir = screenshot_output_dir(ctx, action)
-    previous = ctx.runtime_values.get(CHEST_ANALYSIS_TASK_KEY)
-    if isinstance(previous, threading.Thread) and previous.is_alive():
-        log(with_action_remark("Chest item analysis already running; skip duplicate schedule", action))
-        return
-    thread = threading.Thread(
-        target=chest_analysis_worker,
-        args=(ctx, dict(action), output_dir),
-        name="chest-item-analysis",
-        daemon=True,
-    )
-    tasks = ctx.runtime_values.setdefault(BACKGROUND_TASKS_KEY, [])
-    if isinstance(tasks, list):
-        tasks.append(thread)
-    ctx.runtime_values[CHEST_ANALYSIS_TASK_KEY] = thread
-    thread.start()
-    log(with_action_remark("Chest item analysis scheduled in background", action))
+    schedule_chest_analysis(ctx, action, output_dir)
 
 
 def save_screenshot_pair_composite(output_dir: Path, record: Dict[str, Any]) -> Optional[Path]:
