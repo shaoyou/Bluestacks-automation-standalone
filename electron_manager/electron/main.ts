@@ -279,6 +279,41 @@ function sendTaskEvent(event: Record<string, unknown>) {
   }
 }
 
+function forgetTask(taskId: string) {
+  tasks.delete(taskId);
+  taskOwners.delete(taskId);
+}
+
+function trackTask(taskId: string, task: ChildProcess, ownerWebContentsId?: number, commandLine?: string) {
+  tasks.set(taskId, task);
+  if (ownerWebContentsId) taskOwners.set(taskId, ownerWebContentsId);
+  sendTaskEvent({ id: taskId, type: "started" });
+  if (commandLine) sendTaskEvent({ id: taskId, type: "log", text: `$ ${commandLine}\n` });
+
+  const onData = (data: Buffer) => {
+    sendTaskEvent({ id: taskId, type: "log", text: data.toString("utf8") });
+  };
+  task.stdout?.on("data", onData);
+  task.stderr?.on("data", onData);
+  task.on("error", (error) => {
+    forgetTask(taskId);
+    sendTaskEvent({ id: taskId, type: "log", text: `${error.message}\n` });
+  });
+  task.on("exit", (code) => {
+    forgetTask(taskId);
+    sendTaskEvent({ id: taskId, type: "exit", code });
+  });
+}
+
+function stopAllTasks() {
+  for (const task of tasks.values()) {
+    if (process.platform === "win32") task.kill();
+    else task.kill("SIGINT");
+  }
+  tasks.clear();
+  taskOwners.clear();
+}
+
 function assertRunnerCapacity() {
   const license = getLicenseStatus();
   const activeRunners = [...tasks.keys()].filter((id) => id.startsWith("runner-")).length;
@@ -305,26 +340,7 @@ function spawnTask(request: TaskRequest, ownerWebContentsId?: number) {
     },
     windowsHide: true,
   });
-  tasks.set(request.id, task);
-  if (ownerWebContentsId) taskOwners.set(request.id, ownerWebContentsId);
-  sendTaskEvent({ id: request.id, type: "started" });
-  sendTaskEvent({ id: request.id, type: "log", text: `$ ${executable} ${args.join(" ")}\n` });
-
-  const onData = (data: Buffer) => {
-    sendTaskEvent({ id: request.id, type: "log", text: data.toString("utf8") });
-  };
-  task.stdout?.on("data", onData);
-  task.stderr?.on("data", onData);
-  task.on("error", (error) => {
-    tasks.delete(request.id);
-    taskOwners.delete(request.id);
-    sendTaskEvent({ id: request.id, type: "log", text: `${error.message}\n` });
-  });
-  task.on("exit", (code) => {
-    tasks.delete(request.id);
-    taskOwners.delete(request.id);
-    sendTaskEvent({ id: request.id, type: "exit", code });
-  });
+  trackTask(request.id, task, ownerWebContentsId, `${executable} ${args.join(" ")}`);
 }
 
 function commandToolPaths(raw: unknown): { adbPath: string; hdcPath: string } {
@@ -661,12 +677,13 @@ app.whenReady().then(() => {
   ipcMain.handle("chest:sources", (_, userId = "default") => customChestSources(userId));
   ipcMain.handle("chest:source-create", (_, userId: string, sourceName: string) => addCustomChestSource(userId, sourceName));
   ipcMain.handle("chest:source-delete", (_, userId: string, sourceId: string) => deleteCustomChestSource(userId, sourceId));
-ipcMain.handle("chest:reanalyze", (_event, day?: string, userId?: string) =>
-  runChestAnalyzer(
-    typeof day === "string" ? day : undefined,
-    typeof userId === "string" ? userId : undefined,
-  ),
-);
+  ipcMain.handle("chest:reanalyze", (event, day?: string, userId?: string) =>
+    runChestAnalyzer(
+      typeof day === "string" ? day : undefined,
+      typeof userId === "string" ? userId : undefined,
+      event.sender.id,
+    ),
+  );
   ipcMain.handle("chest:unlabeled-items", () => chestUnlabeledItems());
   ipcMain.handle("chest:label-item", (_, itemId: string, name: string) => labelChestItem(itemId, name));
   ipcMain.handle("chest:item-weight", (_, itemId: string, weight: number | null) => setChestItemWeight(itemId, weight));
@@ -1336,7 +1353,7 @@ function importChestSyncPackage(userId: string) {
   });
 }
 
-function runChestAnalyzer(day?: string, userId?: string) {
+function runChestAnalyzer(day?: string, userId?: string, ownerWebContentsId?: number) {
   const root = path.join(runtimeRoot(), "diagnostics", "chest_results");
   const script = path.join(runtimeRoot(), "chest_analyzer.py");
   const executable = resolveExecutable(getSettings().pythonPath, process.platform === "win32" ? "python.exe" : "python3");
@@ -1347,7 +1364,9 @@ function runChestAnalyzer(day?: string, userId?: string) {
   if (day) args.push("--day", day);
   if (userId) args.push("--user-id", userId);
   return new Promise<Record<string, unknown>>((resolve, reject) => {
+    const taskId = `chest-reanalyze-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
     const process = spawn(executable, args, { windowsHide: true, env: runtimeEnvironment() });
+    trackTask(taskId, process, ownerWebContentsId, `${executable} ${args.join(" ")}`);
     let output = "";
     process.stdout.on("data", (data) => (output += data.toString("utf8")));
     process.stderr.on("data", (data) => (output += data.toString("utf8")));
@@ -1821,13 +1840,21 @@ async function migrateHistoryToDatabase() {
 }
 
 app.on("window-all-closed", () => {
-  for (const task of tasks.values()) task.kill();
-  taskOwners.clear();
+  stopAllTasks();
   if (process.platform !== "darwin") app.quit();
 });
 
 app.on("before-quit", () => {
   isQuitting = true;
+  stopAllTasks();
+});
+
+process.once("SIGINT", () => {
+  stopAllTasks();
+});
+
+process.once("SIGTERM", () => {
+  stopAllTasks();
 });
 
 app.on("activate", () => {

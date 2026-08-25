@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import math
+from contextlib import contextmanager
 import re
 import subprocess
 import tempfile
@@ -17,6 +18,12 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 from PIL import Image, ImageOps
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback
+    fcntl = None
+    import msvcrt
 
 
 EVENTS_FILE = "item_events.jsonl"
@@ -54,7 +61,7 @@ def chest_screenshot_paths(results_dir: Path) -> List[Path]:
 
 
 def write_json_lines(path: Path, records: Iterable[Dict[str, Any]]) -> None:
-    path.write_text("".join(f"{json.dumps(record, ensure_ascii=False)}\n" for record in records), encoding="utf-8")
+    atomic_write_text(path, "".join(f"{json.dumps(record, ensure_ascii=False)}\n" for record in records))
 
 
 def load_catalog(path: Path) -> Dict[str, Any]:
@@ -99,7 +106,34 @@ def normalize_catalog(catalog: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def save_catalog(path: Path, catalog: Dict[str, Any]) -> None:
-    path.write_text(f"{json.dumps(catalog, ensure_ascii=False, indent=2)}\n", encoding="utf-8")
+    atomic_write_text(path, f"{json.dumps(catalog, ensure_ascii=False, indent=2)}\n")
+
+
+def atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as handle:
+        handle.write(content)
+        temp_path = Path(handle.name)
+    temp_path.replace(path)
+
+
+@contextmanager
+def chest_analysis_lock(results_dir: Path):
+    lock_path = results_dir / ".analysis.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+") as handle:
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        else:  # pragma: no cover - Windows fallback
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 def integral(mask: np.ndarray) -> np.ndarray:
@@ -1076,44 +1110,45 @@ def analyze_results(
     user_id: Optional[str] = None,
 ) -> Dict[str, int]:
     results_dir.mkdir(parents=True, exist_ok=True)
-    catalog_path = results_dir / CATALOG_FILE
-    catalog = load_catalog(catalog_path)
-    metadata = screenshot_metadata(results_dir)
-    corrections = load_manual_corrections(results_dir)
-    digit_model = load_quantity_digit_model(results_dir, corrections)
-    existing = {str(record.get("screenshot_path", "")): record for record in read_json_lines(results_dir / EVENTS_FILE)}
-    analyzed = 0
-    for image_path in chest_screenshot_paths(results_dir):
-        resolved = str(image_path.resolve())
-        screenshot_record = metadata.get(resolved, {})
-        captured_at = str(
-            screenshot_record.get("before_saved_at")
-            or screenshot_record.get("created_at")
-            or ""
-        )
-        if day and not captured_at.startswith(day):
-            continue
-        if user_id and str(screenshot_record.get("user_id") or "default") != user_id:
-            continue
-        if not force and resolved in existing:
-            continue
-        existing[resolved] = analyze_screenshot(image_path, results_dir, catalog, metadata, corrections, digit_model)
-        analyzed += 1
-    records = sorted(existing.values(), key=lambda record: str(record.get("captured_at", "")), reverse=True)
-    write_json_lines(results_dir / EVENTS_FILE, records)
-    referenced_ids = {
-        str(item.get("item_id", ""))
-        for record in records
-        for item in (record.get("items", []) if isinstance(record.get("items"), list) else [])
-        if isinstance(item, dict)
-    }
-    catalog["items"] = [
-        item for item in catalog.get("items", [])
-        if item.get("category") != "unknown" or str(item.get("item_id", "")) in referenced_ids
-    ]
-    save_catalog(catalog_path, catalog)
-    unknown = sum(1 for item in catalog.get("items", []) if item.get("category") == "unknown")
-    return {"analyzed": analyzed, "events": len(records), "unknown_items": unknown}
+    with chest_analysis_lock(results_dir):
+        catalog_path = results_dir / CATALOG_FILE
+        catalog = load_catalog(catalog_path)
+        metadata = screenshot_metadata(results_dir)
+        corrections = load_manual_corrections(results_dir)
+        digit_model = load_quantity_digit_model(results_dir, corrections)
+        existing = {str(record.get("screenshot_path", "")): record for record in read_json_lines(results_dir / EVENTS_FILE)}
+        analyzed = 0
+        for image_path in chest_screenshot_paths(results_dir):
+            resolved = str(image_path.resolve())
+            screenshot_record = metadata.get(resolved, {})
+            captured_at = str(
+                screenshot_record.get("before_saved_at")
+                or screenshot_record.get("created_at")
+                or ""
+            )
+            if day and not captured_at.startswith(day):
+                continue
+            if user_id and str(screenshot_record.get("user_id") or "default") != user_id:
+                continue
+            if not force and resolved in existing:
+                continue
+            existing[resolved] = analyze_screenshot(image_path, results_dir, catalog, metadata, corrections, digit_model)
+            analyzed += 1
+        records = sorted(existing.values(), key=lambda record: str(record.get("captured_at", "")), reverse=True)
+        write_json_lines(results_dir / EVENTS_FILE, records)
+        referenced_ids = {
+            str(item.get("item_id", ""))
+            for record in records
+            for item in (record.get("items", []) if isinstance(record.get("items"), list) else [])
+            if isinstance(item, dict)
+        }
+        catalog["items"] = [
+            item for item in catalog.get("items", [])
+            if item.get("category") != "unknown" or str(item.get("item_id", "")) in referenced_ids
+        ]
+        save_catalog(catalog_path, catalog)
+        unknown = sum(1 for item in catalog.get("items", []) if item.get("category") == "unknown")
+        return {"analyzed": analyzed, "events": len(records), "unknown_items": unknown}
 
 
 def evaluate_quantity_accuracy(results_dir: Path) -> Dict[str, Any]:
