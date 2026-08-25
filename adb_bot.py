@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -954,9 +955,11 @@ def do_save_screenshot(ctx: RunContext, action: Dict[str, Any]) -> None:
 
 
 def chest_analysis_worker(ctx: RunContext, action: Dict[str, Any], output_dir: Path) -> None:
+    log(with_action_remark(f"Chest item analysis worker started for {output_dir}", action))
     while True:
         try:
             from chest_analyzer import analyze_results
+            log(with_action_remark(f"Chest item analysis running for {output_dir}", action))
             summary = analyze_results(output_dir)
             log(
                 with_action_remark(
@@ -966,14 +969,21 @@ def chest_analysis_worker(ctx: RunContext, action: Dict[str, Any], output_dir: P
                 )
             )
         except Exception as error:
-            log(with_action_remark(f"Chest item analysis failed: {error}", action))
+            log(with_action_remark(f"Chest item analysis failed for {output_dir}: {error}", action))
+            log(with_action_remark(traceback.format_exc().rstrip(), action))
 
         with ctx.stats_lock:
             queue = ctx.runtime_values.get(CHEST_ANALYSIS_QUEUE_KEY)
             if not isinstance(queue, list) or not queue:
+                log(with_action_remark(f"Chest item analysis queue drained for {output_dir}", action))
                 ctx.runtime_values.pop(CHEST_ANALYSIS_TASK_KEY, None)
                 return
-            output_dir = Path(str(queue.pop(0)))
+            next_output_dir = Path(str(queue.pop(0)))
+            log(with_action_remark(
+                f"Chest item analysis dequeued next target {next_output_dir} (remaining {len(queue)})",
+                action,
+            ))
+            output_dir = next_output_dir
 
 
 def schedule_chest_analysis(ctx: RunContext, action: Dict[str, Any], output_dir: Path) -> None:
@@ -982,10 +992,17 @@ def schedule_chest_analysis(ctx: RunContext, action: Dict[str, Any], output_dir:
         if not isinstance(queue, list):
             queue = []
             ctx.runtime_values[CHEST_ANALYSIS_QUEUE_KEY] = queue
+        log(with_action_remark(
+            f"Queue chest analysis for {output_dir} (before={len(queue)})",
+            action,
+        ))
         queue.append(output_dir)
         previous = ctx.runtime_values.get(CHEST_ANALYSIS_TASK_KEY)
         if isinstance(previous, threading.Thread) and previous.is_alive():
-            log(with_action_remark("Chest item analysis queued in background", action))
+            log(with_action_remark(
+                f"Chest item analysis queued in background (pending={len(queue)})",
+                action,
+            ))
             return
         thread = threading.Thread(
             target=chest_analysis_worker,
@@ -997,8 +1014,12 @@ def schedule_chest_analysis(ctx: RunContext, action: Dict[str, Any], output_dir:
         if isinstance(tasks, list):
             tasks.append(thread)
         ctx.runtime_values[CHEST_ANALYSIS_TASK_KEY] = thread
+        log(with_action_remark(
+            f"Starting chest analysis worker thread for {output_dir} (pending={len(queue)})",
+            action,
+        ))
         thread.start()
-    log(with_action_remark("Chest item analysis scheduled in background", action))
+    log(with_action_remark(f"Chest item analysis scheduled in background for {output_dir}", action))
 
 
 def do_analyze_chest_results(ctx: RunContext, action: Dict[str, Any]) -> None:
@@ -1006,6 +1027,7 @@ def do_analyze_chest_results(ctx: RunContext, action: Dict[str, Any]) -> None:
         log(with_action_remark("[DRY-RUN] analyze_chest_results skipped", action))
         return
     output_dir = screenshot_output_dir(ctx, action)
+    log(with_action_remark(f"Manual chest reanalyze requested for {output_dir}", action))
     schedule_chest_analysis(ctx, action, output_dir)
 
 

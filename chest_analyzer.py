@@ -18,6 +18,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 from PIL import Image, ImageOps
+from PIL import UnidentifiedImageError
 
 try:
     import fcntl
@@ -1111,6 +1112,19 @@ def analyze_results(
 ) -> Dict[str, int]:
     results_dir.mkdir(parents=True, exist_ok=True)
     with chest_analysis_lock(results_dir):
+        print(
+            json.dumps(
+                {
+                    "event": "chest_analyzer_start",
+                    "results_dir": str(results_dir),
+                    "force": force,
+                    "day": day,
+                    "user_id": user_id,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
         catalog_path = results_dir / CATALOG_FILE
         catalog = load_catalog(catalog_path)
         metadata = screenshot_metadata(results_dir)
@@ -1118,6 +1132,7 @@ def analyze_results(
         digit_model = load_quantity_digit_model(results_dir, corrections)
         existing = {str(record.get("screenshot_path", "")): record for record in read_json_lines(results_dir / EVENTS_FILE)}
         analyzed = 0
+        skipped: List[str] = []
         for image_path in chest_screenshot_paths(results_dir):
             resolved = str(image_path.resolve())
             screenshot_record = metadata.get(resolved, {})
@@ -1132,8 +1147,11 @@ def analyze_results(
                 continue
             if not force and resolved in existing:
                 continue
-            existing[resolved] = analyze_screenshot(image_path, results_dir, catalog, metadata, corrections, digit_model)
-            analyzed += 1
+            try:
+                existing[resolved] = analyze_screenshot(image_path, results_dir, catalog, metadata, corrections, digit_model)
+                analyzed += 1
+            except (UnidentifiedImageError, OSError) as error:
+                skipped.append(f"{image_path.name}: {error}")
         records = sorted(existing.values(), key=lambda record: str(record.get("captured_at", "")), reverse=True)
         write_json_lines(results_dir / EVENTS_FILE, records)
         referenced_ids = {
@@ -1148,6 +1166,18 @@ def analyze_results(
         ]
         save_catalog(catalog_path, catalog)
         unknown = sum(1 for item in catalog.get("items", []) if item.get("category") == "unknown")
+        if skipped:
+            print(
+                json.dumps(
+                    {
+                        "event": "chest_analyzer_skipped",
+                        "count": len(skipped),
+                        "files": skipped[:20],
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
         return {"analyzed": analyzed, "events": len(records), "unknown_items": unknown}
 
 
