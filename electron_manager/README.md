@@ -32,12 +32,34 @@ npm run dev
 ```sh
 npm run package:mac
 npm run package:win
+npm run package:win7
 ```
 
-`package:mac` produces a macOS DMG. `package:win` targets mainstream
-Windows x64 machines and produces an NSIS installer executable. Build the Windows
-installer on Windows CI or a Windows host for the most reliable native
-packaging and code-signing workflow.
+`package:mac` produces a macOS DMG and ZIP. `package:win` targets mainstream
+Windows x64 machines and produces a Windows 10/11 NSIS installer and ZIP.
+`package:win7` produces a separate Windows 7 SP1 x64 legacy NSIS installer and
+ZIP.
+
+For manual Windows packaging, run the commands in this order on a Windows host:
+
+```sh
+cd electron_manager
+npm ci
+npm run build
+powershell -ExecutionPolicy Bypass -File scripts/build_windows_runtime.ps1 -Python python
+npm run package:win
+```
+
+For the Windows 7 legacy package, use Python 3.8 and the legacy runtime output
+directory:
+
+```sh
+powershell -ExecutionPolicy Bypass -File scripts/build_windows_runtime.ps1 -Python python -Windows7Legacy -OutputDirectory vendor/windows/win7-x64
+npm run package:win7
+```
+
+`prepackage:win` and `prepackage:win7` only verify that the matching runtime is
+already present.
 
 ## Professional edition activation
 
@@ -94,8 +116,9 @@ npm run license:issue:local -- "customer-installation-id" 3
 
 ### GitHub Releases 自动更新
 
-现代 Windows 10/11 版和 macOS 版使用 GitHub Releases 作为更新源。应用启动
-后会自动检查更新；用户可以在“设置”中手动检查、下载并重启安装。发布流程：
+现代 Windows 10/11 版和 macOS 版使用 GitHub Releases 作为更新源。
+Windows 7 兼容版是单独的发布产物，不和现代版混装。应用启动后会自动检查更新；
+用户可以在“设置”中手动检查、下载并重启安装。发布流程：
 
 ```sh
 cd electron_manager
@@ -106,8 +129,11 @@ git tag "v$(node -p "require('./package.json').version")"
 git push origin main --tags
 ```
 
-推送 `v*` 标签后，GitHub Actions 会构建 Windows 和 macOS 安装包，并自动创建 GitHub Release。Windows 版需要 Release 中包含对应的
-`latest.yml`；如果要发布 macOS 更新，还需要把 `package:mac` 生成的 DMG 和 `latest-mac.yml` 一并上传到同一个 Release。
+推送 `v*` 标签后，GitHub Actions 会构建 Windows 10/11 版、Windows 7 兼容版和
+macOS 安装包，并自动创建 GitHub Release。Windows 10/11 版需要 Release 中包含
+对应的 `latest.yml`；Windows 7 兼容版会单独输出到 `release/win7-legacy`。
+如果要发布 macOS 更新，还需要把 `package:mac` 生成的 DMG 和 `latest-mac.yml`
+一并上传到同一个 Release。
 
 GitHub Actions 需要仓库允许 workflow 使用 `contents: write`，本项目工作流
 已配置该权限。首次上线前应先用测试版本验证安装、下载、重启和回滚流程。

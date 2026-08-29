@@ -3,7 +3,7 @@ import electronUpdater from "electron-updater";
 import { ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, copyFileSync, renameSync, writeFileSync, unlinkSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { activateLicense, clearLicense, getLicenseStatus } from "./license.js";
@@ -374,6 +374,127 @@ async function runCommand(command: string, args: string[], backend: "adb" | "hdc
   });
 }
 
+async function runCommandBuffer(command: string, args: string[], backend: "adb" | "hdc" = "adb") {
+  return new Promise<{ code: number; stdout: Buffer; stderr: string }>((resolve) => {
+    let executable: string;
+    try {
+      executable = backend === "hdc" ? resolveHdcExecutable(command) : resolveAdbExecutable(command);
+    } catch (error) {
+      resolve({ code: -1, stdout: Buffer.alloc(0), stderr: String(error) });
+      return;
+    }
+    const proc = spawn(executable, args, { windowsHide: true, env: runtimeEnvironment() });
+    const chunks: Buffer[] = [];
+    let stderr = "";
+    proc.stdout.on("data", (data) => chunks.push(Buffer.from(data)));
+    proc.stderr.on("data", (data) => (stderr += data.toString("utf8")));
+    proc.on("error", (error) => resolve({ code: -1, stdout: Buffer.alloc(0), stderr: error.message }));
+    proc.on("close", (code) => resolve({ code: code ?? -1, stdout: Buffer.concat(chunks), stderr }));
+  });
+}
+
+function splitTargetArgs(args: string[]): { target: string; rest: string[] } {
+  if (args[0] === "-t" && args[1]) return { target: args[1], rest: args.slice(2) };
+  if (args[0] === "-s" && args[1]) return { target: args[1], rest: args.slice(2) };
+  return { target: "", rest: args };
+}
+
+function hdcUiInputArgs(shellArgs: string[]): string[] | null {
+  if (shellArgs[0] !== "input") return null;
+  let inputArgs = shellArgs.slice(1);
+  if (["touchscreen", "touchpad", "mouse", "keyboard"].includes(inputArgs[0])) inputArgs = inputArgs.slice(1);
+  if ((inputArgs[0] === "tap" || inputArgs[0] === "click") && inputArgs.length >= 3) {
+    return ["uitest", "uiInput", "click", inputArgs[1], inputArgs[2]];
+  }
+  if (["doubleclick", "double_click", "double-tap", "doubletap"].includes(inputArgs[0]) && inputArgs.length >= 3) {
+    return ["uitest", "uiInput", "doubleClick", inputArgs[1], inputArgs[2]];
+  }
+  if (["longclick", "long_click", "longpress", "long_press"].includes(inputArgs[0]) && inputArgs.length >= 3) {
+    return ["uitest", "uiInput", "longClick", inputArgs[1], inputArgs[2]];
+  }
+  if (inputArgs[0] === "swipe" && inputArgs.length >= 5) {
+    return ["uinput", "-T", "-m", inputArgs[1], inputArgs[2], inputArgs[3], inputArgs[4], "-k", "0", inputArgs[5] || "300"];
+  }
+  if (inputArgs[0] === "drag" && inputArgs.length >= 5) {
+    return ["uinput", "-T", "-m", inputArgs[1], inputArgs[2], inputArgs[3], inputArgs[4], "-k", "500", inputArgs[5] || "600"];
+  }
+  if (inputArgs[0] === "fling" && inputArgs.length >= 5) {
+    return ["uitest", "uiInput", "fling", inputArgs[1], inputArgs[2], inputArgs[3], inputArgs[4], hdcSwipeVelocity(inputArgs[1], inputArgs[2], inputArgs[3], inputArgs[4], inputArgs[5])];
+  }
+  if ((inputArgs[0] === "keyevent" || inputArgs[0] === "key") && inputArgs[1]) {
+    return ["uitest", "uiInput", "keyEvent", hdcKeyValue(inputArgs[1])];
+  }
+  if (inputArgs[0] === "text" && inputArgs[1]) {
+    return ["uitest", "uiInput", "text", ...inputArgs.slice(1)];
+  }
+  if (inputArgs[0] === "back" || inputArgs[0] === "home") {
+    return ["uitest", "uiInput", "keyEvent", inputArgs[0] === "back" ? "Back" : "Home"];
+  }
+  return null;
+}
+
+function hdcSwipeVelocity(x1: string, y1: string, x2: string, y2: string, durationMs?: string): string {
+  if (!durationMs) return "600";
+  const dx = Number(x2) - Number(x1);
+  const dy = Number(y2) - Number(y1);
+  const duration = Math.max(1, Number(durationMs));
+  if (!Number.isFinite(dx) || !Number.isFinite(dy) || !Number.isFinite(duration)) return "600";
+  const velocity = Math.round(Math.hypot(dx, dy) * 1000 / duration);
+  return String(Math.max(200, Math.min(40000, velocity)));
+}
+
+function hdcKeyValue(rawKey: string): string {
+  const key = rawKey.trim();
+  const lowered = key.toLowerCase();
+  if (lowered === "keycode_back" || lowered === "back") return "Back";
+  if (lowered === "keycode_home" || lowered === "home") return "Home";
+  if (lowered === "keycode_power" || lowered === "power") return "Power";
+  return key;
+}
+
+function hdcCompatArgs(args: string[]): string[] {
+  const { target, rest } = splitTargetArgs(args);
+  const prefix = target ? ["-t", target] : [];
+  if (rest[0] === "get-state") return [...prefix, "shell", "echo", "device"];
+  if (rest[0] === "shell") {
+    const shellArgs = rest.slice(1);
+    const inputArgs = hdcUiInputArgs(shellArgs);
+    if (inputArgs) return [...prefix, "shell", ...inputArgs];
+    if (shellArgs[0] === "screencap") return [...prefix, "shell", "uitest", "screenCap", "-p", "/data/local/tmp/bsmanager_shell_screencap.png"];
+    if (shellArgs[0] === "uiautomator" && shellArgs[1] === "dump") {
+      const savePath = shellArgs.find((item) => item.startsWith("/")) || "/data/local/tmp/window_dump.json";
+      return [...prefix, "shell", "uitest", "dumpLayout", "-p", savePath];
+    }
+  }
+  return [...prefix, ...rest];
+}
+
+async function hdcScreenshotBuffer(hdcPath: string, target: string): Promise<Buffer> {
+  const remotePath = `/data/local/tmp/bsmanager_screen_${process.pid}_${Date.now()}.png`;
+  const localPath = path.join(tmpdir(), `bsmanager-hdc-screen-${process.pid}-${Date.now()}.png`);
+  const targetArgs = target ? ["-t", target] : [];
+  const capture = await runCommand(hdcPath, [...targetArgs, "shell", "uitest", "screenCap", "-p", remotePath], "hdc");
+  if (capture.code !== 0) throw new Error(capture.text || "HDC screenCap failed");
+  const recv = await runCommand(hdcPath, [...targetArgs, "file", "recv", remotePath, localPath], "hdc");
+  await runCommand(hdcPath, [...targetArgs, "shell", "rm", "-f", remotePath], "hdc");
+  if (recv.code !== 0) throw new Error(recv.text || "HDC screenshot fetch failed");
+  try {
+    return readFileSync(localPath);
+  } finally {
+    try { unlinkSync(localPath); } catch { /* ignore temp cleanup */ }
+  }
+}
+
+async function hdcScreenSizeText(hdcPath: string, target: string): Promise<string> {
+  const image = await hdcScreenshotBuffer(hdcPath, target);
+  if (image.length < 24 || image.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") {
+    throw new Error("HDC screenshot did not return a PNG image");
+  }
+  const width = image.readUInt32BE(16);
+  const height = image.readUInt32BE(20);
+  return `Physical size: ${width}x${height}\n`;
+}
+
 async function listAdbDevices(adbPath: string): Promise<string[]> {
   const result = await runCommand(adbPath || getSettings().adbPath, ["devices"]);
   if (result.code !== 0) throw new Error(result.text);
@@ -724,12 +845,25 @@ app.whenReady().then(() => {
   });
   ipcMain.handle("adb:run", (_, rawToolPaths: unknown, args: string[], requestedBackend?: "adb" | "hdc") => {
     const { adbPath, hdcPath } = commandToolPaths(rawToolPaths);
-    return runCommand(requestedBackend === "hdc" ? hdcPath : adbPath, args, requestedBackend === "hdc" ? "hdc" : "adb");
+    if (requestedBackend === "hdc") {
+      const { target, rest } = splitTargetArgs(args);
+      if (rest[0] === "shell" && rest[1] === "wm" && rest[2] === "size") {
+        return hdcScreenSizeText(hdcPath, target).then(
+          (text) => ({ code: 0, text }),
+          (error) => ({ code: -1, text: String(error) }),
+        );
+      }
+      return runCommand(hdcPath, hdcCompatArgs(args), "hdc");
+    }
+    return runCommand(adbPath, args, "adb");
   });
   ipcMain.handle("adb:screenshot", async (_, rawToolPaths: unknown, device: string) => {
     const { backend, target } = splitDeviceBackend(device);
-    if (backend === "hdc") throw new Error("HarmonyOS/HDC 设备暂不支持此截图路径");
-    const { adbPath } = commandToolPaths(rawToolPaths);
+    const { adbPath, hdcPath } = commandToolPaths(rawToolPaths);
+    if (backend === "hdc") {
+      const result = await hdcScreenshotBuffer(hdcPath, target);
+      return `data:image/png;base64,${result.toString("base64")}`;
+    }
     const executable = resolveAdbExecutable(adbPath || getSettings().adbPath);
     const result = await new Promise<Buffer>((resolve, reject) => {
       const proc = spawn(executable, ["-s", target, "exec-out", "screencap", "-p"], { windowsHide: true, env: runtimeEnvironment() });
@@ -1389,6 +1523,11 @@ function chestResultsRoot() {
   return path.join(runtimeRoot(), "diagnostics", "chest_results");
 }
 
+function chestEventPathKey(rawPath: unknown) {
+  const value = String(rawPath || "");
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : path.resolve(value);
+}
+
 function writeChestScreenshotIndexCsv(root: string, records: Array<Record<string, unknown>>) {
   const escape = (value: unknown) => `"${String(value ?? "").replace(/"/g, "\"\"")}"`;
   const rows = [
@@ -1528,9 +1667,9 @@ function correctChestEvent(
   metadata?: { userId: string; sourceId: string; sourceName: string },
 ) {
   const root = chestResultsRoot();
-  const targetPath = path.resolve(String(rawScreenshotPath || ""));
+  const targetPath = chestEventPathKey(rawScreenshotPath);
   const events = chestItemEventsFromFile();
-  const event = events.find((candidate) => path.resolve(String(candidate.screenshot_path ?? "")) === targetPath);
+  const event = events.find((candidate) => chestEventPathKey(candidate.screenshot_path) === targetPath);
   if (!event) throw new Error("未找到对应的开箱事件");
   const userId = String(metadata?.userId ?? event.user_id ?? "default");
   const sourceId = String(metadata?.sourceId ?? event.source_id ?? "").trim();
@@ -1558,7 +1697,7 @@ function correctChestEvent(
   const previous = corrections.events[capturedAt] ?? [];
   const keyedPrevious = corrections.events[correctionKey] ?? previous;
   const previousBySlot = new Map(keyedPrevious.map((item) => [Number(item.slot), item]));
-  corrections.events[correctionKey] = clean.map((item) => ({
+  const correctionRows = clean.map((item) => ({
     ...(previousBySlot.get(item.slot) ?? {}),
     slot: item.slot,
     quantity: item.quantity,
@@ -1566,32 +1705,25 @@ function correctChestEvent(
     ...(item.item_id ? { item_id: item.item_id } : {}),
     ...(item.icon_crop_path ? { icon_crop_path: item.icon_crop_path, crop_path: item.icon_crop_path } : {}),
   }));
+  corrections.events[correctionKey] = correctionRows;
+  corrections.events[targetPath] = correctionRows;
+  if (capturedAt) corrections.events[capturedAt] = correctionRows;
   writeFileSync(correctionsPath, `${JSON.stringify(corrections, null, 2)}\n`, "utf8");
   const eventItems = Array.isArray(event.items) ? event.items as Array<unknown> : [];
-  event.items = eventItems;
-  for (const item of clean) {
-    const target = eventItems[item.slot - 1];
-    if (target && typeof target === "object") {
-      (target as Record<string, unknown>).quantity = item.quantity;
-      (target as Record<string, unknown>).item_name = item.item_name;
-      if (item.item_id) (target as Record<string, unknown>).item_id = item.item_id;
-      if (item.icon_crop_path) {
-        (target as Record<string, unknown>).icon_crop_path = item.icon_crop_path;
-        (target as Record<string, unknown>).crop_path = item.icon_crop_path;
-      }
-    } else if (item.slot > eventItems.length) {
-      eventItems.push({
-        slot: item.slot,
-        row: Math.floor((item.slot - 1) / 5) + 1,
-        column: ((item.slot - 1) % 5) + 1,
-        item_id: item.item_id ?? `calibrated_${String(event.event_id ?? "event")}_${item.slot}`,
-        item_name: item.item_name,
-        quantity: item.quantity,
-        ...(item.icon_crop_path ? { icon_crop_path: item.icon_crop_path, crop_path: item.icon_crop_path } : {}),
-        manual_correction: true,
-      });
-    }
-  }
+  event.items = clean.map((item) => {
+    const previous = eventItems[item.slot - 1];
+    return {
+      ...(previous && typeof previous === "object" ? previous as Record<string, unknown> : {}),
+      slot: item.slot,
+      row: Math.floor((item.slot - 1) / 5) + 1,
+      column: ((item.slot - 1) % 5) + 1,
+      item_id: item.item_id ?? `calibrated_${String(event.event_id ?? "event")}_${item.slot}`,
+      item_name: item.item_name,
+      quantity: item.quantity,
+      ...(item.icon_crop_path ? { icon_crop_path: item.icon_crop_path, crop_path: item.icon_crop_path } : {}),
+      manual_correction: true,
+    };
+  });
   event.user_id = userId;
   event.source_id = sourceId;
   event.source_name = sourceName;
@@ -1602,7 +1734,7 @@ function correctChestEvent(
       try { return [JSON.parse(line) as Record<string, unknown>]; } catch { return []; }
     });
     for (const record of indexRecords) {
-      if (path.resolve(String(record.before_path ?? "")) !== targetPath) continue;
+      if (chestEventPathKey(record.before_path) !== targetPath) continue;
       record.user_id = userId;
       record.source_id = sourceId;
       record.source_name = sourceName;
@@ -1615,21 +1747,37 @@ function correctChestEvent(
 
 function deleteChestEvent(rawScreenshotPath: string) {
   const root = chestResultsRoot();
-  const target = path.resolve(String(rawScreenshotPath || ""));
-  if (!target.startsWith(`${root}${path.sep}`) || !existsSync(target)) throw new Error("截图路径无效");
-  const events = chestItemEventsFromFile().filter((event) => path.resolve(String(event.screenshot_path ?? "")) !== target);
+  const target = chestEventPathKey(rawScreenshotPath);
+  const isFileTarget = !/^[a-z][a-z0-9+.-]*:\/\//i.test(String(rawScreenshotPath || ""));
+  if (isFileTarget && !target.startsWith(`${root}${path.sep}`)) throw new Error("截图路径无效");
+  const currentEvents = chestItemEventsFromFile();
+  const events = currentEvents.filter((event) => chestEventPathKey(event.screenshot_path) !== target);
   // The event id is derived from the absolute screenshot path, so locate its
   // crop directory by matching the event before removing it.
-  const removed = chestItemEventsFromFile().find((event) => path.resolve(String(event.screenshot_path ?? "")) === target);
+  const removed = currentEvents.find((event) => chestEventPathKey(event.screenshot_path) === target);
   const cropDir = removed ? path.join(root, "item_crops", String(removed.event_id ?? "")) : "";
-  unlinkSync(target);
+  let foundIndexRecord = false;
+  if ((!isFileTarget || !existsSync(target)) && !removed) {
+    const indexFile = path.join(root, "index.jsonl");
+    if (existsSync(indexFile)) {
+      foundIndexRecord = readFileSync(indexFile, "utf8").split(/\r?\n/).filter(Boolean).some((line) => {
+        try {
+          const record = JSON.parse(line) as Record<string, unknown>;
+          return chestEventPathKey(record.before_path) === target || chestEventPathKey(record.after_path) === target;
+        } catch { return false; }
+      });
+    }
+    if (!foundIndexRecord) throw new Error("截图路径无效");
+  }
+  if (isFileTarget && existsSync(target)) unlinkSync(target);
   writeFileSync(path.join(root, "item_events.jsonl"), events.map((event) => JSON.stringify(event)).join("\n") + (events.length ? "\n" : ""), "utf8");
   const indexFile = path.join(root, "index.jsonl");
   if (existsSync(indexFile)) {
     const indexRecords = readFileSync(indexFile, "utf8").split(/\r?\n/).filter(Boolean).flatMap((line) => {
       try { return [JSON.parse(line) as Record<string, unknown>]; } catch { return []; }
-    }).filter((record) => path.resolve(String(record.before_path ?? "")) !== target && path.resolve(String(record.after_path ?? "")) !== target);
+    }).filter((record) => chestEventPathKey(record.before_path) !== target && chestEventPathKey(record.after_path) !== target);
     writeFileSync(indexFile, indexRecords.map((record) => JSON.stringify(record)).join("\n") + (indexRecords.length ? "\n" : ""), "utf8");
+    writeChestScreenshotIndexCsv(root, indexRecords);
   }
   if (existsSync(cropDir)) rmSync(cropDir, { recursive: true, force: true });
   return { deleted: target };

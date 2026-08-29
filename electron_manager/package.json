@@ -13,7 +13,10 @@
     "build": "tsc -p tsconfig.electron.json && node scripts/copy_legacy_entry.mjs && vite build",
     "package": "npm run build && electron-builder",
     "package:mac": "npm run build && electron-builder --mac",
+    "prepackage:win": "node scripts/verify_windows_runtime.mjs",
     "package:win": "npm run build && electron-builder --win --x64",
+    "prepackage:win7": "node scripts/verify_windows_runtime.mjs vendor/windows/win7-x64",
+    "package:win7": "npm run build && electron-builder --win --x64 --config electron-builder.win7.cjs",
     "license:keygen": "node scripts/license.mjs keygen",
     "license:issue": "node scripts/license.mjs issue",
     "license:issue:local": "node scripts/issue-local-license.mjs"
@@ -85,17 +88,23 @@
       {
         "from": "../image_templates",
         "to": "runtime/image_templates"
+      },
+      {
+        "from": "vendor/windows/x64",
+        "to": "runtime/windows/x64"
       }
     ],
     "mac": {
       "target": [
-        "dmg"
+        "dmg",
+        "zip"
       ],
       "category": "public.app-category.utilities"
     },
     "win": {
       "target": [
-        "nsis"
+        "nsis",
+        "zip"
       ]
     },
     "nsis": {
