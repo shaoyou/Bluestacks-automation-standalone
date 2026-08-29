@@ -136,7 +136,7 @@ Windows 7 兼容版是单独的发布产物，不和现代版混装。应用启�
 
 ```json
 {
-  "version": 1,
+  "schemaVersion": 1,
   "defaultChannel": "stable",
   "channels": {
     "stable": {
@@ -153,6 +153,8 @@ Windows 7 兼容版是单独的发布产物，不和现代版混装。应用启�
 
 内测期可以把 `beta.latest` 逐步升高；正式发布时，把 `stable.minVersion` 改成正式版版本号，
 旧内测包启动后就会被直接拦住，只能先更新。
+
+注意：`latest` 只是“有新版本可下”，`minVersion` 才是“低于这个版本必须拦住”。
 
 发布流程：
 

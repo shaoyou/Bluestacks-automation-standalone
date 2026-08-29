@@ -42,7 +42,8 @@ type UpdatePolicyChannel = {
 };
 
 type UpdatePolicyFile = {
-  version: number;
+  schemaVersion?: number;
+  version?: number;
   defaultChannel?: string;
   channels: Record<string, UpdatePolicyChannel>;
 };
@@ -161,7 +162,7 @@ function normalizeUpdatePolicy(raw: unknown): UpdatePolicyFile | null {
     };
   }
   return {
-    version: Number(value.version ?? 1),
+    schemaVersion: Number(value.schemaVersion ?? value.version ?? 1),
     defaultChannel: typeof value.defaultChannel === "string" ? value.defaultChannel.trim() : undefined,
     channels,
   };

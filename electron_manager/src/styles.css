@@ -19,8 +19,10 @@ nav { display: grid; gap: 4px; }
 .nav-item { display: flex; align-items: center; gap: 11px; height: 40px; padding: 0 12px; border: 0; border-radius: 5px; color: #aebcc0; background: transparent; text-align: left; }
 .nav-item:hover { color: #e8eeee; background: #202a2f; }
 .nav-item.active { color: #f5fffb; background: #1d4f48; box-shadow: inset 3px 0 #8de1c2; }
-.sidebar-status { margin-top: auto; display: flex; align-items: flex-start; gap: 8px; padding: 12px; color: #8e9fa4; font-size: 12px; line-height: 1.45; }
+.sidebar-status { margin-top: auto; display: grid; grid-template-columns: 7px minmax(0, 1fr); gap: 8px 10px; padding: 12px; color: #8e9fa4; font-size: 12px; line-height: 1.45; }
 .status-dot { width: 7px; height: 7px; flex: 0 0 auto; margin-top: 5px; border-radius: 50%; background: #69cda8; }
+.sidebar-status-text { min-width: 0; }
+.sidebar-version { grid-column: 2; color: #617177; font-size: 11px; }
 .workbench { min-width: 0; overflow: auto; }
 .page { min-height: 100%; padding: 32px 36px; }
 .page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 26px; }
