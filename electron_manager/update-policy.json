@@ -7,11 +7,11 @@
   },
   "channels": {
     "stable": {
-      "latest": "1.2.14",
-      "minVersion": "1.2.14"
+      "latest": "1.2.15",
+      "minVersion": "1.2.15"
     },
     "beta": {
-      "latest": "1.2.14",
+      "latest": "1.2.15",
       "minVersion": "1.2.15"
     }
   }
