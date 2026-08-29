@@ -12,7 +12,7 @@
     },
     "beta": {
       "latest": "1.2.14",
-      "minVersion": "1.2.14"
+      "minVersion": "1.2.15"
     }
   }
 }
