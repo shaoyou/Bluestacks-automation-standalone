@@ -7,6 +7,7 @@
         {
           "type": "if_image",
           "templates": [
+            "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
             "../image_templates/bl_baoxiaoxing_1080x1920.png",
             "../image_templates/bl_baoxiaoxing.png"
           ],
@@ -151,10 +152,10 @@
                     },
                     {
                       "type": "save_screenshot",
-                  "analyze_chest_items": true,
-                  "storage_format": "webp",
-                  "crop_chest_result": true,
-                  "dir": "../diagnostics/chest_results",
+                      "analyze_chest_items": true,
+                      "storage_format": "webp",
+                      "crop_chest_result": true,
+                      "dir": "../diagnostics/chest_results",
                       "pair_key": "chest_normal",
                       "stage": "single",
                       "label": "normal_items",

@@ -12,15 +12,6 @@ function splitDeviceBackend(device: string): { backend: "adb" | "hdc"; target: s
   return { backend: "adb", target: value };
 }
 
-function hdcCommandArgs(args: string[]): string[] {
-  if (args[0] === "get-state") return ["shell", "echo", "ok"];
-  if (args[0] !== "shell" || args[1] !== "input") return args;
-  if (args[2] === "tap" && args.length >= 5) return ["shell", "uitest", "uiInput", "click", args[3], args[4]];
-  if (args[2] === "swipe" && args.length >= 7) return ["shell", "uitest", "uiInput", "swipe", args[3], args[4], args[5], args[6], ...(args[7] ? [args[7]] : [])];
-  if (args[2] === "keyevent" && args[3]) return ["shell", "uitest", "uiInput", "keyEvent", args[3]];
-  return args;
-}
-
 export function RecorderPage(props: SharedProps) {
   const [device, setDevice] = useState("");
   const [name, setName] = useState("recorded.json");
@@ -54,7 +45,7 @@ export function CalibrationPage(props: SharedProps) {
   const [cropHeight, setCropHeight] = useState("1920");
   useEffect(() => { if (!device && props.devices.length === 1) setDevice(props.devices[0]); }, [device, props.devices]);
   const picking = !!props.running["click-picker"];
-  const command = async (args: string[]) => { try { const selected = splitDeviceBackend(device); const backendArgs = selected.backend === "hdc" ? hdcCommandArgs(args) : args; const commandArgs = selected.backend === "hdc" ? ["-t", selected.target, ...backendArgs] : device ? ["-s", selected.target, ...backendArgs] : backendArgs; const output = await window.bsManager.adbRun({ adbPath: props.settings.adbPath, hdcPath: props.settings.hdcPath }, commandArgs, selected.backend); setScreen(output.text || `exit code ${output.code}`); if (output.code !== 0) props.setNotice(`设备命令失败，退出码 ${output.code}`); } catch (error) { setScreen(String(error)); props.setNotice(`设备命令失败: ${String(error)}`); } };
+  const command = async (args: string[]) => { try { const selected = splitDeviceBackend(device); const commandArgs = selected.backend === "hdc" ? ["-t", selected.target, ...args] : device ? ["-s", selected.target, ...args] : args; const output = await window.bsManager.adbRun({ adbPath: props.settings.adbPath, hdcPath: props.settings.hdcPath }, commandArgs, selected.backend); setScreen(output.text || `exit code ${output.code}`); if (output.code !== 0) props.setNotice(`设备命令失败，退出码 ${output.code}`); } catch (error) { setScreen(String(error)); props.setNotice(`设备命令失败: ${String(error)}`); } };
   const capture = async () => { if (!device) return props.setNotice("请填写目标设备序列号"); try { setImage(await window.bsManager.screenshot({ adbPath: props.settings.adbPath, hdcPath: props.settings.hdcPath }, device)); } catch (error) { setScreen(String(error)); } };
   const saveCrop = async () => {
     if (!image) return;

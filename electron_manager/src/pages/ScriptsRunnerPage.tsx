@@ -91,10 +91,11 @@ function ScreenshotSelector({
   image: string;
   mode: CaptureMode;
   onClose: () => void;
-  onSelect: (region: ImageRegion) => void;
+  onSelect: (region: ImageRegion, templateName?: string) => void;
 }) {
   const imageRef = useRef<HTMLImageElement>(null);
   const [selection, setSelection] = useState<ImageRegion | null>(null);
+  const [templateName, setTemplateName] = useState("captured_template");
   const dragStart = useRef<{ x: number; y: number } | null>(null);
   const toImagePoint = (event: React.MouseEvent<HTMLImageElement>) => {
     const element = imageRef.current;
@@ -134,7 +135,7 @@ function ScreenshotSelector({
           <i className="capture-selection" style={overlayStyle()} />
         </div>
       </div>
-      <footer><span>{selection && selection.width > 0 && selection.height > 0 ? `x=${selection.x}, y=${selection.y}, ${selection.width} x ${selection.height}` : "尚未选择区域"}</span><div><button className="button secondary" onClick={onClose}>取消</button><button className="button primary" disabled={!selection || selection.width < 1 || selection.height < 1} onClick={() => selection && onSelect(selection)}>{mode === "template" ? "裁剪并保存" : "使用此区域"}</button></div></footer>
+      <footer><span>{selection && selection.width > 0 && selection.height > 0 ? `x=${selection.x}, y=${selection.y}, ${selection.width} x ${selection.height}` : "尚未选择区域"}</span>{mode === "template" && <input className="capture-name-input" aria-label="模板文件名" value={templateName} onChange={(event) => setTemplateName(event.target.value)} />}<div><button className="button secondary" onClick={onClose}>取消</button><button className="button primary" disabled={!selection || selection.width < 1 || selection.height < 1 || (mode === "template" && !templateName.trim())} onClick={() => selection && onSelect(selection, templateName)}>{mode === "template" ? "裁剪并保存" : "使用此区域"}</button></div></footer>
     </section>
   </div>;
 }
@@ -226,13 +227,13 @@ export function ScriptsPage(props: SharedProps) {
       setCaptureMode(mode);
     } catch (error) { props.setNotice(`抓取设备截图失败: ${String(error)}`); }
   };
-  const saveTemplate = async (selection: ImageRegion) => {
+  const saveTemplate = async (selection: ImageRegion, suggestedName = "captured_template") => {
     try {
       const source = new Image();
       source.src = captureImage;
       await new Promise<void>((resolve, reject) => { source.onload = () => resolve(); source.onerror = () => reject(new Error("截图加载失败")); });
-      const suggested = window.prompt("模板文件名", "captured_template");
-      if (!suggested) return;
+      const suggested = suggestedName.trim();
+      if (!suggested) return props.setNotice("请输入模板文件名");
       const canvas = document.createElement("canvas");
       canvas.width = selection.width;
       canvas.height = selection.height;
@@ -299,7 +300,7 @@ export function ScriptsPage(props: SharedProps) {
         <section className="panel quick-actions-panel"><div className="panel-title"><span>摇杆轨迹</span></div><div className="quick-grid"><input aria-label="摇杆中心 X" value={wheelCenterX} onChange={(event) => setWheelCenterX(event.target.value)} /><input aria-label="距离底部" value={wheelBottomInset} onChange={(event) => setWheelBottomInset(event.target.value)} /></div><div className="quick-grid"><input aria-label="拖动秒数" value={wheelSeconds} onChange={(event) => setWheelSeconds(event.target.value)} /><input aria-label="拖动距离" value={wheelDistance} onChange={(event) => setWheelDistance(event.target.value)} /></div><div className="quick-grid"><input aria-label="拖动角度" value={wheelAngle} onChange={(event) => setWheelAngle(event.target.value)} /><button className="button secondary" onClick={() => insertDirection(numeric(wheelAngle, 0))}>插入角度拖动</button></div><div className="direction-buttons"><button className="icon-button" title="向左拖动" onClick={() => insertDirection(180)}><ChevronLeft size={18} /></button><button className="icon-button" title="向上拖动" onClick={() => insertDirection(90)}><ChevronUp size={18} /></button><button className="icon-button" title="向下拖动" onClick={() => insertDirection(-90)}><ChevronDown size={18} /></button><button className="icon-button" title="向右拖动" onClick={() => insertDirection(0)}><ChevronRight size={18} /></button><button className="button quiet" onClick={() => addTurn()}>加入多转向</button></div>{wheelTurns.length > 0 && <div className="wheel-turns">{wheelTurns.map((turn) => <div key={turn.id}><input aria-label="多转向角度" value={turn.angle} onChange={(event) => setWheelTurns((current) => current.map((item) => item.id === turn.id ? { ...item, angle: event.target.value } : item))} /><input aria-label="多转向秒数" value={turn.seconds} onChange={(event) => setWheelTurns((current) => current.map((item) => item.id === turn.id ? { ...item, seconds: event.target.value } : item))} /><button className="icon-button" title="删除步骤" onClick={() => setWheelTurns((current) => current.filter((item) => item.id !== turn.id))}><Trash2 size={14} /></button></div>)}<div className="quick-grid"><button className="button secondary" onClick={() => wheelTrace(wheelTurns.map((turn) => ({ angle: numeric(turn.angle, 0), seconds: Math.max(0.1, numeric(turn.seconds, 2)) })))}>插入多转向</button><button className="button quiet" onClick={() => setWheelTurns([])}>清空步骤</button></div></div>}</section>
       </aside>
     </div>
-    {captureMode && captureImage && <ScreenshotSelector image={captureImage} mode={captureMode} onClose={() => setCaptureMode(null)} onSelect={(selection) => { if (captureMode === "template") void saveTemplate(selection); else setSearchRegion(selection); }} />}
+    {captureMode && captureImage && <ScreenshotSelector image={captureImage} mode={captureMode} onClose={() => setCaptureMode(null)} onSelect={(selection, templateName) => { if (captureMode === "template") void saveTemplate(selection, templateName); else setSearchRegion(selection); }} />}
   </div>;
 }
 
@@ -314,9 +315,9 @@ export function RunnerPage(props: SharedProps & { runnerId?: string; initialPlan
   const [variables, setVariables] = useState<ScriptVariable[]>([]);
   const running = !!props.running[taskId];
   const rawLog = props.logs[taskId] ?? "";
-  const log = selection.showRealtimeLogs ? rawLog : rawLog.split(/\r?\n/).filter((line) => !/if_image \[\d+\/\d+\] template .+ not matched|CMD adb shell input tap/.test(line)).join("\n");
+  const log = selection.showRealtimeLogs ? rawLog : rawLog.split(/\r?\n/).filter((line) => !/if_image \[\d+\/\d+\] template .+ not matched|CMD (?:adb|hdc) shell input tap/.test(line)).join("\n");
   const cycles = (rawLog.match(/Loop start|循环开始|\[loop/gi) ?? []).length;
-  const clicks = (rawLog.match(/\bClick \(|点击\s*\(|adb shell input tap/g) ?? []).length;
+  const clicks = (rawLog.match(/\bClick \(|点击\s*\(|(?:adb|hdc) shell input tap/g) ?? []).length;
   const errors = (rawLog.match(/\bERROR\b|Traceback|错误/g) ?? []).length;
   const expectedProfit = Number.isFinite(Number(selection.profitPerCycle)) ? new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(Number(selection.profitPerCycle) * cycles) : "0";
   const canMultiRun = props.license?.tier === "pro" && props.license.valid;

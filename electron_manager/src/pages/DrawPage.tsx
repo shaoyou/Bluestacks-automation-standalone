@@ -32,7 +32,7 @@ export function DrawPage(props: SharedProps) {
   const [reportStartDay, setReportStartDay] = useState("");
   const running = !!props.running.draw;
   const rawLog = props.logs.draw ?? "";
-  const log = showRealtimeLogs ? rawLog : rawLog.split(/\r?\n/).filter((line) => !/if_image \[\d+\/\d+\] template .+ not matched|CMD adb shell input tap/.test(line)).join("\n");
+  const log = showRealtimeLogs ? rawLog : rawLog.split(/\r?\n/).filter((line) => !/if_image \[\d+\/\d+\] template .+ not matched|CMD (?:adb|hdc) shell input tap/.test(line)).join("\n");
   const plan = props.plans.includes("choukaka.json") ? "choukaka.json" : "";
   const selectedSession = sessions.find((item) => String(item.summary.session_id ?? "") === selectedSessionId) ?? sessions[0];
   const selectedPair = pairs.find((pair) => pairKey(pair) === selectedPairId) ?? pairs[0];

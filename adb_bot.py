@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import traceback
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -82,6 +83,7 @@ class PreparedTemplateVariant:
 
 _TEMPLATE_IMAGE_CACHE: Dict[Tuple[str, int, int], Image.Image] = {}
 _TEMPLATE_VARIANT_CACHE: Dict[Tuple[str, int, int, int, int, Tuple[float, ...]], List[PreparedTemplateVariant]] = {}
+_TEMPLATE_RESOLUTION_VARIANT_CACHE: Dict[Tuple[str, int, int], List[Path]] = {}
 SCREENSHOT_SESSION_KEY = "_save_screenshot_session_id"
 SCREENSHOT_COUNTERS_KEY = "_save_screenshot_pair_counters"
 SCREENSHOT_ACTIVE_KEY = "_save_screenshot_active_pairs"
@@ -243,7 +245,53 @@ def resolve_action_template_paths(
         contextual_path = resolve_action_file_path(ctx, "../image_templates/role_cancel_phone.png")
         if contextual_path.exists() and contextual_path not in template_paths:
             template_paths.insert(0, contextual_path)
-    return template_paths
+    return expand_resolution_template_paths(ctx, template_paths)
+
+
+def strip_resolution_suffix(stem: str) -> str:
+    match = re.match(r"^(.*)_\d+x\d+$", stem)
+    if match:
+        return match.group(1)
+    return stem
+
+
+def expand_resolution_template_paths(ctx: RunContext, template_paths: List[Path]) -> List[Path]:
+    if ctx.dst_screen_w <= 0 or ctx.dst_screen_h <= 0:
+        return template_paths
+
+    cache_key = tuple(sorted(str(path) for path in template_paths)), ctx.dst_screen_w, ctx.dst_screen_h
+    cached = _TEMPLATE_RESOLUTION_VARIANT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    expanded: List[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path) -> None:
+        key = str(path.expanduser().resolve())
+        if key in seen:
+            return
+        seen.add(key)
+        expanded.append(Path(key))
+
+    for path in template_paths:
+        resolved = path.expanduser().resolve()
+        base_stem = strip_resolution_suffix(resolved.stem)
+        exact_variant = resolved.with_name(f"{base_stem}_{ctx.dst_screen_w}x{ctx.dst_screen_h}{resolved.suffix}")
+        if exact_variant.exists():
+            add(exact_variant)
+        else:
+            wildcard = sorted(
+                candidate
+                for candidate in resolved.parent.glob(f"{base_stem}*{ctx.dst_screen_w}x{ctx.dst_screen_h}{resolved.suffix}")
+                if candidate.is_file() and candidate != resolved
+            )
+            for candidate in wildcard:
+                add(candidate)
+        add(resolved)
+
+    _TEMPLATE_RESOLUTION_VARIANT_CACHE[cache_key] = expanded
+    return expanded
 
 
 def image_search_action(action: Dict[str, Any], template_paths: List[Path]) -> Dict[str, Any]:
@@ -433,21 +481,97 @@ def build_backend_cmd(ctx: RunContext, extra: List[str]) -> List[str]:
     return build_adb_cmd(ctx, extra)
 
 
+def hdc_swipe_velocity(x1: str, y1: str, x2: str, y2: str, duration_ms: Optional[str]) -> str:
+    if not duration_ms:
+        return "600"
+    try:
+        dx = float(x2) - float(x1)
+        dy = float(y2) - float(y1)
+        duration = max(1.0, float(duration_ms))
+        velocity = int(round(((dx * dx + dy * dy) ** 0.5) * 1000.0 / duration))
+        return str(max(200, min(40000, velocity)))
+    except ValueError:
+        return "600"
+
+
+def hdc_key_value(raw_key: str) -> str:
+    key = raw_key.strip()
+    lowered = key.lower()
+    if lowered in {"keycode_back", "back"}:
+        return "Back"
+    if lowered in {"keycode_home", "home"}:
+        return "Home"
+    if lowered in {"keycode_power", "power"}:
+        return "Power"
+    return key
+
+
 def hdc_ui_input_args(shell_args: List[str]) -> Optional[List[str]]:
     if not shell_args or shell_args[0] != "input":
         return None
-    if len(shell_args) >= 4 and shell_args[1] in {"tap", "click"}:
-        return ["uitest", "uiInput", "click", shell_args[2], shell_args[3]]
-    if len(shell_args) >= 6 and shell_args[1] == "swipe":
-        return ["uitest", "uiInput", "swipe", shell_args[2], shell_args[3], shell_args[4], shell_args[5], *(shell_args[6:7])]
-    if len(shell_args) >= 3 and shell_args[1] in {"keyevent", "key"}:
-        return ["uitest", "uiInput", "keyEvent", shell_args[2]]
-    if len(shell_args) >= 3 and shell_args[1] == "text":
-        return ["uitest", "uiInput", "text", *shell_args[2:]]
-    if len(shell_args) >= 2 and shell_args[1] in {"back", "home"}:
-        key = "Back" if shell_args[1] == "back" else "Home"
+    input_args = shell_args[1:]
+    if input_args and input_args[0] in {"touchscreen", "touchpad", "mouse", "keyboard"}:
+        input_args = input_args[1:]
+    if len(input_args) >= 3 and input_args[0] in {"tap", "click"}:
+        return ["uitest", "uiInput", "click", input_args[1], input_args[2]]
+    if len(input_args) >= 3 and input_args[0] in {"doubleclick", "double_click", "double-tap", "doubletap"}:
+        return ["uitest", "uiInput", "doubleClick", input_args[1], input_args[2]]
+    if len(input_args) >= 3 and input_args[0] in {"longclick", "long_click", "longpress", "long_press"}:
+        return ["uitest", "uiInput", "longClick", input_args[1], input_args[2]]
+    if len(input_args) >= 5 and input_args[0] == "swipe":
+        duration = input_args[5] if len(input_args) >= 6 else "300"
+        return ["uinput", "-T", "-m", input_args[1], input_args[2], input_args[3], input_args[4], "-k", "0", duration]
+    if len(input_args) >= 5 and input_args[0] == "drag":
+        duration = input_args[5] if len(input_args) >= 6 else "600"
+        return ["uinput", "-T", "-m", input_args[1], input_args[2], input_args[3], input_args[4], "-k", "500", duration]
+    if len(input_args) >= 5 and input_args[0] == "fling":
+        velocity = hdc_swipe_velocity(input_args[1], input_args[2], input_args[3], input_args[4], input_args[5] if len(input_args) >= 6 else None)
+        return ["uitest", "uiInput", input_args[0], input_args[1], input_args[2], input_args[3], input_args[4], velocity]
+    if len(input_args) >= 2 and input_args[0] in {"keyevent", "key"}:
+        return ["uitest", "uiInput", "keyEvent", hdc_key_value(input_args[1])]
+    if len(input_args) >= 2 and input_args[0] == "text":
+        return ["uitest", "uiInput", "text", *input_args[1:]]
+    if input_args and input_args[0] in {"back", "home"}:
+        key = "Back" if input_args[0] == "back" else "Home"
         return ["uitest", "uiInput", "keyEvent", key]
     return None
+
+
+def hdc_touch_move(
+    ctx: RunContext,
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+    *,
+    keep_ms: int = 0,
+    smooth_ms: int = 1000,
+) -> None:
+    if ctx.device_backend != "hdc":
+        raise BotError("hdc_touch_move requires the HDC backend")
+    keep_ms = max(0, min(60000, int(keep_ms)))
+    smooth_ms = max(0, min(15000, int(smooth_ms)))
+    args = [
+        "uinput",
+        "-T",
+        "-m",
+        str(x1),
+        str(y1),
+        str(x2),
+        str(y2),
+        "-k",
+        str(keep_ms),
+        str(smooth_ms),
+    ]
+    pretty = " ".join(shlex.quote(p) for p in args)
+    if ctx.dry_run:
+        log(f"[DRY-RUN] hdc shell {pretty}")
+        return
+    log(f"CMD hdc shell {pretty}")
+    result = run_cmd(build_backend_cmd(ctx, ["shell"] + args), check=False)
+    if result.returncode != 0:
+        text = (result.stderr or result.stdout or "").strip()
+        raise BotError(f"HDC touch move failed: hdc shell {pretty}\n{text}")
 
 
 def adb_output_is_transient(text: str) -> bool:
@@ -486,19 +610,24 @@ def build_adb_cmd(ctx: RunContext, extra: List[str]) -> List[str]:
 
 def adb_shell(ctx: RunContext, shell_args: List[str]) -> None:
     pretty = " ".join(shlex.quote(p) for p in shell_args)
-    if ctx.dry_run:
-        log(f"[DRY-RUN] {ctx.device_backend} shell {pretty}")
-        return
-    log(f"CMD {ctx.device_backend} shell {pretty}")
     if ctx.device_backend == "hdc":
         hdc_args = hdc_ui_input_args(shell_args)
         if hdc_args is None:
             raise BotError(f"HDC backend only supports simple input actions for now: {pretty}")
+        hdc_pretty = " ".join(shlex.quote(p) for p in hdc_args)
+        if ctx.dry_run:
+            log(f"[DRY-RUN] hdc shell {hdc_pretty}")
+            return
+        log(f"CMD hdc shell {hdc_pretty}")
         result = run_cmd(build_backend_cmd(ctx, ["shell"] + hdc_args), check=False)
         if result.returncode != 0:
             text = (result.stderr or result.stdout or "").strip()
-            raise BotError(f"HDC shell failed: hdc shell {' '.join(shlex.quote(p) for p in hdc_args)}\n{text}")
+            raise BotError(f"HDC shell failed: hdc shell {hdc_pretty}\n{text}")
         return
+    if ctx.dry_run:
+        log(f"[DRY-RUN] {ctx.device_backend} shell {pretty}")
+        return
+    log(f"CMD {ctx.device_backend} shell {pretty}")
     cmd = build_adb_cmd(ctx, ["shell"] + shell_args)
     try:
         run_cmd(cmd)
@@ -554,7 +683,7 @@ def adb_exec_out_result(ctx: RunContext, extra: List[str]) -> subprocess.Complet
     if ctx.dry_run:
         return subprocess.CompletedProcess(args=[], returncode=0, stdout=b"", stderr=b"")
     if ctx.device_backend == "hdc":
-        return subprocess.CompletedProcess(args=[], returncode=1, stdout=b"", stderr=b"HDC screenshot is not supported in this runtime path.")
+        return hdc_screenshot_result(ctx.hdc_path, ctx.device)
     cmd = build_adb_cmd(ctx, ["exec-out"] + extra)
     return subprocess.run(cmd, capture_output=True, check=False)
 
@@ -571,6 +700,13 @@ def map_input_point(ctx: RunContext, x: int, y: int) -> Tuple[int, int]:
     mapped_x = max(0, min(ctx.dst_screen_w - 1, mapped_x))
     mapped_y = max(0, min(ctx.dst_screen_h - 1, mapped_y))
     return mapped_x, mapped_y
+
+
+def clamp_input_point(ctx: RunContext, x: int, y: int) -> Tuple[int, int]:
+    if ctx.dst_screen_w > 0 and ctx.dst_screen_h > 0:
+        x = max(0, min(ctx.dst_screen_w - 1, x))
+        y = max(0, min(ctx.dst_screen_h - 1, y))
+    return x, y
 
 
 def image_scale_factors(ctx: RunContext, image_size: Tuple[int, int]) -> Tuple[float, float]:
@@ -707,8 +843,53 @@ def do_input(ctx: RunContext, action: Dict[str, Any]) -> None:
         log(with_action_remark(f"Input tap ({x}, {y})", action))
         return
 
+    if command in {"doubleclick", "double_click", "double-tap", "doubletap"}:
+        x = int(action.get("x", input_args[0] if len(input_args) > 0 else 0))
+        y = int(action.get("y", input_args[1] if len(input_args) > 1 else 0))
+        x, y = map_input_point(ctx, x, y)
+        x = apply_jitter(x, ctx.jitter)
+        y = apply_jitter(y, ctx.jitter)
+        if ctx.device_backend == "hdc":
+            adb_shell(ctx, ["input", "doubleclick", str(x), str(y)])
+        else:
+            adb_shell(ctx, ["input", "tap", str(x), str(y)])
+            time.sleep(0.08)
+            adb_shell(ctx, ["input", "tap", str(x), str(y)])
+        log(with_action_remark(f"Input double click ({x}, {y})", action))
+        return
+
+    if command in {"longclick", "long_click", "longpress", "long_press"}:
+        x = int(action.get("x", input_args[0] if len(input_args) > 0 else 0))
+        y = int(action.get("y", input_args[1] if len(input_args) > 1 else 0))
+        duration = int(action.get("duration_ms", input_args[2] if len(input_args) > 2 else 800))
+        x, y = map_input_point(ctx, x, y)
+        x = apply_jitter(x, ctx.jitter)
+        y = apply_jitter(y, ctx.jitter)
+        if ctx.device_backend == "hdc":
+            adb_shell(ctx, ["input", "longclick", str(x), str(y)])
+        else:
+            adb_shell(ctx, ["input", "swipe", str(x), str(y), str(x), str(y), str(duration)])
+        log(with_action_remark(f"Input long click ({x}, {y})", action))
+        return
+
     if command == "swipe":
         do_swipe(ctx, action)
+        return
+
+    if command in {"drag", "fling"}:
+        x1, y1 = map_input_point(ctx, int(action["x1"]), int(action["y1"]))
+        x2, y2 = map_input_point(ctx, int(action["x2"]), int(action["y2"]))
+        duration = int(action.get("duration_ms", input_args[4] if len(input_args) > 4 else 450))
+        if ctx.device_backend != "hdc":
+            adb_shell(ctx, ["input", "swipe", str(x1), str(y1), str(x2), str(y2), str(duration)])
+        elif command == "drag":
+            press_ms = int(action.get("press_ms", action.get("press_time_ms", 500)))
+            total_ms = max(duration, press_ms + 500)
+            smooth_ms = max(1, total_ms - press_ms)
+            hdc_touch_move(ctx, x1, y1, x2, y2, keep_ms=press_ms, smooth_ms=smooth_ms)
+        else:
+            adb_shell(ctx, ["input", command, str(x1), str(y1), str(x2), str(y2), str(duration)])
+        log(with_action_remark(f"Input {command} ({x1}, {y1}) -> ({x2}, {y2})", action))
         return
 
     if command in {"keyevent", "key"}:
@@ -730,7 +911,7 @@ def do_input(ctx: RunContext, action: Dict[str, Any]) -> None:
         log(with_action_remark("Input text", action))
         return
 
-    raise BotError("input action requires command: tap/click/swipe/keyevent/back/home/text")
+    raise BotError("input action requires command: tap/click/doubleclick/longclick/swipe/drag/fling/keyevent/back/home/text")
 
 
 def do_click_match(ctx: RunContext, action: Dict[str, Any]) -> None:
@@ -753,10 +934,10 @@ def capture_device_screenshot(ctx: RunContext) -> Image.Image:
     result = adb_exec_out_result(ctx, ["screencap", "-p"])
     if result.returncode != 0:
         text = (result.stderr or b"").decode("utf-8", errors="ignore").strip()
-        raise BotError(f"ADB screencap failed:\n{text or 'unknown error'}")
+        raise BotError(f"{ctx.device_backend.upper()} screenshot failed:\n{text or 'unknown error'}")
     image_bytes = result.stdout
     if not image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
-        raise BotError("ADB screencap did not return a PNG image.")
+        raise BotError(f"{ctx.device_backend.upper()} screenshot did not return a PNG image.")
     try:
         image = Image.open(io.BytesIO(image_bytes))
         image.load()
@@ -3076,10 +3257,60 @@ def do_trace(ctx: RunContext, action: Dict[str, Any]) -> None:
         x, y = map_input_point(ctx, raw_x, raw_y)
         x += offset_x
         y += offset_y
-        if ctx.dst_screen_w > 0 and ctx.dst_screen_h > 0:
-            x = max(0, min(ctx.dst_screen_w - 1, x))
-            y = max(0, min(ctx.dst_screen_h - 1, y))
-        return x, y
+        return clamp_input_point(ctx, x, y)
+
+    def map_trace_vector_point(origin_raw: Dict[str, Any], target_raw: Dict[str, Any]) -> Tuple[int, int]:
+        if ctx.device_backend != "hdc" or ctx.src_screen_w <= 0 or ctx.src_screen_h <= 0:
+            return map_trace_point(int(target_raw["x"]), int(target_raw["y"]))
+        if ctx.dst_screen_w <= 0 or ctx.dst_screen_h <= 0:
+            return map_trace_point(int(target_raw["x"]), int(target_raw["y"]))
+
+        origin_x = int(origin_raw["x"])
+        origin_y = int(origin_raw["y"])
+        target_x = int(target_raw["x"])
+        target_y = int(target_raw["y"])
+        mapped_origin_x, mapped_origin_y = map_trace_point(origin_x, origin_y)
+        uniform_scale = ctx.dst_screen_w / float(ctx.src_screen_w)
+        x = mapped_origin_x + int(round((target_x - origin_x) * uniform_scale))
+        y = mapped_origin_y + int(round((target_y - origin_y) * uniform_scale))
+        return clamp_input_point(ctx, x, y)
+
+    if ctx.device_backend == "hdc":
+        first = points[0]
+        first_t = int(first.get("t_ms", 0))
+        last_t = first_t
+        try:
+            last_t = int(points[-1].get("t_ms", first_t))
+        except (TypeError, ValueError):
+            last_t = first_t
+        x0, y0 = map_trace_point(int(first["x"]), int(first["y"]))
+
+        target = points[-1]
+        target_t = last_t
+        for p in points[1:]:
+            x, y = map_trace_vector_point(first, p)
+            if (x, y) != (x0, y0):
+                target = p
+                try:
+                    target_t = int(p.get("t_ms", first_t))
+                except (TypeError, ValueError):
+                    target_t = first_t
+                break
+
+        x2, y2 = map_trace_vector_point(first, target)
+        total_ms = max(min_segment_ms, int(round((last_t - first_t) * trace_time_scale)))
+        smooth_ms = max(min_segment_ms, int(round((target_t - first_t) * trace_time_scale)))
+        smooth_ms = min(15000, smooth_ms)
+        keep_ms = max(0, total_ms - smooth_ms)
+        angle = math.degrees(math.atan2(-(y2 - y0), x2 - x0)) if (x2, y2) != (x0, y0) else 0.0
+
+        hdc_touch_move(ctx, x0, y0, x2, y2, keep_ms=keep_ms, smooth_ms=smooth_ms)
+        log(with_action_remark(
+            f"Trace replayed by HDC uinput touch move with {len(points)} points "
+            f"(angle={angle:.1f}deg, smooth={smooth_ms}ms, keep={keep_ms}ms)",
+            action,
+        ))
+        return
 
     if trace_mode == "motion":
         use_motion = supports_motionevent(ctx)
@@ -3226,6 +3457,10 @@ def execute_action(ctx: RunContext, action: Dict[str, Any]) -> None:
         do_trace(ctx, action)
     elif action_type == "input":
         do_input(ctx, action)
+    elif action_type in {"back", "home"}:
+        do_input(ctx, {"command": action_type, **action})
+    elif action_type in {"keyevent", "key"}:
+        do_input(ctx, {"command": "keyevent", **action})
     elif action_type == "log":
         do_log_action(action)
     elif action_type == "wait":
@@ -3408,6 +3643,52 @@ def get_device_screen_size(adb_path: str, device: Optional[str]) -> Tuple[int, i
     raise BotError(f"Cannot parse device screen size from adb output:\n{last_text.strip()}")
 
 
+def hdc_screenshot_result(hdc_path: str, device: Optional[str]) -> subprocess.CompletedProcess[bytes]:
+    target = device or "default"
+    remote_path = f"/data/local/tmp/bsmanager_screen_{os.getpid()}.png"
+    with tempfile.TemporaryDirectory(prefix="bsmanager-hdc-screen-") as tmp_dir:
+        local_path = Path(tmp_dir) / "screen.png"
+        capture_cmd = [hdc_path]
+        if device:
+            capture_cmd += ["-t", device]
+        capture_cmd += ["shell", "uitest", "screenCap", "-p", remote_path]
+        capture = run_cmd(capture_cmd, check=False)
+        if capture.returncode != 0:
+            text = f"{capture.stdout}\n{capture.stderr}".strip()
+            return subprocess.CompletedProcess(args=capture_cmd, returncode=capture.returncode, stdout=b"", stderr=f"Cannot capture HDC screen for {target}:\n{text}".encode("utf-8"))
+
+        recv_cmd = [hdc_path]
+        if device:
+            recv_cmd += ["-t", device]
+        recv_cmd += ["file", "recv", remote_path, str(local_path)]
+        recv = run_cmd(recv_cmd, check=False)
+        cleanup_cmd = [hdc_path]
+        if device:
+            cleanup_cmd += ["-t", device]
+        cleanup_cmd += ["shell", "rm", "-f", remote_path]
+        run_cmd(cleanup_cmd, check=False)
+        if recv.returncode != 0:
+            text = f"{recv.stdout}\n{recv.stderr}".strip()
+            return subprocess.CompletedProcess(args=recv_cmd, returncode=recv.returncode, stdout=b"", stderr=f"Cannot fetch HDC screen for {target}:\n{text}".encode("utf-8"))
+
+        try:
+            return subprocess.CompletedProcess(args=recv_cmd, returncode=0, stdout=local_path.read_bytes(), stderr=b"")
+        except OSError as exc:
+            return subprocess.CompletedProcess(args=recv_cmd, returncode=1, stdout=b"", stderr=f"Cannot read HDC screenshot for {target}: {exc}".encode("utf-8"))
+
+
+def get_hdc_device_screen_size(hdc_path: str, device: Optional[str]) -> Tuple[int, int]:
+    result = hdc_screenshot_result(hdc_path, device)
+    if result.returncode != 0:
+        text = (result.stderr or b"").decode("utf-8", errors="ignore").strip()
+        raise BotError(text or f"Cannot capture HDC screen for {device or 'default'}")
+    try:
+        image = Image.open(io.BytesIO(result.stdout))
+        return int(image.width), int(image.height)
+    except Exception as exc:
+        raise BotError(f"Cannot decode HDC screenshot size for {device or 'default'}: {exc}") from exc
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="BlueStacks/HarmonyOS automation bot")
     parser.add_argument("--plan", required=True, help="Path to plan JSON file")
@@ -3459,8 +3740,8 @@ def main() -> int:
     if not args.dry_run:
         if device_backend == "hdc":
             device = ensure_hdc_device_connected(args.hdc, device)
-            dst_screen_w, dst_screen_h = src_screen_w, src_screen_h
-            log("HarmonyOS/HDC backend enabled; screenshot/image actions are not supported in this mode.")
+            dst_screen_w, dst_screen_h = get_hdc_device_screen_size(args.hdc, device)
+            log("HarmonyOS/HDC backend enabled; screenshots use uitest screenCap and input uses uiInput.")
         else:
             device = ensure_device_connected(args.adb, device)
             dst_screen_w, dst_screen_h = get_device_screen_size(args.adb, device)
