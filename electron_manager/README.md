@@ -10,7 +10,7 @@ the Python source, plans, and image templates in their application resources.
 ## Development prerequisites
 
 - Android Platform Tools (`adb`) available on `PATH`, or configured in Settings.
-- HarmonyOS HDC bundled into the packaged app when the runtime staging step finds it, or configured in Settings.
+- HarmonyOS HDC bundled into the packaged app when the runtime staging step includes it, or configured in Settings.
 - Python 3 available on `PATH`, or configured in Settings.
 - Python dependencies required by the existing scripts:
 
@@ -54,7 +54,7 @@ powershell -ExecutionPolicy Bypass -File scripts/build_windows_runtime.ps1 -Pyth
 npm run package:win
 ```
 
-If DevEco Studio is installed on the build machine, the Windows runtime staging script will also try to bundle `hdc.exe` into the installer payload. You can override its location with `HDC_PATH` when needed.
+If a compatible `hdc.exe` already exists in `vendor/harmony/windows/x64`, the Windows runtime staging script will bundle it automatically. You can also override the source with `HDC_PATH` when needed.
 
 For the Windows 7 legacy package, use Python 3.8 and the legacy runtime output
 directory:

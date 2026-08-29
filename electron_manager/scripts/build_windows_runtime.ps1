@@ -47,6 +47,10 @@ foreach ($file in @("adb.exe", "AdbWinApi.dll", "AdbWinUsbApi.dll", "fastboot.ex
 
 function Resolve-HdcSource {
   param([string]$ExplicitPath)
+  $bundledPath = Join-Path $projectRoot "electron_manager/vendor/harmony/windows/x64/hdc.exe"
+  if (Test-Path $bundledPath) {
+    return (Resolve-Path $bundledPath).Path
+  }
   if ($ExplicitPath) {
     if (Test-Path $ExplicitPath) { return (Resolve-Path $ExplicitPath).Path }
     throw "HDC source not found: $ExplicitPath"
