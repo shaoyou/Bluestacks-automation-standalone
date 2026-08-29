@@ -2,6 +2,7 @@
   "name": "bs-manager-cross-platform",
   "private": true,
   "version": "1.2.14",
+  "channel": "stable",
   "description": "Cross-platform BlueStacks automation manager",
   "author": "熊熊乐园小助手",
   "main": "dist-electron/main.js",

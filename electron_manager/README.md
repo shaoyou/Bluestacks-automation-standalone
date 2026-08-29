@@ -132,6 +132,9 @@ Windows 7 兼容版是单独的发布产物，不和现代版混装。应用启�
 默认情况下，开发环境读取仓库内本地文件；打包后读取 GitHub Raw 地址。你也可以用环境变量
 `BSM_UPDATE_POLICY_URL` 覆盖策略地址。
 
+应用当前渠道不再从版本后缀推断，而是读 `electron_manager/package.json` 里的 `channel` 字段；
+也可以用环境变量 `BSM_APP_CHANNEL` 临时覆盖。`update-policy.json` 只负责更新规则，不负责识别渠道。
+
 示例：
 
 ```json
@@ -155,6 +158,8 @@ Windows 7 兼容版是单独的发布产物，不和现代版混装。应用启�
 旧内测包启动后就会被直接拦住，只能先更新。
 
 注意：`latest` 只是“有新版本可下”，`minVersion` 才是“低于这个版本必须拦住”。
+
+发布 beta 包时，把 `package.json` 里的 `channel` 改成 `beta`；正式版改回 `stable`。
 
 发布流程：
 

@@ -41,7 +41,6 @@ export function App() {
   const chestSourceId = query.get("sourceId") || "";
   const chestSourceName = query.get("sourceName") || "";
   const initialRunnerPlan = query.get("plan") || "";
-  const appVersion = updatePolicy?.currentVersion ?? update?.currentVersion ?? "unknown";
   const [page, setPage] = useState<Page>("runner");
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
   const [runtime, setRuntime] = useState<{ root: string; plansDir: string; templatesDir: string } | null>(null);
@@ -59,6 +58,8 @@ export function App() {
   const [activationError, setActivationError] = useState("");
   const [update, setUpdate] = useState<UpdateState | null>(null);
   const [updatePolicy, setUpdatePolicy] = useState<UpdatePolicyState | null>(null);
+  const appVersion = updatePolicy?.currentVersion ?? update?.currentVersion ?? "unknown";
+  const appChannel = updatePolicy?.channel ?? "stable";
 
   const refreshDevices = async () => {
     try {
@@ -342,7 +343,7 @@ export function App() {
             </button>
           ))}
         </nav>
-        <div className="sidebar-status"><span className="status-dot" /><span className="sidebar-status-text">{notice}</span><span className="sidebar-version">v{appVersion}</span></div>
+        <div className="sidebar-status"><span className="status-dot" /><span className="sidebar-status-text">{notice}</span><span className="sidebar-version">v{appVersion} · {appChannel}</span></div>
       </aside>
       <section className="workbench">
         {page === "scripts" && <ScriptsPage {...context} />}

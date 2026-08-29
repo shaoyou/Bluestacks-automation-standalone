@@ -142,6 +142,23 @@ function detectReleaseChannel(version: string): string {
   return parsed.prerelease[0]?.toLowerCase() || "beta";
 }
 
+function readAppChannelFromManifest(): string | undefined {
+  const override = process.env.BSM_APP_CHANNEL?.trim().toLowerCase();
+  if (override) return override;
+  try {
+    const manifest = JSON.parse(readFileSync(path.join(app.getAppPath(), "package.json"), "utf8")) as Record<string, unknown>;
+    const channel = typeof manifest.channel === "string" ? manifest.channel.trim().toLowerCase() : "";
+    if (channel) return channel;
+  } catch {
+    // Ignore and fall back to the version suffix.
+  }
+  return undefined;
+}
+
+function resolveAppChannel(): string {
+  return readAppChannelFromManifest() || detectReleaseChannel(app.getVersion());
+}
+
 function resolveUpdatePolicySource(): string {
   if (!app.isPackaged) return path.resolve(thisDir, "../update-policy.json");
   return process.env.BSM_UPDATE_POLICY_URL?.trim() || DEFAULT_UPDATE_POLICY_URL;
@@ -190,7 +207,7 @@ async function readUpdatePolicyFile(): Promise<UpdatePolicyFile | null> {
 
 function evaluateUpdatePolicy(policy: UpdatePolicyFile | null): UpdatePolicyState {
   const currentVersion = app.getVersion();
-  const channel = detectReleaseChannel(currentVersion);
+  const channel = resolveAppChannel();
   const sourceUrl = resolveUpdatePolicySource();
   if (!policy) {
     return {
