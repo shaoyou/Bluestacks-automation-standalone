@@ -426,6 +426,20 @@ function bundledPlansRoot(): string {
     : path.join(bundledRuntimeRoot(), "plans");
 }
 
+function bundledToolRoot(): string {
+  return isDevelopment
+    ? path.resolve(thisDir, "../vendor")
+    : path.join(process.resourcesPath, "runtime");
+}
+
+function bundledExecutableDirectories(): string[] {
+  return [
+    path.join(bundledToolRoot(), "windows", "x64"),
+    path.join(bundledToolRoot(), "harmony", "windows", "x64"),
+    path.join(bundledToolRoot(), "harmony", "macos"),
+  ].filter((directory) => existsSync(directory));
+}
+
 function copyResources(sourceDir: string, targetDir: string, overwriteExisting = false) {
   if (!existsSync(sourceDir)) return;
   mkdirSync(targetDir, { recursive: true });
@@ -567,19 +581,20 @@ function getSettings(): Settings {
 
 function runtimeEnvironment(): NodeJS.ProcessEnv {
   const environment = { ...process.env };
-  if (process.platform !== "win32") {
-    const extraPaths = [
-      "/opt/homebrew/bin",
-      "/usr/local/bin",
-      "/usr/bin",
-      "/bin",
-      path.join(homedir(), "Library/Android/sdk/platform-tools"),
-    ];
-    environment.PATH = [...(environment.PATH ?? "").split(path.delimiter), ...extraPaths]
-      .filter(Boolean)
-      .filter((entry, index, entries) => entries.indexOf(entry) === index)
-      .join(path.delimiter);
-  }
+  const extraPaths = process.platform === "win32"
+    ? bundledExecutableDirectories()
+    : [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        path.join(homedir(), "Library/Android/sdk/platform-tools"),
+        ...bundledExecutableDirectories(),
+      ];
+  environment.PATH = [...(environment.PATH ?? "").split(path.delimiter), ...extraPaths]
+    .filter(Boolean)
+    .filter((entry, index, entries) => entries.indexOf(entry) === index)
+    .join(path.delimiter);
   return environment;
 }
 

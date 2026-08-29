@@ -91,6 +91,14 @@
         "to": "runtime/image_templates"
       },
       {
+        "from": "vendor/harmony/macos",
+        "to": "runtime/harmony/macos"
+      },
+      {
+        "from": "vendor/harmony/windows/x64",
+        "to": "runtime/harmony/windows/x64"
+      },
+      {
         "from": "vendor/windows/x64",
         "to": "runtime/windows/x64"
       }
