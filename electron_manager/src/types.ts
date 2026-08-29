@@ -46,7 +46,12 @@ export type UpdatePolicyState = {
   channel: string;
   sourceUrl: string;
   loaded: boolean;
+  checking: boolean;
   blocked: boolean;
+  prompt?: {
+    countdownMs: number;
+    snoozeMs: number;
+  };
   latestVersion?: string;
   minVersion?: string;
   releaseNotes?: string;
@@ -54,6 +59,12 @@ export type UpdatePolicyState = {
   message: string;
   error?: string;
   checkedAt?: string;
+};
+
+export type UpdatePromptState = {
+  requiredSince?: string;
+  snoozedUntil?: string;
+  lastChangedAt?: string;
 };
 
 declare global {
@@ -65,6 +76,8 @@ declare global {
       updateState(): Promise<UpdateState>;
       updatePolicyState(): Promise<UpdatePolicyState>;
       updatePolicyCheck(): Promise<UpdatePolicyState>;
+      updatePromptState(): Promise<UpdatePromptState>;
+      updatePromptAcknowledge(): Promise<UpdatePromptState>;
       updateCheck(): Promise<UpdateState>;
       updateDownload(): Promise<UpdateState>;
       updateInstall(): Promise<void>;
@@ -130,6 +143,7 @@ declare global {
       onDevicesEvent(listener: (devices: string[]) => void): () => void;
       onSettingsEvent(listener: (settings: AppSettings) => void): () => void;
       onUpdateEvent(listener: (event: UpdateState) => void): () => void;
+      onUpdatePromptEvent(listener: (event: UpdatePromptState) => void): () => void;
     };
   }
 }

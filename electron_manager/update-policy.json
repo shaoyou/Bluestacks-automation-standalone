@@ -1,6 +1,10 @@
 {
   "schemaVersion": 1,
   "defaultChannel": "stable",
+  "prompt": {
+    "countdownMs": 60000,
+    "snoozeMs": 1800000
+  },
   "channels": {
     "stable": {
       "latest": "1.2.14",

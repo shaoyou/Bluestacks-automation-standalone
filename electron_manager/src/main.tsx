@@ -34,6 +34,10 @@ if (!window.bsManager) {
     settingsGet: async () => ({ adbPath: "adb", hdcPath: "hdc", pythonPath: "python3", language: "zh" }),
     settingsSave: async (settings) => settings,
     updateState: async () => ({ currentVersion: "1.2.14", supported: false, phase: "unsupported", message: "预览环境不检查更新" }),
+    updatePolicyState: async () => ({ supported: false, currentVersion: "1.2.14", channel: "stable", sourceUrl: "", loaded: false, checking: false, blocked: false, message: "预览环境不检查更新" }),
+    updatePolicyCheck: async () => ({ supported: false, currentVersion: "1.2.14", channel: "stable", sourceUrl: "", loaded: false, checking: false, blocked: false, message: "预览环境不检查更新" }),
+    updatePromptState: async () => ({}),
+    updatePromptAcknowledge: async () => ({}),
     updateCheck: async () => ({ currentVersion: "1.2.14", supported: false, phase: "unsupported", message: "预览环境不检查更新" }),
     updateDownload: async () => ({ currentVersion: "1.2.14", supported: false, phase: "unsupported", message: "预览环境不检查更新" }),
     updateInstall: async () => {},
@@ -93,6 +97,7 @@ if (!window.bsManager) {
     onDevicesEvent: () => () => {},
     onSettingsEvent: () => () => {},
     onUpdateEvent: () => () => {},
+    onUpdatePromptEvent: () => () => {},
   };
 }
 

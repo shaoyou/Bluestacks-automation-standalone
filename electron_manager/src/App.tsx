@@ -9,9 +9,9 @@ import {
   Radio,
   Settings2,
 } from "lucide-react";
-import type { AppSettings, LicenseStatus, TaskEvent, UpdatePolicyState, UpdateState } from "./types";
+import type { AppSettings, LicenseStatus, TaskEvent, UpdatePolicyState, UpdatePromptState, UpdateState } from "./types";
 import { appendPlanAction, type Page, type PickedCoordinate, type SharedProps } from "./app/shared";
-import { LicenseActivationDialog, UpdateRequiredDialog } from "./components/layout";
+import { LicenseActivationDialog, UpdateCheckingDialog, UpdateRequiredDialog } from "./components/layout";
 import { ScriptsPage, RunnerPage } from "./pages/ScriptsRunnerPage";
 import { CalibrationPage, DiagnosticsPage, RecorderPage, SettingsPage } from "./pages/DevicePages";
 import { DrawPage } from "./pages/DrawPage";
@@ -58,6 +58,9 @@ export function App() {
   const [activationError, setActivationError] = useState("");
   const [update, setUpdate] = useState<UpdateState | null>(null);
   const [updatePolicy, setUpdatePolicy] = useState<UpdatePolicyState | null>(null);
+  const [updatePrompt, setUpdatePrompt] = useState<UpdatePromptState | null>(null);
+  const [now, setNow] = useState(Date.now());
+  const [updateCheckingDismissed, setUpdateCheckingDismissed] = useState(false);
   const appVersion = updatePolicy?.currentVersion ?? update?.currentVersion ?? "unknown";
   const appChannel = updatePolicy?.channel ?? "stable";
 
@@ -100,13 +103,14 @@ export function App() {
   useEffect(() => {
     void (async () => {
       try {
-        const [state, savedSettings, names, licenseState, updateState, policyState] = await Promise.all([
+        const [state, savedSettings, names, licenseState, updateState, policyState, promptState] = await Promise.all([
           window.bsManager.runtimeState(),
           window.bsManager.settingsGet(),
           window.bsManager.plansList(),
           window.bsManager.licenseGet(),
           window.bsManager.updateState(),
           window.bsManager.updatePolicyState(),
+          window.bsManager.updatePromptState(),
         ]);
         setRuntime(state);
         setSettings(savedSettings);
@@ -114,6 +118,8 @@ export function App() {
         setLicense(licenseState);
         setUpdate(updateState);
         setUpdatePolicy(policyState);
+        setUpdatePrompt(promptState);
+        if (policyState.loaded) setUpdateCheckingDismissed(false);
         if (names[0]) await loadPlan(names[0]);
         setNotice("运行环境已就绪");
       } catch (error) {
@@ -156,8 +162,14 @@ export function App() {
     const removeDevicesListener = window.bsManager.onDevicesEvent((nextDevices: string[]) => setDevices(nextDevices));
     const removeSettingsListener = window.bsManager.onSettingsEvent((nextSettings: AppSettings) => setSettings(nextSettings));
     const removeUpdateListener = window.bsManager.onUpdateEvent((event: UpdateState) => setUpdate(event));
-    return () => { removeTaskListener(); removeDevicesListener(); removeSettingsListener(); removeUpdateListener(); };
+    const removePromptListener = window.bsManager.onUpdatePromptEvent((event: UpdatePromptState) => setUpdatePrompt(event));
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => { clearInterval(timer); removeTaskListener(); removeDevicesListener(); removeSettingsListener(); removeUpdateListener(); removePromptListener(); };
   }, []);
+
+  useEffect(() => {
+    if (updatePolicy?.loaded) setUpdateCheckingDismissed(false);
+  }, [updatePolicy?.loaded]);
 
   useEffect(() => {
     if (runtime) void refreshDevices();
@@ -270,8 +282,16 @@ export function App() {
       setNotice(`安装更新失败: ${String(error)}`);
     }
   };
+  const acknowledgeUpdatePrompt = async () => {
+    try {
+      setUpdatePrompt(await window.bsManager.updatePromptAcknowledge());
+    } catch (error) {
+      setNotice(`延后更新失败: ${String(error)}`);
+    }
+  };
   const refreshUpdatePolicy = async () => {
     try {
+      setUpdateCheckingDismissed(false);
       setUpdatePolicy(await window.bsManager.updatePolicyCheck());
     } catch (error) {
       setNotice(`检查更新策略失败: ${String(error)}`);
@@ -294,6 +314,8 @@ export function App() {
     checkForUpdates,
     downloadUpdate,
     installUpdate,
+    updatePrompt,
+    acknowledgeUpdatePrompt,
     quitApp,
     runtime,
     plans,
@@ -320,43 +342,73 @@ export function App() {
     forceRefreshDevices,
   };
 
-  if (windowMode === "runner") {
-    return <main className="runner-window-shell"><RunnerPage {...context} runnerId={runnerId} initialPlan={initialRunnerPlan} standalone /></main>;
-  }
-  if (windowMode === "chest") {
-    return <main className="runner-window-shell"><ChestPage {...context} chestTaskId={`chest-${runnerId}`} chestUserId={chestUserId} chestSourceId={chestSourceId} chestSourceName={chestSourceName} /></main>;
-  }
+  const promptCountdownMs = updatePolicy?.prompt?.countdownMs ?? 60_000;
+  const promptRequiredSince = updatePrompt?.requiredSince ? Date.parse(updatePrompt.requiredSince) : NaN;
+  const promptSnoozedUntil = updatePrompt?.snoozedUntil ? Date.parse(updatePrompt.snoozedUntil) : NaN;
+  const promptVisible = Boolean(updatePolicy?.blocked && updatePrompt?.requiredSince && Number.isFinite(promptRequiredSince) && (!Number.isFinite(promptSnoozedUntil) || promptSnoozedUntil <= now));
+  const countdownMs = Number.isFinite(promptRequiredSince) ? Math.max(0, promptRequiredSince + promptCountdownMs - now) : 0;
+  const isPro = Boolean(license?.tier === "pro" && license.valid);
+  const updateCheckingVisible = Boolean(updatePolicy?.supported && !updatePolicy.loaded && !updateCheckingDismissed);
 
-  if (updatePolicy?.blocked) {
-    return <UpdateRequiredDialog policy={updatePolicy} update={update} onCheck={refreshUpdatePolicy} onDownload={downloadUpdate} onInstall={installUpdate} onQuit={quitApp} />;
+  let body: JSX.Element;
+  if (windowMode === "runner") {
+    body = <main className="runner-window-shell"><RunnerPage {...context} runnerId={runnerId} initialPlan={initialRunnerPlan} standalone /></main>;
+  } else if (windowMode === "chest") {
+    body = <main className="runner-window-shell"><ChestPage {...context} chestTaskId={`chest-${runnerId}`} chestUserId={chestUserId} chestSourceId={chestSourceId} chestSourceName={chestSourceName} /></main>;
+  } else {
+    body = (
+      <>
+        <main className="app-shell">
+        <aside className="sidebar">
+          <div className="brand"><Bot size={23} /> <span>熊熊乐园小助手</span></div>
+          <nav>
+            {navItems.map(({ id, label, icon: Icon }) => (
+              <button key={id} className={`nav-item ${page === id ? "active" : ""}`} onClick={() => selectPage(id)}>
+                <Icon size={18} /><span>{label}</span>
+              </button>
+            ))}
+          </nav>
+          <div className="sidebar-status"><span className="status-dot" /><span className="sidebar-status-text">{notice}</span><span className="sidebar-version">v{appVersion} · {appChannel}</span></div>
+        </aside>
+        <section className="workbench">
+          {page === "scripts" && <ScriptsPage {...context} />}
+          {page === "runner" && <RunnerPage {...context} />}
+          {page === "draw" && <DrawPage {...context} />}
+          {page === "chest" && <ChestPage {...context} />}
+          {page === "recorder" && <RecorderPage {...context} />}
+          {page === "calibration" && <CalibrationPage {...context} />}
+          {page === "diagnostics" && <DiagnosticsPage {...context} />}
+          {page === "settings" && <SettingsPage {...context} />}
+        </section>
+        </main>
+        {activationOpen && <LicenseActivationDialog onActivate={activateLicense} error={activationError} onClose={() => setActivationOpen(false)} />}
+      </>
+    );
   }
 
   return (
     <>
-      <main className="app-shell">
-      <aside className="sidebar">
-        <div className="brand"><Bot size={23} /> <span>熊熊乐园小助手</span></div>
-        <nav>
-          {navItems.map(({ id, label, icon: Icon }) => (
-            <button key={id} className={`nav-item ${page === id ? "active" : ""}`} onClick={() => selectPage(id)}>
-              <Icon size={18} /><span>{label}</span>
-            </button>
-          ))}
-        </nav>
-        <div className="sidebar-status"><span className="status-dot" /><span className="sidebar-status-text">{notice}</span><span className="sidebar-version">v{appVersion} · {appChannel}</span></div>
-      </aside>
-      <section className="workbench">
-        {page === "scripts" && <ScriptsPage {...context} />}
-        {page === "runner" && <RunnerPage {...context} />}
-        {page === "draw" && <DrawPage {...context} />}
-        {page === "chest" && <ChestPage {...context} />}
-        {page === "recorder" && <RecorderPage {...context} />}
-        {page === "calibration" && <CalibrationPage {...context} />}
-        {page === "diagnostics" && <DiagnosticsPage {...context} />}
-        {page === "settings" && <SettingsPage {...context} />}
-      </section>
-      </main>
-      {activationOpen && <LicenseActivationDialog onActivate={activateLicense} error={activationError} onClose={() => setActivationOpen(false)} />}
+      {body}
+      {updateCheckingVisible && updatePolicy && (
+        <UpdateCheckingDialog
+          policy={updatePolicy}
+          onCheck={refreshUpdatePolicy}
+          onDismiss={() => setUpdateCheckingDismissed(true)}
+        />
+      )}
+      {promptVisible && updatePolicy && (
+        <UpdateRequiredDialog
+          policy={updatePolicy}
+          update={update}
+          isPro={isPro}
+          countdownMs={countdownMs}
+          onCheck={refreshUpdatePolicy}
+          onDownload={downloadUpdate}
+          onInstall={installUpdate}
+          onAcknowledge={acknowledgeUpdatePrompt}
+          onQuit={quitApp}
+        />
+      )}
     </>
   );
 }

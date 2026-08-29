@@ -41,10 +41,16 @@ type UpdatePolicyChannel = {
   releaseNotes?: string;
 };
 
+type UpdatePolicyPrompt = {
+  countdownMs?: number;
+  snoozeMs?: number;
+};
+
 type UpdatePolicyFile = {
   schemaVersion?: number;
   version?: number;
   defaultChannel?: string;
+  prompt?: UpdatePolicyPrompt;
   channels: Record<string, UpdatePolicyChannel>;
 };
 
@@ -54,7 +60,9 @@ type UpdatePolicyState = {
   channel: string;
   sourceUrl: string;
   loaded: boolean;
+  checking: boolean;
   blocked: boolean;
+  prompt?: { countdownMs: number; snoozeMs: number };
   latestVersion?: string;
   minVersion?: string;
   releaseNotes?: string;
@@ -62,6 +70,12 @@ type UpdatePolicyState = {
   message: string;
   error?: string;
   checkedAt?: string;
+};
+
+type UpdatePromptState = {
+  requiredSince?: string;
+  snoozedUntil?: string;
+  lastChangedAt?: string;
 };
 
 const thisDir = path.dirname(fileURLToPath(import.meta.url));
@@ -88,11 +102,17 @@ let updatePolicyState: UpdatePolicyState = {
   channel: detectReleaseChannel(app.getVersion()),
   sourceUrl: "",
   loaded: false,
+  checking: false,
   blocked: false,
   message: "正在读取更新策略...",
 };
+let updatePromptState: UpdatePromptState = {};
+let updatePromptMonitor: NodeJS.Timeout | null = null;
 const HDC_DEVICE_SUFFIX = " [HarmonyOS/HDC]";
 const DEFAULT_UPDATE_POLICY_URL = "https://raw.githubusercontent.com/shaoyou/Bluestacks-automation-standalone/main/electron_manager/update-policy.json";
+const UPDATE_PROMPT_FILE = "update-prompt.json";
+const DEFAULT_UPDATE_PROMPT_COUNTDOWN_MS = 60_000;
+const DEFAULT_UPDATE_PROMPT_SNOOZE_MS = 30 * 60_000;
 
 function parseVersion(rawVersion: string): { major: number; minor: number; patch: number; prerelease: string[] } | null {
   const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(String(rawVersion || "").trim());
@@ -181,7 +201,18 @@ function normalizeUpdatePolicy(raw: unknown): UpdatePolicyFile | null {
   return {
     schemaVersion: Number(value.schemaVersion ?? value.version ?? 1),
     defaultChannel: typeof value.defaultChannel === "string" ? value.defaultChannel.trim() : undefined,
+    prompt: value.prompt && typeof value.prompt === "object" ? {
+      countdownMs: typeof value.prompt.countdownMs === "number" && Number.isFinite(value.prompt.countdownMs) && value.prompt.countdownMs > 0 ? value.prompt.countdownMs : undefined,
+      snoozeMs: typeof value.prompt.snoozeMs === "number" && Number.isFinite(value.prompt.snoozeMs) && value.prompt.snoozeMs > 0 ? value.prompt.snoozeMs : undefined,
+    } : undefined,
     channels,
+  };
+}
+
+function resolvePromptTiming(prompt?: UpdatePolicyPrompt): { countdownMs: number; snoozeMs: number } {
+  return {
+    countdownMs: prompt?.countdownMs ?? DEFAULT_UPDATE_PROMPT_COUNTDOWN_MS,
+    snoozeMs: prompt?.snoozeMs ?? DEFAULT_UPDATE_PROMPT_SNOOZE_MS,
   };
 }
 
@@ -216,8 +247,11 @@ function evaluateUpdatePolicy(policy: UpdatePolicyFile | null): UpdatePolicyStat
       channel,
       sourceUrl,
       loaded: false,
+      checking: sourceUrl.startsWith("http://") || sourceUrl.startsWith("https://"),
       blocked: false,
-      message: "未读取到更新策略，已按当前版本继续启动",
+      message: sourceUrl.startsWith("http://") || sourceUrl.startsWith("https://")
+        ? "正在检测更新，当前网络不可用或更新源暂时无法访问"
+        : "未读取到更新策略，已按当前版本继续启动",
       checkedAt: new Date().toISOString(),
     };
   }
@@ -236,7 +270,9 @@ function evaluateUpdatePolicy(policy: UpdatePolicyFile | null): UpdatePolicyStat
     channel: activeChannel,
     sourceUrl,
     loaded: true,
+    checking: false,
     blocked,
+    prompt: resolvePromptTiming(policy.prompt),
     latestVersion: activePolicy.latest,
     minVersion: activePolicy.minVersion,
     releaseNotes: activePolicy.releaseNotes,
@@ -250,6 +286,132 @@ async function refreshUpdatePolicy() {
   const policy = await readUpdatePolicyFile();
   updatePolicyState = evaluateUpdatePolicy(policy);
   return updatePolicyState;
+}
+
+function updatePromptFilePath(): string {
+  return path.join(app.getPath("userData"), UPDATE_PROMPT_FILE);
+}
+
+function parseIsoTime(raw: unknown): string | undefined {
+  if (typeof raw !== "string" || !raw.trim()) return undefined;
+  const value = new Date(raw);
+  return Number.isFinite(value.getTime()) ? value.toISOString() : undefined;
+}
+
+function readUpdatePromptState(): UpdatePromptState {
+  try {
+    const raw = JSON.parse(readFileSync(updatePromptFilePath(), "utf8")) as Record<string, unknown>;
+    return {
+      requiredSince: parseIsoTime(raw.requiredSince),
+      snoozedUntil: parseIsoTime(raw.snoozedUntil),
+      lastChangedAt: parseIsoTime(raw.lastChangedAt),
+    };
+  } catch {
+    return {};
+  }
+}
+
+function writeUpdatePromptState(state: UpdatePromptState) {
+  writeFileSync(updatePromptFilePath(), `${JSON.stringify(state, null, 2)}\n`, "utf8");
+}
+
+function sendUpdatePromptEvent(state: UpdatePromptState) {
+  updatePromptState = state;
+  for (const window of BrowserWindow.getAllWindows()) {
+    window.webContents.send("update:prompt-event", state);
+  }
+}
+
+function updatePromptMode(state: UpdatePromptState, now = Date.now()): "idle" | "required" | "snoozed" {
+  const snoozedUntil = state.snoozedUntil ? new Date(state.snoozedUntil).getTime() : 0;
+  if (snoozedUntil > now) return "snoozed";
+  if (state.requiredSince) return "required";
+  return "idle";
+}
+
+function isProLicense(): boolean {
+  const license = getLicenseStatus();
+  return license.valid && license.tier === "pro";
+}
+
+function shouldBlockTaskStart(): boolean {
+  if (!updatePolicyState.blocked) return false;
+  if (isProLicense()) return false;
+  return updatePromptMode(updatePromptState) === "required";
+}
+
+function shouldStopTasksOnPrompt(): boolean {
+  return updatePolicyState.blocked && !isProLicense() && updatePromptMode(updatePromptState) === "required";
+}
+
+function ensureUpdatePromptMonitor() {
+  if (updatePromptMonitor) return;
+  updatePromptMonitor = setInterval(() => {
+    void refreshUpdatePromptState();
+  }, 5_000);
+}
+
+async function refreshUpdatePromptState() {
+  if (!app.isPackaged || !supportsAutoUpdatePlatform || !updatePolicyState.blocked) {
+    const nextState: UpdatePromptState = {};
+    if (updatePromptState.requiredSince || updatePromptState.snoozedUntil) {
+      sendUpdatePromptEvent(nextState);
+      writeUpdatePromptState(nextState);
+    } else {
+      updatePromptState = nextState;
+    }
+    return nextState;
+  }
+
+  const stored = readUpdatePromptState();
+  const now = Date.now();
+  const snoozedUntil = stored.snoozedUntil ? new Date(stored.snoozedUntil).getTime() : 0;
+  const currentMode = updatePromptMode(stored, now);
+  let nextState = stored;
+  let changed = false;
+
+  if (snoozedUntil > now) {
+    nextState = {
+      snoozedUntil: new Date(snoozedUntil).toISOString(),
+      lastChangedAt: stored.lastChangedAt ?? new Date().toISOString(),
+    };
+    changed = currentMode !== "snoozed" || stored.requiredSince !== undefined || stored.snoozedUntil !== nextState.snoozedUntil;
+  } else if (stored.requiredSince) {
+    nextState = {
+      requiredSince: parseIsoTime(stored.requiredSince) ?? new Date(now).toISOString(),
+      lastChangedAt: stored.lastChangedAt ?? new Date().toISOString(),
+    };
+    changed = currentMode !== "required" || stored.snoozedUntil !== undefined;
+  } else {
+    nextState = {
+      requiredSince: new Date(now).toISOString(),
+      lastChangedAt: new Date(now).toISOString(),
+    };
+    changed = true;
+  }
+
+  const nextMode = updatePromptMode(nextState, now);
+  if (nextMode === "required" && currentMode !== "required" && !isProLicense()) {
+    stopAllTasks();
+  }
+  if (changed || nextMode !== currentMode) {
+    writeUpdatePromptState(nextState);
+    sendUpdatePromptEvent(nextState);
+  } else {
+    updatePromptState = nextState;
+  }
+  return nextState;
+}
+
+async function acknowledgeUpdatePrompt() {
+  const prompt = resolvePromptTiming(updatePolicyState.prompt);
+  const nextState: UpdatePromptState = {
+    snoozedUntil: new Date(Date.now() + prompt.snoozeMs).toISOString(),
+    lastChangedAt: new Date().toISOString(),
+  };
+  writeUpdatePromptState(nextState);
+  sendUpdatePromptEvent(nextState);
+  return nextState;
 }
 
 function bundledRuntimeRoot(): string {
@@ -526,6 +688,9 @@ function assertRunnerCapacity() {
 
 function spawnTask(request: TaskRequest, ownerWebContentsId?: number) {
   if (tasks.has(request.id)) throw new Error("Task is already running");
+  if (shouldBlockTaskStart()) {
+    throw new Error("当前版本需要先完成更新，暂不允许启动脚本");
+  }
   if (request.kind === "runner") assertRunnerCapacity();
   const settings = getSettings();
   const executable = resolveExecutable(settings.pythonPath, process.platform === "win32" ? "python.exe" : "python3");
@@ -797,6 +962,8 @@ app.whenReady().then(() => {
     runtimeRoot();
     migrateLegacyChestSources();
     await refreshUpdatePolicy();
+    await refreshUpdatePromptState();
+    ensureUpdatePromptMonitor();
     createWindow();
     initializeAutoUpdater();
   })();
@@ -817,6 +984,8 @@ app.whenReady().then(() => {
   ipcMain.handle("update:state", () => updateState);
   ipcMain.handle("update:policy-state", () => updatePolicyState);
   ipcMain.handle("update:policy-check", () => refreshUpdatePolicy());
+  ipcMain.handle("update:prompt-state", () => updatePromptState);
+  ipcMain.handle("update:prompt-acknowledge", () => acknowledgeUpdatePrompt());
   ipcMain.handle("update:check", () => checkForUpdates());
   ipcMain.handle("update:download", () => downloadUpdate());
   ipcMain.handle("update:install", () => {

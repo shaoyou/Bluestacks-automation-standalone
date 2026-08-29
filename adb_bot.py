@@ -322,6 +322,17 @@ def clear_if_image_match(ctx: RunContext) -> None:
     ctx.runtime_values.pop(LAST_IF_IMAGE_SCREENSHOT_KEY, None)
 
 
+def current_if_text_match(ctx: RunContext) -> Optional[Dict[str, Any]]:
+    raw_value = ctx.runtime_values.get("current_if_text_match")
+    if isinstance(raw_value, dict):
+        return raw_value
+    return None
+
+
+def clear_if_text_match(ctx: RunContext) -> None:
+    ctx.runtime_values.pop("current_if_text_match", None)
+
+
 def _env_name(match: re.Match[str]) -> str:
     return match.group(1) or match.group(2) or ""
 
@@ -916,18 +927,18 @@ def do_input(ctx: RunContext, action: Dict[str, Any]) -> None:
 
 def do_click_match(ctx: RunContext, action: Dict[str, Any]) -> None:
     if ctx.dry_run:
-        log(with_action_remark("[DRY-RUN] click_match uses the latest if_image target", action))
+        log(with_action_remark("[DRY-RUN] click_match uses the latest if_image/if_text target", action))
         return
 
-    match_info = current_if_image_match(ctx)
+    match_info = current_if_image_match(ctx) or current_if_text_match(ctx)
     if match_info is None:
-        raise BotError("click_match requires a previous matched if_image in the current runtime context")
+        raise BotError("click_match requires a previous matched if_image or if_text in the current runtime context")
 
     x = int(match_info.get("center_x", 0)) + int(action.get("offset_x", 0))
     y = int(match_info.get("center_y", 0)) + int(action.get("offset_y", 0))
     x, y = tap_absolute(ctx, x, y)
-    template_name = str(match_info.get("template_name") or "unknown")
-    log(with_action_remark(f"Click if_image match '{template_name}' at ({x}, {y})", action))
+    template_name = str(match_info.get("template_name") or match_info.get("text") or "unknown")
+    log(with_action_remark(f"Click match '{template_name}' at ({x}, {y})", action))
 
 
 def capture_device_screenshot(ctx: RunContext) -> Image.Image:
@@ -2278,6 +2289,105 @@ def do_find_text_click(ctx: RunContext, action: Dict[str, Any]) -> None:
         time.sleep(max(0.1, interval_sec))
 
 
+def remember_if_text_match(ctx: RunContext, action: Dict[str, Any], result: Dict[str, Any]) -> None:
+    clear_if_text_match(ctx)
+    if result.get("dry_run") or not result.get("matched"):
+        return
+    match = result.get("match")
+    if not isinstance(match, dict):
+        return
+    screenshot = result.get("screenshot")
+    if isinstance(screenshot, Image.Image):
+        ctx.runtime_values["current_if_text_screenshot"] = screenshot.copy()
+
+    raw_center_x = int(round(float(match.get("x", 0)) + float(match.get("width", 0)) / 2.0))
+    raw_center_y = int(round(float(match.get("y", 0)) + float(match.get("height", 0)) / 2.0))
+    center_x = raw_center_x + int(action.get("offset_x", 0))
+    center_y = raw_center_y + int(action.get("offset_y", 0))
+    ctx.runtime_values["current_if_text_match"] = {
+        "text": str(match.get("text", "")),
+        "target_text": str(action.get("text") or ""),
+        "center_x": center_x,
+        "center_y": center_y,
+        "match_center_x": raw_center_x,
+        "match_center_y": raw_center_y,
+        "x": int(round(float(match.get("x", 0)))),
+        "y": int(round(float(match.get("y", 0)))),
+        "width": int(round(float(match.get("width", 0)))),
+        "height": int(round(float(match.get("height", 0)))),
+    }
+
+
+def execute_if_text(ctx: RunContext, action: Dict[str, Any]) -> None:
+    clear_if_text_match(ctx)
+    raw_texts = action.get("texts")
+    if isinstance(raw_texts, list):
+        texts = [str(item).strip() for item in raw_texts if str(item).strip()]
+    else:
+        text = str(action.get("text", "")).strip()
+        texts = [text] if text else []
+    if not texts:
+        raise BotError("if_text requires 'text' or non-empty 'texts'")
+    then_actions = action.get("then_actions", [])
+    else_actions = action.get("else_actions", [])
+    if not isinstance(then_actions, list):
+        raise BotError("if_text 'then_actions' must be an array")
+    if not isinstance(else_actions, list):
+        raise BotError("if_text 'else_actions' must be an array")
+
+    timeout_sec = float(action.get("timeout_sec", 2.0))
+    interval_sec = float(action.get("interval_sec", 0.2))
+    max_attempts = int(action.get("max_attempts", 1))
+    match_mode = str(action.get("match", "contains")).strip().lower()
+    if match_mode not in {"contains", "exact"}:
+        raise BotError("if_text 'match' must be 'contains' or 'exact'")
+    lang = str(action.get("lang", "chi_sim+eng")).strip() or "chi_sim+eng"
+    psm = int(action.get("psm", 6))
+    index = int(action.get("index", 0))
+
+    if ctx.dry_run:
+        log(with_action_remark(f"[DRY-RUN] if_text texts={texts} match={match_mode}", action))
+        return
+
+    deadline = time.time() + max(0.0, timeout_sec)
+    attempt = 0
+    while True:
+        check_stop(ctx)
+        attempt += 1
+        screenshot = capture_device_screenshot(ctx)
+        left, top, width, height = resolve_search_region(ctx, action, screenshot.size)
+        cropped = screenshot.crop((left, top, left + width, top + height))
+        rows = run_tesseract_tsv(cropped, lang=lang, psm=psm)
+        found: Optional[Tuple[int, int, int, int, str]] = None
+        for target_text in texts:
+            found = find_text_region(rows, target_text=target_text, match_mode=match_mode, index=index)
+            if found is not None:
+                break
+        if found is not None:
+            box_left, box_top, box_right, box_bottom, matched_text = found
+            match = {
+                "x": box_left + left,
+                "y": box_top + top,
+                "width": box_right - box_left,
+                "height": box_bottom - box_top,
+                "text": matched_text,
+            }
+            remember_if_text_match(ctx, action, {"matched": True, "match": match, "screenshot": screenshot})
+            log(with_action_remark(f"if_text matched '{matched_text}' on attempt {attempt}", action))
+            execute_actions(ctx, then_actions)
+            return
+
+        if max_attempts > 0 and attempt >= max_attempts:
+            log(with_action_remark(f"if_text did not match after {attempt} attempt(s)", action))
+            execute_actions(ctx, else_actions)
+            return
+        if time.time() >= deadline:
+            log(with_action_remark(f"if_text timed out after {timeout_sec:.1f}s", action))
+            execute_actions(ctx, else_actions)
+            return
+        time.sleep(max(0.1, interval_sec))
+
+
 def resolve_find_image_action(
     ctx: RunContext,
     action: Dict[str, Any],
@@ -3142,6 +3252,57 @@ def resolve_draw_state_target(
     return None, best_match, best_template_path
 
 
+def resolve_draw_state_text_target(
+    ctx: RunContext,
+    screenshot: Image.Image,
+    parent_action: Dict[str, Any],
+    target_config: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    target_action = dict(parent_action)
+    target_action.update(target_config)
+    raw_texts = target_action.get("texts")
+    if isinstance(raw_texts, list):
+        texts = [str(item).strip() for item in raw_texts if str(item).strip()]
+    else:
+        text = str(target_action.get("text", "")).strip()
+        texts = [text] if text else []
+    if not texts:
+        return None
+
+    match_mode = str(target_action.get("match", "contains")).strip().lower()
+    if match_mode not in {"contains", "exact"}:
+        raise BotError("resolve_draw_state text target 'match' must be 'contains' or 'exact'")
+    lang = str(target_action.get("lang", "chi_sim+eng")).strip() or "chi_sim+eng"
+    psm = int(target_action.get("psm", 6))
+    index = int(target_action.get("index", 0))
+    left, top, width, height = resolve_search_region(ctx, target_action, screenshot.size)
+    cropped = screenshot.crop((left, top, left + width, top + height))
+
+    try:
+        rows = run_tesseract_tsv(cropped, lang=lang, psm=psm)
+    except Exception:
+        return None
+
+    for text in texts:
+        found = find_text_region(rows, target_text=text, match_mode=match_mode, index=index)
+        if found is None:
+            continue
+        box_left, box_top, box_right, box_bottom, matched_text = found
+        center_x = int(round((box_left + box_right) / 2.0)) + left
+        center_y = int(round((box_top + box_bottom) / 2.0)) + top
+        return {
+            "text": matched_text,
+            "target_text": text,
+            "x": center_x,
+            "y": center_y,
+            "left": box_left + left,
+            "top": box_top + top,
+            "right": box_right + left,
+            "bottom": box_bottom + top,
+        }
+    return None
+
+
 def do_resolve_draw_state(ctx: RunContext, action: Dict[str, Any]) -> None:
     next_config = action.get("next")
     cancel_config = action.get("cancel")
@@ -3181,6 +3342,7 @@ def do_resolve_draw_state(ctx: RunContext, action: Dict[str, Any]) -> None:
         if next_best is not None:
             best_next = max(best_next, float(next_best.get("similarity", 0.0)))
 
+        cancel_text_match = resolve_draw_state_text_target(ctx, screenshot, action, cancel_config)
         cancel_match, cancel_best, cancel_template = resolve_draw_state_target(
             ctx, screenshot, action, cancel_config, threshold
         )
@@ -3199,10 +3361,26 @@ def do_resolve_draw_state(ctx: RunContext, action: Dict[str, Any]) -> None:
             do_wait({"seconds": settle_wait_sec, "remark": "本次抽卡结束，等待动画结束后开启下一轮"})
             return
 
+        if cancel_text_match is not None:
+            next_score = float(next_best.get("similarity", 0.0)) if next_best is not None else 0.0
+            log(
+                with_action_remark(
+                    f"resolve_draw_state detected cancel text '{cancel_text_match['text']}' "
+                    f"on attempt {attempt} (next best {next_score:.3f}), click text center",
+                    action,
+                )
+            )
+            x, y = tap_absolute(ctx, int(cancel_text_match["x"]), int(cancel_text_match["y"]))
+            log(with_action_remark(f"Click draw-state cancel text at ({x}, {y})", action))
+            do_wait({"seconds": cancel_settle_wait_sec, "remark": "本次抽卡结束，等待动画结束后开启下一轮"})
+            return
+
         if cancel_match is not None:
             next_score = float(next_best.get("similarity", 0.0)) if next_best is not None else 0.0
             center_x = int(round(cancel_match["x"] + cancel_match["width"] / 2.0))
             center_y = int(round(cancel_match["y"] + cancel_match["height"] / 2.0))
+            offset_x = int(cancel_config.get("offset_x", 0))
+            offset_y = int(cancel_config.get("offset_y", 0))
             log(
                 with_action_remark(
                     f"resolve_draw_state detected cancel '{cancel_template.name}' on attempt {attempt} "
@@ -3210,7 +3388,7 @@ def do_resolve_draw_state(ctx: RunContext, action: Dict[str, Any]) -> None:
                     action,
                 )
             )
-            x, y = tap_absolute(ctx, center_x, center_y)
+            x, y = tap_absolute(ctx, center_x + offset_x, center_y + offset_y)
             log(with_action_remark(f"Click draw-state cancel '{cancel_template.name}' at ({x}, {y})", action))
             do_wait({"seconds": cancel_settle_wait_sec, "remark": "本次抽卡结束，等待动画结束后开启下一轮"})
             return
@@ -3443,6 +3621,8 @@ def execute_action(ctx: RunContext, action: Dict[str, Any]) -> None:
         do_find_image_click(ctx, action)
     elif action_type == "find_text_click":
         do_find_text_click(ctx, action)
+    elif action_type == "if_text":
+        execute_if_text(ctx, action)
     elif action_type == "if_image":
         execute_if_image(ctx, action)
     elif action_type == "if_red_light":

@@ -33,13 +33,15 @@
                     1
                   ],
                   "templates": [
+                    "../image_templates/role_cancel_harmony_1260x2720.png",
                     "../image_templates/role_cancel.png",
                     "../image_templates/role_cancel_phone.png"
                   ],
                   "then_actions": [
                     {
                       "remark": "兜底点击放弃按钮",
-                      "type": "click_match"
+                      "type": "click_match",
+                      "offset_y": 0
                     },
                     {
                       "remark": "兜底重置后等待动画结束",
@@ -94,7 +96,7 @@
                   "settle_wait_sec": 2,
                   "cancel_settle_wait_sec": 2,
                   "next": {
-                      "template": "../image_templates/role_done.png",
+                    "template": "../image_templates/role_done.png",
                     "region": {
                       "height": 149,
                       "width": 386,
@@ -110,6 +112,7 @@
                   },
                   "cancel": {
                     "templates": [
+                      "../image_templates/role_cancel_harmony_1260x2720.png",
                       "../image_templates/role_cancel.png",
                       "../image_templates/role_cancel_phone.png"
                     ],
@@ -128,9 +131,36 @@
                   },
                   "fallback_actions": [
                     {
+                      "type": "if_text",
+                      "remark": "兜底：检查失败文字",
+                      "texts": [
+                        "失败",
+                        "放弃"
+                      ],
+                      "match": "contains",
+                      "lang": "chi_sim+eng",
+                      "timeout_sec": 0.8,
+                      "interval_sec": 0.2,
+                      "max_attempts": 2,
+                      "then_actions": [
+                        {
+                          "type": "click_match",
+                          "remark": "兜底点击失败文字",
+                          "offset_y": 0
+                        },
+                        {
+                          "type": "wait",
+                          "seconds": 2,
+                          "remark": "本次抽卡结束，等待动画结束后开启下一轮"
+                        }
+                      ],
+                      "else_actions": []
+                    },
+                    {
                       "type": "if_image",
                       "remark": "兜底：最后检查放弃按钮",
                       "templates": [
+                        "../image_templates/role_cancel_harmony_1260x2720.png",
                         "../image_templates/role_cancel.png",
                         "../image_templates/role_cancel_phone.png"
                       ],
@@ -323,7 +353,7 @@
                   "settle_wait_sec": 2,
                   "cancel_settle_wait_sec": 2,
                   "next": {
-                      "template": "../image_templates/role_done.png",
+                    "template": "../image_templates/role_done.png",
                     "region": {
                       "height": 149,
                       "width": 386,
@@ -339,6 +369,7 @@
                   },
                   "cancel": {
                     "templates": [
+                      "../image_templates/role_cancel_harmony_1260x2720.png",
                       "../image_templates/role_cancel.png",
                       "../image_templates/role_cancel_phone.png"
                     ],
@@ -357,9 +388,36 @@
                   },
                   "fallback_actions": [
                     {
+                      "type": "if_text",
+                      "remark": "兜底：检查失败文字",
+                      "texts": [
+                        "失败",
+                        "放弃"
+                      ],
+                      "match": "contains",
+                      "lang": "chi_sim+eng",
+                      "timeout_sec": 0.8,
+                      "interval_sec": 0.2,
+                      "max_attempts": 2,
+                      "then_actions": [
+                        {
+                          "type": "click_match",
+                          "remark": "兜底点击失败文字",
+                          "offset_y": 0
+                        },
+                        {
+                          "type": "wait",
+                          "seconds": 2,
+                          "remark": "本次抽卡结束，等待动画结束后开启下一轮"
+                        }
+                      ],
+                      "else_actions": []
+                    },
+                    {
                       "type": "if_image",
                       "remark": "兜底：最后检查放弃按钮",
                       "templates": [
+                        "../image_templates/role_cancel_harmony_1260x2720.png",
                         "../image_templates/role_cancel.png",
                         "../image_templates/role_cancel_phone.png"
                       ],
@@ -432,7 +490,7 @@
                   "settle_wait_sec": 2,
                   "cancel_settle_wait_sec": 2,
                   "next": {
-                      "template": "../image_templates/role_done.png",
+                    "template": "../image_templates/role_done.png",
                     "region": {
                       "height": 149,
                       "width": 386,
@@ -448,6 +506,7 @@
                   },
                   "cancel": {
                     "templates": [
+                      "../image_templates/role_cancel_harmony_1260x2720.png",
                       "../image_templates/role_cancel.png",
                       "../image_templates/role_cancel_phone.png"
                     ],
@@ -466,9 +525,36 @@
                   },
                   "fallback_actions": [
                     {
+                      "type": "if_text",
+                      "remark": "兜底：检查失败文字",
+                      "texts": [
+                        "失败",
+                        "放弃"
+                      ],
+                      "match": "contains",
+                      "lang": "chi_sim+eng",
+                      "timeout_sec": 0.8,
+                      "interval_sec": 0.2,
+                      "max_attempts": 2,
+                      "then_actions": [
+                        {
+                          "type": "click_match",
+                          "remark": "兜底点击失败文字",
+                          "offset_y": 0
+                        },
+                        {
+                          "type": "wait",
+                          "seconds": 2,
+                          "remark": "本次抽卡结束，等待动画结束后开启下一轮"
+                        }
+                      ],
+                      "else_actions": []
+                    },
+                    {
                       "type": "if_image",
                       "remark": "兜底：最后检查放弃按钮",
                       "templates": [
+                        "../image_templates/role_cancel_harmony_1260x2720.png",
                         "../image_templates/role_cancel.png",
                         "../image_templates/role_cancel_phone.png"
                       ],

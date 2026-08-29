@@ -27,6 +27,9 @@ npm install
 npm run dev
 ```
 
+开发脚本会从 `5173` 开始自动寻找空闲端口，并把同一个地址传给 Electron。
+如果你单独跑 `dev:renderer`，它仍然会按 Vite 默认策略处理端口。
+
 ## Packaging
 
 ```sh
@@ -128,9 +131,16 @@ Windows 7 兼容版是单独的发布产物，不和现代版混装。应用启�
 - 当前渠道可用的最新版本
 - 当前渠道允许继续运行的最低版本
 - 是否需要强制中断旧版本并先更新
+- 强制更新窗的首次倒计时和临时放行时长
 
 默认情况下，开发环境读取仓库内本地文件；打包后读取 GitHub Raw 地址。你也可以用环境变量
 `BSM_UPDATE_POLICY_URL` 覆盖策略地址。
+
+更直白地说：
+
+- `npm run dev`：读本地 `electron_manager/update-policy.json`
+- 打包后安装运行：读 GitHub Raw 上的 `update-policy.json`
+- 手动设置 `BSM_UPDATE_POLICY_URL`：优先读这个地址
 
 应用当前渠道不再从版本后缀推断，而是读 `electron_manager/package.json` 里的 `channel` 字段；
 也可以用环境变量 `BSM_APP_CHANNEL` 临时覆盖。`update-policy.json` 只负责更新规则，不负责识别渠道。
@@ -141,6 +151,10 @@ Windows 7 兼容版是单独的发布产物，不和现代版混装。应用启�
 {
   "schemaVersion": 1,
   "defaultChannel": "stable",
+  "prompt": {
+    "countdownMs": 60000,
+    "snoozeMs": 1800000
+  },
   "channels": {
     "stable": {
       "latest": "1.2.14",
@@ -158,6 +172,7 @@ Windows 7 兼容版是单独的发布产物，不和现代版混装。应用启�
 旧内测包启动后就会被直接拦住，只能先更新。
 
 注意：`latest` 只是“有新版本可下”，`minVersion` 才是“低于这个版本必须拦住”。
+`prompt.countdownMs` 控制首次弹窗后多久可继续使用，`prompt.snoozeMs` 控制手动放行后多久再次弹出。
 
 发布 beta 包时，把 `package.json` 里的 `channel` 改成 `beta`；正式版改回 `stable`。
 

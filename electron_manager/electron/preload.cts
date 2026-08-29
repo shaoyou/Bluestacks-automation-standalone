@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld("bsManager", {
   updateState: () => ipcRenderer.invoke("update:state"),
   updatePolicyState: () => ipcRenderer.invoke("update:policy-state"),
   updatePolicyCheck: () => ipcRenderer.invoke("update:policy-check"),
+  updatePromptState: () => ipcRenderer.invoke("update:prompt-state"),
+  updatePromptAcknowledge: () => ipcRenderer.invoke("update:prompt-acknowledge"),
   updateCheck: () => ipcRenderer.invoke("update:check"),
   updateDownload: () => ipcRenderer.invoke("update:download"),
   updateInstall: () => ipcRenderer.invoke("update:install"),
@@ -87,5 +89,10 @@ contextBridge.exposeInMainWorld("bsManager", {
     const callback = (_: Electron.IpcRendererEvent, event: unknown) => listener(event);
     ipcRenderer.on("update:event", callback);
     return () => ipcRenderer.removeListener("update:event", callback);
+  },
+  onUpdatePromptEvent: (listener: (event: unknown) => void) => {
+    const callback = (_: Electron.IpcRendererEvent, event: unknown) => listener(event);
+    ipcRenderer.on("update:prompt-event", callback);
+    return () => ipcRenderer.removeListener("update:prompt-event", callback);
   },
 });
