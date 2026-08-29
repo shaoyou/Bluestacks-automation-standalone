@@ -1,7 +1,7 @@
 {
   "name": "bs-manager-cross-platform",
   "private": true,
-  "version": "1.2.16",
+  "version": "1.2.17",
   "channel": "beta",
   "description": "Cross-platform BlueStacks automation manager",
   "author": "熊熊乐园小助手",
@@ -13,11 +13,11 @@
     "dev:electron": "electron .",
     "build": "tsc -p tsconfig.electron.json && node scripts/copy_legacy_entry.mjs && vite build",
     "package": "npm run build && electron-builder",
-    "package:mac": "npm run build && electron-builder --mac",
+    "package:mac": "npm run build && electron-builder --mac --publish never",
     "prepackage:win": "node scripts/verify_windows_runtime.mjs",
-    "package:win": "npm run build && electron-builder --win --x64",
+    "package:win": "npm run build && electron-builder --win --x64 --publish never",
     "prepackage:win7": "node scripts/verify_windows_runtime.mjs vendor/windows/win7-x64",
-    "package:win7": "npm run build && electron-builder --win --x64 --config electron-builder.win7.cjs",
+    "package:win7": "npm run build && electron-builder --win --x64 --config electron-builder.win7.cjs --publish never",
     "license:keygen": "node scripts/license.mjs keygen",
     "license:issue": "node scripts/license.mjs issue",
     "license:issue:local": "node scripts/issue-local-license.mjs"
