@@ -9,9 +9,9 @@ import {
   Radio,
   Settings2,
 } from "lucide-react";
-import type { AppSettings, LicenseStatus, TaskEvent, UpdateState } from "./types";
+import type { AppSettings, LicenseStatus, TaskEvent, UpdatePolicyState, UpdateState } from "./types";
 import { appendPlanAction, type Page, type PickedCoordinate, type SharedProps } from "./app/shared";
-import { LicenseActivationDialog } from "./components/layout";
+import { LicenseActivationDialog, UpdateRequiredDialog } from "./components/layout";
 import { ScriptsPage, RunnerPage } from "./pages/ScriptsRunnerPage";
 import { CalibrationPage, DiagnosticsPage, RecorderPage, SettingsPage } from "./pages/DevicePages";
 import { DrawPage } from "./pages/DrawPage";
@@ -57,6 +57,7 @@ export function App() {
   const [activationOpen, setActivationOpen] = useState(false);
   const [activationError, setActivationError] = useState("");
   const [update, setUpdate] = useState<UpdateState | null>(null);
+  const [updatePolicy, setUpdatePolicy] = useState<UpdatePolicyState | null>(null);
 
   const refreshDevices = async () => {
     try {
@@ -97,18 +98,20 @@ export function App() {
   useEffect(() => {
     void (async () => {
       try {
-        const [state, savedSettings, names, licenseState, updateState] = await Promise.all([
+        const [state, savedSettings, names, licenseState, updateState, policyState] = await Promise.all([
           window.bsManager.runtimeState(),
           window.bsManager.settingsGet(),
           window.bsManager.plansList(),
           window.bsManager.licenseGet(),
           window.bsManager.updateState(),
+          window.bsManager.updatePolicyState(),
         ]);
         setRuntime(state);
         setSettings(savedSettings);
         setPlans(names);
         setLicense(licenseState);
         setUpdate(updateState);
+        setUpdatePolicy(policyState);
         if (names[0]) await loadPlan(names[0]);
         setNotice("运行环境已就绪");
       } catch (error) {
@@ -265,6 +268,16 @@ export function App() {
       setNotice(`安装更新失败: ${String(error)}`);
     }
   };
+  const refreshUpdatePolicy = async () => {
+    try {
+      setUpdatePolicy(await window.bsManager.updatePolicyCheck());
+    } catch (error) {
+      setNotice(`检查更新策略失败: ${String(error)}`);
+    }
+  };
+  const quitApp = async () => {
+    await window.bsManager.appQuit();
+  };
 
   const context = {
     settings,
@@ -274,9 +287,12 @@ export function App() {
     clearLicense,
     openLicenseActivation,
     update,
+    updatePolicy,
+    refreshUpdatePolicy,
     checkForUpdates,
     downloadUpdate,
     installUpdate,
+    quitApp,
     runtime,
     plans,
     activePlan,
@@ -307,6 +323,10 @@ export function App() {
   }
   if (windowMode === "chest") {
     return <main className="runner-window-shell"><ChestPage {...context} chestTaskId={`chest-${runnerId}`} chestUserId={chestUserId} chestSourceId={chestSourceId} chestSourceName={chestSourceName} /></main>;
+  }
+
+  if (updatePolicy?.blocked) {
+    return <UpdateRequiredDialog policy={updatePolicy} update={update} onCheck={refreshUpdatePolicy} onDownload={downloadUpdate} onInstall={installUpdate} onQuit={quitApp} />;
   }
 
   return (

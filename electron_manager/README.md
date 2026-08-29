@@ -118,7 +118,43 @@ npm run license:issue:local -- "customer-installation-id" 3
 
 现代 Windows 10/11 版和 macOS 版使用 GitHub Releases 作为更新源。
 Windows 7 兼容版是单独的发布产物，不和现代版混装。应用启动后会自动检查更新；
-用户可以在“设置”中手动检查、下载并重启安装。发布流程：
+用户可以在“设置”中手动检查、下载并重启安装。
+
+### 强制更新策略
+
+应用还会在启动时读取 `electron_manager/update-policy.json`。这个文件可以直接放在 GitHub 仓库里，
+再通过 GitHub Raw 读取。策略文件决定：
+
+- 当前渠道可用的最新版本
+- 当前渠道允许继续运行的最低版本
+- 是否需要强制中断旧版本并先更新
+
+默认情况下，开发环境读取仓库内本地文件；打包后读取 GitHub Raw 地址。你也可以用环境变量
+`BSM_UPDATE_POLICY_URL` 覆盖策略地址。
+
+示例：
+
+```json
+{
+  "version": 1,
+  "defaultChannel": "stable",
+  "channels": {
+    "stable": {
+      "latest": "1.2.14",
+      "minVersion": "1.2.14"
+    },
+    "beta": {
+      "latest": "1.2.14",
+      "minVersion": "1.2.14"
+    }
+  }
+}
+```
+
+内测期可以把 `beta.latest` 逐步升高；正式发布时，把 `stable.minVersion` 改成正式版版本号，
+旧内测包启动后就会被直接拦住，只能先更新。
+
+发布流程：
 
 ```sh
 cd electron_manager
@@ -134,6 +170,9 @@ macOS 安装包，并自动创建 GitHub Release。Windows 10/11 版需要 Relea
 对应的 `latest.yml`；Windows 7 兼容版会单独输出到 `release/win7-legacy`。
 如果要发布 macOS 更新，还需要把 `package:mac` 生成的 DMG 和 `latest-mac.yml`
 一并上传到同一个 Release。
+
+发布正式版时，记得同步更新 `update-policy.json`，把 `stable.latest` 和 `stable.minVersion`
+切到正式版号。这样旧内测版本会在下次启动时被强制升级。
 
 GitHub Actions 需要仓库允许 workflow 使用 `contents: write`，本项目工作流
 已配置该权限。首次上线前应先用测试版本验证安装、下载、重启和回滚流程。

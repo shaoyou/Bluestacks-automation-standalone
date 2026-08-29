@@ -40,6 +40,22 @@ export type UpdateState = {
   releaseNotes?: string;
 };
 
+export type UpdatePolicyState = {
+  supported: boolean;
+  currentVersion: string;
+  channel: string;
+  sourceUrl: string;
+  loaded: boolean;
+  blocked: boolean;
+  latestVersion?: string;
+  minVersion?: string;
+  releaseNotes?: string;
+  downloadUrl?: string;
+  message: string;
+  error?: string;
+  checkedAt?: string;
+};
+
 declare global {
   interface Window {
     bsManager: {
@@ -47,9 +63,12 @@ declare global {
       settingsGet(): Promise<AppSettings>;
       settingsSave(settings: AppSettings): Promise<AppSettings>;
       updateState(): Promise<UpdateState>;
+      updatePolicyState(): Promise<UpdatePolicyState>;
+      updatePolicyCheck(): Promise<UpdatePolicyState>;
       updateCheck(): Promise<UpdateState>;
       updateDownload(): Promise<UpdateState>;
       updateInstall(): Promise<void>;
+      appQuit(): Promise<void>;
       licenseGet(): Promise<LicenseStatus>;
       licenseActivate(code: string): Promise<LicenseStatus>;
       licenseClear(): Promise<LicenseStatus>;

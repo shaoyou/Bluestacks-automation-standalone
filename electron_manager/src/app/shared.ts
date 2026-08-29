@@ -1,4 +1,4 @@
-import type { AppSettings, LicenseStatus, UpdateState } from "../types";
+import type { AppSettings, LicenseStatus, UpdatePolicyState, UpdateState } from "../types";
 
 export type Page = "scripts" | "runner" | "draw" | "chest" | "recorder" | "calibration" | "diagnostics" | "settings";
 export type PickedCoordinate = { x: number; y: number; device: string; capturedAt: string };
@@ -13,9 +13,12 @@ export type SharedProps = {
   clearLicense: () => Promise<void>;
   openLicenseActivation: () => void;
   update: UpdateState | null;
+  updatePolicy: UpdatePolicyState | null;
+  refreshUpdatePolicy: () => Promise<void>;
   checkForUpdates: () => Promise<void>;
   downloadUpdate: () => Promise<void>;
   installUpdate: () => Promise<void>;
+  quitApp: () => Promise<void>;
   runtime: { root: string; plansDir: string; templatesDir: string } | null;
   plans: string[];
   activePlan: string | null;

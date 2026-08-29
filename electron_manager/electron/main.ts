@@ -34,6 +34,35 @@ type UpdateState = {
   releaseNotes?: string;
 };
 
+type UpdatePolicyChannel = {
+  latest?: string;
+  minVersion?: string;
+  downloadUrl?: string;
+  releaseNotes?: string;
+};
+
+type UpdatePolicyFile = {
+  version: number;
+  defaultChannel?: string;
+  channels: Record<string, UpdatePolicyChannel>;
+};
+
+type UpdatePolicyState = {
+  supported: boolean;
+  currentVersion: string;
+  channel: string;
+  sourceUrl: string;
+  loaded: boolean;
+  blocked: boolean;
+  latestVersion?: string;
+  minVersion?: string;
+  releaseNotes?: string;
+  downloadUrl?: string;
+  message: string;
+  error?: string;
+  checkedAt?: string;
+};
+
 const thisDir = path.dirname(fileURLToPath(import.meta.url));
 const isDevelopment = !app.isPackaged;
 const tasks = new Map<string, ChildProcess>();
@@ -52,7 +81,158 @@ let updateState: UpdateState = {
       : "当前平台暂不支持自动更新"
     : "开发环境不检查更新",
 };
+let updatePolicyState: UpdatePolicyState = {
+  supported: app.isPackaged && supportsAutoUpdatePlatform,
+  currentVersion: app.getVersion(),
+  channel: detectReleaseChannel(app.getVersion()),
+  sourceUrl: "",
+  loaded: false,
+  blocked: false,
+  message: "正在读取更新策略...",
+};
 const HDC_DEVICE_SUFFIX = " [HarmonyOS/HDC]";
+const DEFAULT_UPDATE_POLICY_URL = "https://raw.githubusercontent.com/shaoyou/Bluestacks-automation-standalone/main/electron_manager/update-policy.json";
+
+function parseVersion(rawVersion: string): { major: number; minor: number; patch: number; prerelease: string[] } | null {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(String(rawVersion || "").trim());
+  if (!match) return null;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    prerelease: match[4] ? match[4].split(".") : [],
+  };
+}
+
+function compareIdentifiers(left: string, right: string): number {
+  const leftNumber = /^\d+$/.test(left) ? Number(left) : null;
+  const rightNumber = /^\d+$/.test(right) ? Number(right) : null;
+  if (leftNumber !== null && rightNumber !== null) return leftNumber - rightNumber;
+  if (leftNumber !== null) return -1;
+  if (rightNumber !== null) return 1;
+  return left.localeCompare(right, "en-US");
+}
+
+function compareVersions(left: string, right: string): number {
+  const parsedLeft = parseVersion(left);
+  const parsedRight = parseVersion(right);
+  if (!parsedLeft || !parsedRight) return String(left).localeCompare(String(right), "en-US");
+  if (parsedLeft.major !== parsedRight.major) return parsedLeft.major - parsedRight.major;
+  if (parsedLeft.minor !== parsedRight.minor) return parsedLeft.minor - parsedRight.minor;
+  if (parsedLeft.patch !== parsedRight.patch) return parsedLeft.patch - parsedRight.patch;
+  if (parsedLeft.prerelease.length === 0 && parsedRight.prerelease.length === 0) return 0;
+  if (parsedLeft.prerelease.length === 0) return 1;
+  if (parsedRight.prerelease.length === 0) return -1;
+  const length = Math.max(parsedLeft.prerelease.length, parsedRight.prerelease.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftIdentifier = parsedLeft.prerelease[index];
+    const rightIdentifier = parsedRight.prerelease[index];
+    if (leftIdentifier === undefined) return -1;
+    if (rightIdentifier === undefined) return 1;
+    const delta = compareIdentifiers(leftIdentifier, rightIdentifier);
+    if (delta !== 0) return delta;
+  }
+  return 0;
+}
+
+function detectReleaseChannel(version: string): string {
+  const parsed = parseVersion(version);
+  if (!parsed || parsed.prerelease.length === 0) return "stable";
+  return parsed.prerelease[0]?.toLowerCase() || "beta";
+}
+
+function resolveUpdatePolicySource(): string {
+  if (!app.isPackaged) return path.resolve(thisDir, "../update-policy.json");
+  return process.env.BSM_UPDATE_POLICY_URL?.trim() || DEFAULT_UPDATE_POLICY_URL;
+}
+
+function normalizeUpdatePolicy(raw: unknown): UpdatePolicyFile | null {
+  if (!raw || typeof raw !== "object") return null;
+  const value = raw as Partial<UpdatePolicyFile>;
+  if (!value.channels || typeof value.channels !== "object") return null;
+  const channels: Record<string, UpdatePolicyChannel> = {};
+  for (const [key, channel] of Object.entries(value.channels)) {
+    if (!channel || typeof channel !== "object") continue;
+    channels[key] = {
+      latest: typeof channel.latest === "string" ? channel.latest.trim() : undefined,
+      minVersion: typeof channel.minVersion === "string" ? channel.minVersion.trim() : undefined,
+      downloadUrl: typeof channel.downloadUrl === "string" ? channel.downloadUrl.trim() : undefined,
+      releaseNotes: typeof channel.releaseNotes === "string" ? channel.releaseNotes.trim() : undefined,
+    };
+  }
+  return {
+    version: Number(value.version ?? 1),
+    defaultChannel: typeof value.defaultChannel === "string" ? value.defaultChannel.trim() : undefined,
+    channels,
+  };
+}
+
+async function readUpdatePolicyFile(): Promise<UpdatePolicyFile | null> {
+  const sourceUrl = resolveUpdatePolicySource();
+  try {
+    if (sourceUrl.startsWith("http://") || sourceUrl.startsWith("https://")) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5_000);
+      try {
+        const response = await fetch(sourceUrl, { signal: controller.signal, cache: "no-store" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return normalizeUpdatePolicy(await response.json());
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+    return normalizeUpdatePolicy(JSON.parse(readFileSync(sourceUrl, "utf8")));
+  } catch {
+    return null;
+  }
+}
+
+function evaluateUpdatePolicy(policy: UpdatePolicyFile | null): UpdatePolicyState {
+  const currentVersion = app.getVersion();
+  const channel = detectReleaseChannel(currentVersion);
+  const sourceUrl = resolveUpdatePolicySource();
+  if (!policy) {
+    return {
+      supported: app.isPackaged && supportsAutoUpdatePlatform,
+      currentVersion,
+      channel,
+      sourceUrl,
+      loaded: false,
+      blocked: false,
+      message: "未读取到更新策略，已按当前版本继续启动",
+      checkedAt: new Date().toISOString(),
+    };
+  }
+  const activeChannel = policy.channels[channel] ? channel : policy.channels[policy.defaultChannel ?? "stable"] ? (policy.defaultChannel ?? "stable") : channel;
+  const activePolicy = policy.channels[activeChannel] ?? {};
+  const blocked = typeof activePolicy.minVersion === "string" && compareVersions(currentVersion, activePolicy.minVersion) < 0;
+  const newerVersion = typeof activePolicy.latest === "string" && compareVersions(activePolicy.latest, currentVersion) > 0 ? activePolicy.latest : undefined;
+  const message = blocked
+    ? `当前版本 ${currentVersion} 已被限制，请先更新到 ${activePolicy.minVersion}`
+    : newerVersion
+      ? `发现可用版本 ${newerVersion}`
+      : `当前版本 ${currentVersion} 已通过启动校验`;
+  return {
+    supported: app.isPackaged && supportsAutoUpdatePlatform,
+    currentVersion,
+    channel: activeChannel,
+    sourceUrl,
+    loaded: true,
+    blocked,
+    latestVersion: activePolicy.latest,
+    minVersion: activePolicy.minVersion,
+    releaseNotes: activePolicy.releaseNotes,
+    downloadUrl: activePolicy.downloadUrl,
+    message,
+    checkedAt: new Date().toISOString(),
+  };
+}
+
+async function refreshUpdatePolicy() {
+  const policy = await readUpdatePolicyFile();
+  updatePolicyState = evaluateUpdatePolicy(policy);
+  return updatePolicyState;
+}
 
 function bundledRuntimeRoot(): string {
   return isDevelopment
@@ -595,10 +775,13 @@ function createRunWindow(initialPlan?: string, mode: "runner" | "chest" = "runne
 }
 
 app.whenReady().then(() => {
-  runtimeRoot();
-  migrateLegacyChestSources();
-  createWindow();
-  initializeAutoUpdater();
+  void (async () => {
+    runtimeRoot();
+    migrateLegacyChestSources();
+    await refreshUpdatePolicy();
+    createWindow();
+    initializeAutoUpdater();
+  })();
   if (updateState.supported) {
     setTimeout(() => void checkForUpdates(), 5_000);
   }
@@ -614,11 +797,16 @@ app.whenReady().then(() => {
     return saved;
   });
   ipcMain.handle("update:state", () => updateState);
+  ipcMain.handle("update:policy-state", () => updatePolicyState);
+  ipcMain.handle("update:policy-check", () => refreshUpdatePolicy());
   ipcMain.handle("update:check", () => checkForUpdates());
   ipcMain.handle("update:download", () => downloadUpdate());
   ipcMain.handle("update:install", () => {
     if (updateState.phase !== "downloaded") throw new Error("更新尚未下载完成");
     setImmediate(() => autoUpdater.quitAndInstall());
+  });
+  ipcMain.handle("app:quit", () => {
+    app.quit();
   });
   ipcMain.handle("license:get", () => getLicenseStatus());
   ipcMain.handle("license:activate", (_, code: string) => activateLicense(String(code || "")));

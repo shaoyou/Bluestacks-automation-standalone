@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "defaultChannel": "stable",
+  "channels": {
+    "stable": {
+      "latest": "1.2.14",
+      "minVersion": "1.2.14"
+    },
+    "beta": {
+      "latest": "1.2.14",
+      "minVersion": "1.2.14"
+    }
+  }
+}
