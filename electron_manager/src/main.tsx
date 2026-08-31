@@ -31,8 +31,10 @@ if (!window.bsManager) {
   const notify = (event: { id: string; type: "started" | "log" | "exit"; code?: number; text?: string }) => listeners.forEach((listener) => listener(event));
   window.bsManager = {
     runtimeState: async () => ({ root: "/preview/runtime", plansDir: "/preview/runtime/plans", templatesDir: "/preview/runtime/image_templates" }),
-    settingsGet: async () => ({ adbPath: "adb", hdcPath: "hdc", pythonPath: "python3", language: "zh" }),
+    settingsGet: async () => ({ adbPath: "adb", hdcPath: "hdc", hdcToolsDir: "", pythonPath: "python3", language: "zh" }),
     settingsSave: async (settings) => settings,
+    hdcChooseToolsDirectory: async () => null,
+    hdcConfigureTools: async (directory) => ({ adbPath: "adb", hdcPath: directory, hdcToolsDir: directory, pythonPath: "python3", language: "zh" }),
     updateState: async () => ({ currentVersion: "1.2.14", supported: false, phase: "unsupported", message: "预览环境不检查更新" }),
     updatePolicyState: async () => ({ supported: false, currentVersion: "1.2.14", channel: "stable", sourceUrl: "", loaded: false, checking: false, blocked: false, message: "预览环境不检查更新" }),
     updatePolicyCheck: async () => ({ supported: false, currentVersion: "1.2.14", channel: "stable", sourceUrl: "", loaded: false, checking: false, blocked: false, message: "预览环境不检查更新" }),

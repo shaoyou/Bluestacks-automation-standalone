@@ -1,6 +1,7 @@
 export type AppSettings = {
   adbPath: string;
   hdcPath: string;
+  hdcToolsDir: string;
   pythonPath: string;
   language: "zh" | "en";
 };
@@ -73,6 +74,8 @@ declare global {
       runtimeState(): Promise<{ root: string; plansDir: string; templatesDir: string }>;
       settingsGet(): Promise<AppSettings>;
       settingsSave(settings: AppSettings): Promise<AppSettings>;
+      hdcChooseToolsDirectory(): Promise<string | null>;
+      hdcConfigureTools(directory: string): Promise<AppSettings>;
       updateState(): Promise<UpdateState>;
       updatePolicyState(): Promise<UpdatePolicyState>;
       updatePolicyCheck(): Promise<UpdatePolicyState>;

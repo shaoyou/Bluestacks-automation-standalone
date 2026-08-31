@@ -4,6 +4,8 @@ contextBridge.exposeInMainWorld("bsManager", {
   runtimeState: () => ipcRenderer.invoke("runtime:state"),
   settingsGet: () => ipcRenderer.invoke("settings:get"),
   settingsSave: (settings: unknown) => ipcRenderer.invoke("settings:save", settings),
+  hdcChooseToolsDirectory: () => ipcRenderer.invoke("hdc:choose-tools-directory"),
+  hdcConfigureTools: (directory: string) => ipcRenderer.invoke("hdc:configure-tools", directory),
   updateState: () => ipcRenderer.invoke("update:state"),
   updatePolicyState: () => ipcRenderer.invoke("update:policy-state"),
   updatePolicyCheck: () => ipcRenderer.invoke("update:policy-check"),

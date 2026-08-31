@@ -13,6 +13,7 @@ const { autoUpdater } = electronUpdater;
 type Settings = {
   adbPath: string;
   hdcPath: string;
+  hdcToolsDir: string;
   pythonPath: string;
   language: "zh" | "en";
 };
@@ -569,6 +570,7 @@ function getSettings(): Settings {
   const defaults: Settings = {
     adbPath: process.platform === "win32" ? "adb.exe" : "adb",
     hdcPath: process.platform === "win32" ? "hdc.exe" : "hdc",
+    hdcToolsDir: "",
     pythonPath: process.platform === "win32" ? "python.exe" : "python3",
     language: "zh",
   };
@@ -630,6 +632,28 @@ function resolveAdbExecutable(rawPath: string): string {
 
 function resolveHdcExecutable(rawPath: string): string {
   return resolveExecutable((rawPath || "").trim(), process.platform === "win32" ? "hdc.exe" : "hdc");
+}
+
+function normalizeToolDirectory(rawPath: string): string {
+  const expanded = (rawPath || "").trim().replace(/^~(?=$|\/|\\)/, homedir());
+  if (!expanded) throw new Error("请选择 Command Line Tools 目录");
+  if (!existsSync(expanded)) throw new Error(`未找到目录: ${expanded}`);
+  return expanded;
+}
+
+function resolveHdcExecutableFromDirectory(rawPath: string): string {
+  const root = normalizeToolDirectory(rawPath);
+  const candidates = [
+    path.join(root, "sdk", "default", "openharmony", "toolchains", "hdc.exe"),
+    path.join(root, "sdk", "default", "openharmony", "toolchains", "hdc"),
+    path.join(root, "toolchains", "hdc.exe"),
+    path.join(root, "toolchains", "hdc"),
+    path.join(root, "hdc.exe"),
+    path.join(root, "hdc"),
+  ];
+  const resolved = candidates.find((candidate) => existsSync(candidate));
+  if (!resolved) throw new Error(`在目录中未找到 hdc：${root}`);
+  return resolved;
 }
 
 function saveSettings(settings: Settings): Settings {
@@ -1232,6 +1256,22 @@ app.whenReady().then(() => {
     const devices = [...adbDevices, ...hdcDevices];
     sendDevicesEvent(devices);
     return devices;
+  });
+  ipcMain.handle("hdc:choose-tools-directory", async () => {
+    const window = mainWindow ?? BrowserWindow.getFocusedWindow();
+    if (!window) throw new Error("窗口尚未初始化");
+    const result = await dialog.showOpenDialog(window, {
+      title: "选择 Command Line Tools 目录",
+      properties: ["openDirectory"],
+    });
+    return result.canceled ? null : result.filePaths[0] ?? null;
+  });
+  ipcMain.handle("hdc:configure-tools", (_, rawDirectory: unknown) => {
+    const directory = String(rawDirectory ?? "").trim();
+    const hdcPath = resolveHdcExecutableFromDirectory(directory);
+    const next = saveSettings({ ...getSettings(), hdcToolsDir: directory, hdcPath });
+    sendSettingsEvent(next);
+    return next;
   });
   ipcMain.handle("adb:run", (_, rawToolPaths: unknown, args: string[], requestedBackend?: "adb" | "hdc") => {
     const { adbPath, hdcPath } = commandToolPaths(rawToolPaths);
