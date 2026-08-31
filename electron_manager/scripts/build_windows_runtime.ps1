@@ -19,6 +19,7 @@ $output = if ($OutputDirectory) {
   Join-Path $projectRoot "electron_manager/vendor/windows/x64"
 }
 $harmonyOutput = Join-Path $projectRoot "electron_manager/vendor/harmony/windows/x64"
+$harmonyTarget = Join-Path $harmonyOutput "hdc.exe"
 $work = Join-Path $env:TEMP "bs-manager-windows-runtime"
 $platformZip = Join-Path $work "platform-tools.zip"
 $platformExtract = Join-Path $work "platform-tools"
@@ -66,7 +67,11 @@ function Resolve-HdcSource {
 
 $hdcSource = Resolve-HdcSource -ExplicitPath $HdcPath
 if ($hdcSource) {
-  Copy-Item $hdcSource (Join-Path $harmonyOutput "hdc.exe") -Force
+  $sourcePath = [System.IO.Path]::GetFullPath($hdcSource)
+  $targetPath = [System.IO.Path]::GetFullPath($harmonyTarget)
+  if ($sourcePath -ne $targetPath) {
+    Copy-Item $sourcePath $harmonyTarget -Force
+  }
 } else {
   Write-Warning "HDC was not found on this build machine, so the Windows package will not bundle it."
 }
