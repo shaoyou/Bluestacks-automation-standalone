@@ -40,9 +40,8 @@ npm run package:win7
 ```
 
 `package:mac` produces a macOS DMG and ZIP. `package:win` targets mainstream
-Windows x64 machines and produces a Windows 10/11 NSIS installer and ZIP.
-`package:win7` produces a separate Windows 7 SP1 x64 legacy NSIS installer and
-ZIP.
+Windows x64 machines and produces a Windows 10/11 NSIS installer.
+`package:win7` produces a separate Windows 7 SP1 x64 legacy NSIS installer.
 
 For manual Windows packaging, run the commands in this order on a Windows host:
 
