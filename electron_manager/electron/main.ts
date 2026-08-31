@@ -473,7 +473,7 @@ function runtimeRoot(): string {
   for (const dir of ["windows/x64", "harmony/windows/x64"]) {
     const sourceDir = path.join(bundledToolRoot(), dir);
     const targetDir = path.join(target, dir);
-    copyResources(sourceDir, targetDir);
+    copyResources(sourceDir, targetDir, true);
   }
   for (const dir of ["plans", "image_templates"]) {
     const sourceDir = dir === "plans" ? bundledPlansRoot() : path.join(source, dir);
