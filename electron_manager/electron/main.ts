@@ -470,6 +470,11 @@ function runtimeRoot(): string {
     const sourceFile = path.join(source, file);
     if (existsSync(sourceFile)) copyFileAtomic(sourceFile, path.join(target, file));
   }
+  for (const dir of ["windows/x64", "harmony/windows/x64"]) {
+    const sourceDir = path.join(bundledToolRoot(), dir);
+    const targetDir = path.join(target, dir);
+    copyResources(sourceDir, targetDir);
+  }
   for (const dir of ["plans", "image_templates"]) {
     const sourceDir = dir === "plans" ? bundledPlansRoot() : path.join(source, dir);
     const targetDir = path.join(target, dir);
@@ -479,6 +484,20 @@ function runtimeRoot(): string {
     mkdirSync(path.join(target, dir), { recursive: true });
   }
   return target;
+}
+
+function bundledWindowsScriptExecutable(scriptPath: string): string | null {
+  if (process.platform !== "win32") return null;
+  const scriptName = path.basename(scriptPath).toLowerCase();
+  const executableName = {
+    "adb_bot.py": "adb_bot.exe",
+    "record_touch.py": "record_touch.exe",
+    "chest_analyzer.py": "chest_analyzer.exe",
+    "data_store.py": "data_store.exe",
+  }[scriptName];
+  if (!executableName) return null;
+  const candidate = path.join(runtimeRoot(), "windows", "x64", executableName);
+  return existsSync(candidate) ? candidate : null;
 }
 
 function sendUpdateEvent(state: UpdateState) {
@@ -732,8 +751,10 @@ function spawnTask(request: TaskRequest, ownerWebContentsId?: number) {
   }
   if (request.kind === "runner") assertRunnerCapacity();
   const settings = getSettings();
-  const executable = resolveExecutable(settings.pythonPath, process.platform === "win32" ? "python.exe" : "python3");
-  const args = ["-u", ...request.args];
+  const scriptPath = request.args[0];
+  const bundledExecutable = typeof scriptPath === "string" ? bundledWindowsScriptExecutable(scriptPath) : null;
+  const executable = bundledExecutable ?? resolveExecutable(settings.pythonPath, process.platform === "win32" ? "python.exe" : "python3");
+  const args = bundledExecutable ? request.args.slice(1) : ["-u", ...request.args];
   const task = spawn(executable, args, {
     cwd: request.cwd ?? runtimeRoot(),
     env: {
@@ -1920,11 +1941,11 @@ function importChestSyncPackage(userId: string) {
 function runChestAnalyzer(day?: string, userId?: string, ownerWebContentsId?: number) {
   const root = path.join(runtimeRoot(), "diagnostics", "chest_results");
   const script = path.join(runtimeRoot(), "chest_analyzer.py");
-  const executable = resolveExecutable(getSettings().pythonPath, process.platform === "win32" ? "python.exe" : "python3");
+  const executable = bundledWindowsScriptExecutable(script) ?? resolveExecutable(getSettings().pythonPath, process.platform === "win32" ? "python.exe" : "python3");
   if (day && !/^\d{4}-\d{2}-\d{2}$/.test(day)) {
     return Promise.reject(new Error("重新识别日期格式无效"));
   }
-  const args = [script, "--input-dir", root, "--force"];
+  const args = bundledWindowsScriptExecutable(script) ? ["--input-dir", root, "--force"] : [script, "--input-dir", root, "--force"];
   if (day) args.push("--day", day);
   if (userId) args.push("--user-id", userId);
   return new Promise<Record<string, unknown>>((resolve, reject) => {
@@ -2403,9 +2424,9 @@ async function migrateHistoryToDatabase() {
   const chestRecords = chestItemEventsFromFile();
   const payload = JSON.stringify({ database: historyDatabaseFile(), operation: "import", data: { users: chestUsers(), chestRecords, drawSessions, drawEvents, drawPairs } });
   const script = path.join(runtimeRoot(), "data_store.py");
-  const executable = resolveExecutable(getSettings().pythonPath, process.platform === "win32" ? "python.exe" : "python3");
+  const executable = bundledWindowsScriptExecutable(script) ?? resolveExecutable(getSettings().pythonPath, process.platform === "win32" ? "python.exe" : "python3");
   const result = await new Promise<string>((resolve, reject) => {
-    const process = spawn(executable, [script], { windowsHide: true, env: runtimeEnvironment() });
+    const process = spawn(executable, bundledWindowsScriptExecutable(script) ? [] : [script], { windowsHide: true, env: runtimeEnvironment() });
     let output = "";
     let errors = "";
     process.stdout.on("data", (data) => (output += data.toString("utf8")));
