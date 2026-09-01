@@ -1102,9 +1102,6 @@ app.whenReady().then(() => {
   void (async () => {
     runtimeRoot();
     migrateLegacyChestSources();
-    await refreshUpdatePolicy();
-    await refreshUpdatePromptState();
-    ensureUpdatePromptMonitor();
     createWindow();
     initializeAutoUpdater();
   })();

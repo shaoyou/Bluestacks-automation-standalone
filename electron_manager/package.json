@@ -1,7 +1,7 @@
 {
   "name": "bs-manager-cross-platform",
   "private": true,
-  "version": "1.2.22",
+  "version": "1.2.23",
   "channel": "beta",
   "description": "Cross-platform BlueStacks automation manager",
   "author": "熊熊乐园小助手",
