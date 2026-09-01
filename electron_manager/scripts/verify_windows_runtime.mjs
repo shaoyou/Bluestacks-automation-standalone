@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 const runtimeDir = path.resolve(scriptsDir, "../", process.argv[2] ?? "vendor/windows/x64");
-const required = ["adb_bot.exe", "record_touch.exe", "adb.exe", "AdbWinApi.dll", "AdbWinUsbApi.dll"];
+const required = ["adb_bot.exe", "record_touch.exe", "device_discovery_diagnostic.exe", "hdc_device_diagnostic.exe", "adb.exe", "AdbWinApi.dll", "AdbWinUsbApi.dll"];
 const missing = required.filter((name) => !existsSync(path.join(runtimeDir, name)));
 
 if (missing.length) {

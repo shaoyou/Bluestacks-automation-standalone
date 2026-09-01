@@ -71,7 +71,7 @@ export type UpdatePromptState = {
 declare global {
   interface Window {
     bsManager: {
-      runtimeState(): Promise<{ root: string; plansDir: string; templatesDir: string }>;
+      runtimeState(): Promise<{ root: string; plansDir: string; internalPlansDir: string; templatesDir: string }>;
       settingsGet(): Promise<AppSettings>;
       settingsSave(settings: AppSettings): Promise<AppSettings>;
       hdcChooseToolsDirectory(): Promise<string | null>;
@@ -97,6 +97,10 @@ declare global {
       templatesOpenFolder(): Promise<void>;
       templatesImport(): Promise<string | null>;
       templatesSaveCapture(name: string, dataUrl: string): Promise<string>;
+      templatesImage(name: string): Promise<string | null>;
+      drawTemplateConfig(): Promise<{ cancel: { template: string; region: { x: number; y: number; width: number; height: number } }; max: { template: string; region: { x: number; y: number; width: number; height: number } }; coin: { template: string; region: { x: number; y: number; width: number; height: number } } }>;
+      drawTemplateSave(calibration: unknown): Promise<boolean>;
+      drawTemplateReset(): Promise<boolean>;
       drawUsers(): Promise<Array<{ id: string; name: string; createdAt: string }>>;
       drawCreateUser(name: string): Promise<{ id: string; name: string; createdAt: string }>;
       drawRenameUser(userId: string, name: string): Promise<{ id: string; name: string; createdAt: string }>;

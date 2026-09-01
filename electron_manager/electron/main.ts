@@ -427,6 +427,24 @@ function bundledPlansRoot(): string {
     : path.join(bundledRuntimeRoot(), "plans");
 }
 
+function bundledInternalPlansRoot(): string {
+  return isDevelopment
+    ? path.resolve(thisDir, "../internal_plans")
+    : path.join(bundledRuntimeRoot(), "internal_plans");
+}
+
+function bundledInternalPlanDefaultsRoot(): string {
+  return isDevelopment
+    ? path.resolve(thisDir, "../internal_plan_defaults")
+    : path.join(bundledRuntimeRoot(), "internal_plan_defaults");
+}
+
+function bundledInternalTemplateDefaultsRoot(): string {
+  return isDevelopment
+    ? path.resolve(thisDir, "../internal_template_defaults")
+    : path.join(bundledRuntimeRoot(), "internal_template_defaults");
+}
+
 function bundledToolRoot(): string {
   return isDevelopment
     ? path.resolve(thisDir, "../vendor")
@@ -461,12 +479,31 @@ function copyFileAtomic(source: string, target: string) {
   renameSync(temporary, target);
 }
 
+function migrateDrawPlanImageOnly() {
+  const file = path.join(app.getPath("userData"), "runtime", "internal_plans", "choukaka.json");
+  if (!existsSync(file)) return;
+  try {
+    const plan = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+    const clean = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.filter((item) => {
+        if (!item || typeof item !== "object") return true;
+        const action = item as Record<string, unknown>;
+        return !(String(action.type || "").toLowerCase() === "if_text" && Array.isArray(action.texts) && action.texts.some((text) => String(text).includes("放弃")));
+      }).map(clean);
+      if (!value || typeof value !== "object") return value;
+      return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, clean(item)]));
+    };
+    const migrated = clean(plan) as Record<string, unknown>;
+    if (JSON.stringify(migrated) !== JSON.stringify(plan)) writeFileSync(file, `${JSON.stringify(migrated, null, 2)}\n`, "utf8");
+  } catch { /* Invalid internal plans are reported when the service starts. */ }
+}
+
 function runtimeRoot(): string {
   const target = path.join(app.getPath("userData"), "runtime");
   const source = bundledRuntimeRoot();
   mkdirSync(target, { recursive: true });
 
-  for (const file of ["adb_bot.py", "record_touch.py", "chest_analyzer.py", "data_store.py"]) {
+  for (const file of ["adb_bot.py", "record_touch.py", "device_discovery_diagnostic.py", "hdc_device_diagnostic.py", "chest_analyzer.py", "data_store.py"]) {
     const sourceFile = path.join(source, file);
     if (existsSync(sourceFile)) copyFileAtomic(sourceFile, path.join(target, file));
   }
@@ -475,14 +512,19 @@ function runtimeRoot(): string {
     const targetDir = path.join(target, dir);
     copyResources(sourceDir, targetDir, true);
   }
-  for (const dir of ["plans", "image_templates"]) {
-    const sourceDir = dir === "plans" ? bundledPlansRoot() : path.join(source, dir);
+  for (const dir of ["plans", "internal_plans", "internal_plan_defaults", "internal_template_defaults", "image_templates"]) {
+    const sourceDir = dir === "plans" ? bundledPlansRoot() : dir === "internal_plans" ? bundledInternalPlansRoot() : dir === "internal_plan_defaults" ? bundledInternalPlanDefaultsRoot() : dir === "internal_template_defaults" ? bundledInternalTemplateDefaultsRoot() : path.join(source, dir);
     const targetDir = path.join(target, dir);
     copyResources(sourceDir, targetDir, dir === "plans");
   }
   for (const dir of ["diagnostics", "recording_profiles"]) {
     mkdirSync(path.join(target, dir), { recursive: true });
   }
+  for (const name of ["choukaka.json", "开宝箱截图.json"]) {
+    const editableCopy = path.join(target, "plans", name);
+    if (existsSync(editableCopy) && existsSync(path.join(target, "internal_plans", name))) unlinkSync(editableCopy);
+  }
+  migrateDrawPlanImageOnly();
   return target;
 }
 
@@ -492,6 +534,8 @@ function bundledWindowsScriptExecutable(scriptPath: string): string | null {
   const executableName = {
     "adb_bot.py": "adb_bot.exe",
     "record_touch.py": "record_touch.exe",
+    "device_discovery_diagnostic.py": "device_discovery_diagnostic.exe",
+    "hdc_device_diagnostic.py": "hdc_device_diagnostic.exe",
     "chest_analyzer.py": "chest_analyzer.exe",
     "data_store.py": "data_store.exe",
   }[scriptName];
@@ -689,6 +733,43 @@ function safePlanPath(name: string): string {
   const base = path.basename(name);
   if (!base.endsWith(".json")) throw new Error("Plan file must end in .json");
   return path.join(runtimeRoot(), "plans", base);
+}
+
+function internalPlanPath(name: string): string {
+  const base = path.basename(name);
+  if (!base.endsWith(".json")) throw new Error("Internal plan file must end in .json");
+  return path.join(runtimeRoot(), "internal_plans", base);
+}
+
+type DrawTemplateCalibration = {
+  cancel: { template: string; region: { x: number; y: number; width: number; height: number } };
+  max: { template: string; region: { x: number; y: number; width: number; height: number } };
+  coin: { template: string; region: { x: number; y: number; width: number; height: number } };
+};
+
+function updateInternalDrawTemplates(calibration: DrawTemplateCalibration) {
+  const file = internalPlanPath("choukaka.json");
+  const plan = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+  const visit = (value: unknown) => {
+    if (Array.isArray(value)) { value.forEach(visit); return; }
+    if (!value || typeof value !== "object") return;
+    const action = value as Record<string, unknown>;
+    const values = [action.template, ...(Array.isArray(action.templates) ? action.templates : [])].map((item) => path.basename(String(item ?? "")).toLowerCase());
+    const key = values.some((item) => item.startsWith("role_cancel")) ? "cancel" : values.some((item) => item.startsWith("role_count_max")) ? "max" : values.some((item) => item.startsWith("role_done")) ? "coin" : null;
+    if (key) {
+      const config = calibration[key];
+      const templateName = path.basename(String(config.template || ""));
+      if (!templateName || templateName === "." || templateName === "..") throw new Error("模板文件名无效");
+      if (Array.isArray(action.templates)) action.templates = [`../image_templates/${templateName}`];
+      else action.template = `../image_templates/${templateName}`;
+      action.region = { ...config.region };
+      if (action.cancel_region) action.cancel_region = { ...config.region };
+    }
+    Object.values(action).forEach(visit);
+  };
+  visit(plan.actions);
+  writeFileSync(file, `${JSON.stringify(plan, null, 2)}\n`, "utf8");
+  return true;
 }
 
 function sendTaskEvent(event: Record<string, unknown>) {
@@ -1033,7 +1114,7 @@ app.whenReady().then(() => {
 
   ipcMain.handle("runtime:state", () => {
     const root = runtimeRoot();
-    return { root, plansDir: path.join(root, "plans"), templatesDir: path.join(root, "image_templates") };
+    return { root, plansDir: path.join(root, "plans"), internalPlansDir: path.join(root, "internal_plans"), templatesDir: path.join(root, "image_templates") };
   });
   ipcMain.handle("settings:get", () => getSettings());
   ipcMain.handle("settings:save", (_, settings: Settings) => {
@@ -1106,6 +1187,54 @@ app.whenReady().then(() => {
     const output = path.join(runtimeRoot(), "image_templates", name);
     writeFileSync(output, Buffer.from(match[1], "base64"));
     return `../image_templates/${name}`;
+  });
+  ipcMain.handle("templates:image", (_, rawName: string) => {
+    const name = path.basename(String(rawName || ""));
+    if (name.includes("/") || name.includes("\\") || !/\.(png|jpe?g|webp)$/i.test(name)) throw new Error("模板文件名无效");
+    const file = path.join(runtimeRoot(), "image_templates", name);
+    if (!existsSync(file)) return null;
+    const mime = /\.jpe?g$/i.test(name) ? "image/jpeg" : /\.webp$/i.test(name) ? "image/webp" : "image/png";
+    return `data:${mime};base64,${readFileSync(file).toString("base64")}`;
+  });
+  ipcMain.handle("draw:template-config", () => {
+    const plan = JSON.parse(readFileSync(internalPlanPath("choukaka.json"), "utf8")) as Record<string, unknown>;
+    const result: DrawTemplateCalibration = {
+      cancel: { template: "role_cancel.png", region: { x: 465, y: 1542, width: 148, height: 72 } },
+      max: { template: "role_count_max.png", region: { x: 636, y: 1258, width: 334, height: 140 } },
+      coin: { template: "role_done.png", region: { x: 337, y: 1380, width: 386, height: 149 } },
+    };
+    const visit = (value: unknown) => {
+      if (Array.isArray(value)) { value.forEach(visit); return; }
+      if (!value || typeof value !== "object") return;
+      const action = value as Record<string, unknown>;
+      const values = [action.template, ...(Array.isArray(action.templates) ? action.templates : [])].map((item) => path.basename(String(item ?? "")).toLowerCase());
+      const key = values.some((item) => item.startsWith("role_cancel")) ? "cancel" : values.some((item) => item.startsWith("role_count_max")) ? "max" : values.some((item) => item.startsWith("role_done")) ? "coin" : null;
+      if (key) {
+        const region = action.region ?? action.cancel_region;
+        const raw = region && typeof region === "object" ? region as Record<string, unknown> : {};
+        result[key] = { template: path.basename(String(Array.isArray(action.templates) ? action.templates[0] : action.template ?? result[key].template)), region: { x: Number(raw.x ?? result[key].region.x), y: Number(raw.y ?? result[key].region.y), width: Number(raw.width ?? result[key].region.width), height: Number(raw.height ?? result[key].region.height) } };
+      }
+      Object.values(action).forEach(visit);
+    };
+    visit(plan.actions);
+    return result;
+  });
+  ipcMain.handle("draw:template-save", (_, calibration: DrawTemplateCalibration) => updateInternalDrawTemplates(calibration));
+  ipcMain.handle("draw:template-reset", () => {
+    const source = path.join(runtimeRoot(), "internal_plan_defaults", "choukaka.json");
+    if (!existsSync(source)) throw new Error("未找到抽卡默认脚本");
+    copyFileAtomic(source, internalPlanPath("choukaka.json"));
+    updateInternalDrawTemplates({
+      cancel: { template: "role_cancel.png", region: { x: 465, y: 1542, width: 148, height: 72 } },
+      max: { template: "role_count_max.png", region: { x: 636, y: 1258, width: 334, height: 140 } },
+      coin: { template: "role_done.png", region: { x: 337, y: 1380, width: 386, height: 149 } },
+    });
+    for (const name of ["role_cancel.png", "role_count_max.png", "role_done.png"]) {
+      const template = path.join(runtimeRoot(), "internal_template_defaults", name);
+      if (!existsSync(template)) throw new Error(`未找到默认模板: ${name}`);
+      copyFileAtomic(template, path.join(runtimeRoot(), "image_templates", name));
+    }
+    return true;
   });
 
   ipcMain.handle("draw:users", () => chestUsers());

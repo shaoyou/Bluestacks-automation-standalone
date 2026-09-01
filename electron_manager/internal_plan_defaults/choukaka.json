@@ -131,32 +131,6 @@
                   },
                   "fallback_actions": [
                     {
-                      "type": "if_text",
-                      "remark": "兜底：检查失败文字",
-                      "texts": [
-                        "失败",
-                        "放弃"
-                      ],
-                      "match": "contains",
-                      "lang": "chi_sim+eng",
-                      "timeout_sec": 0.8,
-                      "interval_sec": 0.2,
-                      "max_attempts": 2,
-                      "then_actions": [
-                        {
-                          "type": "click_match",
-                          "remark": "兜底点击失败文字",
-                          "offset_y": 0
-                        },
-                        {
-                          "type": "wait",
-                          "seconds": 2,
-                          "remark": "本次抽卡结束，等待动画结束后开启下一轮"
-                        }
-                      ],
-                      "else_actions": []
-                    },
-                    {
                       "type": "if_image",
                       "remark": "兜底：最后检查放弃按钮",
                       "templates": [
@@ -388,32 +362,6 @@
                   },
                   "fallback_actions": [
                     {
-                      "type": "if_text",
-                      "remark": "兜底：检查失败文字",
-                      "texts": [
-                        "失败",
-                        "放弃"
-                      ],
-                      "match": "contains",
-                      "lang": "chi_sim+eng",
-                      "timeout_sec": 0.8,
-                      "interval_sec": 0.2,
-                      "max_attempts": 2,
-                      "then_actions": [
-                        {
-                          "type": "click_match",
-                          "remark": "兜底点击失败文字",
-                          "offset_y": 0
-                        },
-                        {
-                          "type": "wait",
-                          "seconds": 2,
-                          "remark": "本次抽卡结束，等待动画结束后开启下一轮"
-                        }
-                      ],
-                      "else_actions": []
-                    },
-                    {
                       "type": "if_image",
                       "remark": "兜底：最后检查放弃按钮",
                       "templates": [
@@ -524,32 +472,6 @@
                     "max_candidates": 1
                   },
                   "fallback_actions": [
-                    {
-                      "type": "if_text",
-                      "remark": "兜底：检查失败文字",
-                      "texts": [
-                        "失败",
-                        "放弃"
-                      ],
-                      "match": "contains",
-                      "lang": "chi_sim+eng",
-                      "timeout_sec": 0.8,
-                      "interval_sec": 0.2,
-                      "max_attempts": 2,
-                      "then_actions": [
-                        {
-                          "type": "click_match",
-                          "remark": "兜底点击失败文字",
-                          "offset_y": 0
-                        },
-                        {
-                          "type": "wait",
-                          "seconds": 2,
-                          "remark": "本次抽卡结束，等待动画结束后开启下一轮"
-                        }
-                      ],
-                      "else_actions": []
-                    },
                     {
                       "type": "if_image",
                       "remark": "兜底：最后检查放弃按钮",

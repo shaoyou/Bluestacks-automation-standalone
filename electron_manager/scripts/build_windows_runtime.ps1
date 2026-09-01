@@ -36,10 +36,14 @@ if ($Windows7Legacy) {
 }
 & $Python -m PyInstaller --noconfirm --clean --onefile --name adb_bot --distpath (Join-Path $work "dist") --workpath (Join-Path $work "build") --specpath $work (Join-Path $projectRoot "adb_bot.py")
 & $Python -m PyInstaller --noconfirm --clean --onefile --name record_touch --distpath (Join-Path $work "dist") --workpath (Join-Path $work "build") --specpath $work (Join-Path $projectRoot "record_touch.py")
+& $Python -m PyInstaller --noconfirm --clean --onefile --name device_discovery_diagnostic --distpath (Join-Path $work "dist") --workpath (Join-Path $work "build") --specpath $work (Join-Path $projectRoot "device_discovery_diagnostic.py")
+& $Python -m PyInstaller --noconfirm --clean --onefile --name hdc_device_diagnostic --distpath (Join-Path $work "dist") --workpath (Join-Path $work "build") --specpath $work (Join-Path $projectRoot "hdc_device_diagnostic.py")
 & $Python -m PyInstaller --noconfirm --clean --onefile --name chest_analyzer --distpath (Join-Path $work "dist") --workpath (Join-Path $work "build") --specpath $work (Join-Path $projectRoot "chest_analyzer.py")
 & $Python -m PyInstaller --noconfirm --clean --onefile --name data_store --distpath (Join-Path $work "dist") --workpath (Join-Path $work "build") --specpath $work (Join-Path $projectRoot "data_store.py")
 Copy-Item (Join-Path $work "dist/adb_bot.exe") $output -Force
 Copy-Item (Join-Path $work "dist/record_touch.exe") $output -Force
+Copy-Item (Join-Path $work "dist/device_discovery_diagnostic.exe") $output -Force
+Copy-Item (Join-Path $work "dist/hdc_device_diagnostic.exe") $output -Force
 Copy-Item (Join-Path $work "dist/chest_analyzer.exe") $output -Force
 Copy-Item (Join-Path $work "dist/data_store.exe") $output -Force
 

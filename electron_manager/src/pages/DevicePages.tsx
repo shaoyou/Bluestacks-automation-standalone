@@ -68,9 +68,72 @@ export function CalibrationPage(props: SharedProps) {
 
 export function DiagnosticsPage(props: SharedProps) {
   const [device, setDevice] = useState("");
-  const running = !!props.running.diagnostic;
-  const start = () => { if (!props.runtime) return; const normalized = (device || "default").replace(/[^a-zA-Z0-9._-]/g, "_"); const args = [`${props.runtime.root}/record_touch.py`, "--output", `${props.runtime.root}/diagnostics/${normalized}_recording_diagnostic.json`, "--adb", props.settings.adbPath, "--diagnose-self-heal"]; if (device) args.push("--device", device, "--profile", `${props.runtime.root}/recording_profiles/${normalized}.json`); void props.startTask("diagnostic", args); };
-  return <div className="page"><PageHeading title="录制诊断" detail="采集触摸映射样本，生成诊断报告，并在可靠时保存改进后的 profile。"><button className="button secondary" onClick={() => void props.refreshDevices()}><RefreshCw size={16} />刷新设备</button></PageHeading><div className="two-column"><section className="panel form-panel"><label>设备序列号<select value={device} onChange={(event) => setDevice(event.target.value)}><option value="">自动选择健康设备</option>{props.devices.map((item) => <option key={item}>{item}</option>)}</select></label><div className="diagnostic-note"><SlidersHorizontal size={18} /><p>诊断过程会执行映射校验；请确保设备屏幕可见且不要在过程中切换模拟器窗口。</p></div>{!running ? <button className="button primary full" onClick={start}><Activity size={16} />开始诊断</button> : <button className="button danger full" onClick={() => void window.bsManager.stopTask("diagnostic")}><CircleStop size={16} />停止诊断</button>}</section><LogPanel title="诊断输出" text={props.logs.diagnostic ?? ""} /></div></div>;
+  const [connectTarget, setConnectTarget] = useState("127.0.0.1:5555");
+  const [hdcTarget, setHdcTarget] = useState("");
+  const touchTaskId = "diagnostic";
+  const discoveryTaskId = "diagnostic-device-discovery";
+  const hdcDiscoveryTaskId = "diagnostic-hdc-device-discovery";
+  const touchRunning = !!props.running[touchTaskId];
+  const discoveryRunning = !!props.running[discoveryTaskId];
+  const hdcDiscoveryRunning = !!props.running[hdcDiscoveryTaskId];
+
+  const copyDiagnosticLog = async (taskId: string) => {
+    const text = props.logs[taskId] ?? "";
+    if (!text) return props.setNotice("当前没有可复制的诊断日志");
+    try {
+      await navigator.clipboard.writeText(text);
+      props.setNotice("已复制");
+    } catch (error) {
+      props.setNotice(`复制诊断日志失败: ${String(error)}`);
+    }
+  };
+
+  useEffect(() => {
+    if (!device && props.devices.length === 1) setDevice(props.devices[0]);
+  }, [device, props.devices]);
+
+  useEffect(() => {
+    if (hdcTarget) return;
+    const firstHdc = props.devices.find((item) => item.endsWith(" [HarmonyOS/HDC]"));
+    if (firstHdc) setHdcTarget(firstHdc);
+  }, [hdcTarget, props.devices]);
+
+  const startTouchDiagnostic = () => {
+    if (!props.runtime) return;
+    const normalized = (device || "default").replace(/[^a-zA-Z0-9._-]/g, "_");
+    const args = [`${props.runtime.root}/record_touch.py`, "--output", `${props.runtime.root}/diagnostics/${normalized}_recording_diagnostic.json`, "--adb", props.settings.adbPath, "--diagnose-self-heal"];
+    if (device) args.push("--device", device, "--profile", `${props.runtime.root}/recording_profiles/${normalized}.json`);
+    void props.startTask(touchTaskId, args);
+  };
+
+  const startDiscoveryDiagnostic = () => {
+    if (!props.runtime) return;
+    const args = [
+      `${props.runtime.root}/device_discovery_diagnostic.py`,
+      "--adb",
+      props.settings.adbPath,
+      "--report-dir",
+      `${props.runtime.root}/diagnostics/device_discovery`,
+    ];
+    if (connectTarget.trim()) args.push("--connect-target", connectTarget.trim());
+    if (device) args.push("--device", device);
+    void props.startTask(discoveryTaskId, args);
+  };
+
+  const startHdcDiscoveryDiagnostic = () => {
+    if (!props.runtime) return;
+    const args = [
+      `${props.runtime.root}/hdc_device_diagnostic.py`,
+      "--hdc",
+      props.settings.hdcPath,
+      "--report-dir",
+      `${props.runtime.root}/diagnostics/hdc_device_discovery`,
+    ];
+    if (hdcTarget.trim()) args.push("--device", hdcTarget.trim());
+    void props.startTask(hdcDiscoveryTaskId, args);
+  };
+
+  return <div className="page"><PageHeading title="设备诊断" detail="分别检查安卓设备发现、鸿蒙设备发现和设备连接链路。"><button className="button secondary" onClick={() => void props.refreshDevices()}><RefreshCw size={16} />刷新设备</button></PageHeading><div className="diagnostic-stack"><div className="two-column diagnostic-android"><section className="panel form-panel"><label>ADB 连接目标<input value={connectTarget} onChange={(event) => setConnectTarget(event.target.value)} placeholder="127.0.0.1:5555" /></label><label>目标设备序列号<select value={device} onChange={(event) => setDevice(event.target.value)}><option value="">优先自动发现</option>{props.devices.map((item) => <option key={item}>{item}</option>)}</select></label><div className="diagnostic-note"><SlidersHorizontal size={18} /><p>检查 Android ADB 版本、设备列表、连接尝试和 shell 探测结果。</p></div>{!discoveryRunning ? <button className="button primary full" onClick={startDiscoveryDiagnostic}><Activity size={16} />开始安卓设备发现诊断</button> : <button className="button danger full" onClick={() => void window.bsManager.stopTask(discoveryTaskId)}><CircleStop size={16} />停止诊断</button>}</section><LogPanel title="安卓设备发现诊断输出" text={props.logs[discoveryTaskId] ?? ""} actions={<button className="icon-button" title="复制日志" aria-label="复制日志" disabled={!props.logs[discoveryTaskId]} onClick={() => void copyDiagnosticLog(discoveryTaskId)}><Copy size={15} /></button>} /></div><div className="two-column diagnostic-harmony"><section className="panel form-panel"><label>HDC 目标<input value={hdcTarget} onChange={(event) => setHdcTarget(event.target.value)} placeholder="12345 [HarmonyOS/HDC] 或 hdc:12345" /></label><div className="diagnostic-note"><SlidersHorizontal size={18} /><p>检查鸿蒙 HDC targets、目标探活和屏幕尺寸。</p></div>{!hdcDiscoveryRunning ? <button className="button primary full" onClick={startHdcDiscoveryDiagnostic}><Activity size={16} />开始鸿蒙设备发现诊断</button> : <button className="button danger full" onClick={() => void window.bsManager.stopTask(hdcDiscoveryTaskId)}><CircleStop size={16} />停止诊断</button>}</section><LogPanel title="鸿蒙设备发现诊断输出" text={props.logs[hdcDiscoveryTaskId] ?? ""} actions={<button className="icon-button" title="复制日志" aria-label="复制日志" disabled={!props.logs[hdcDiscoveryTaskId]} onClick={() => void copyDiagnosticLog(hdcDiscoveryTaskId)}><Copy size={15} /></button>} /></div><div className="two-column diagnostic-connection"><section className="panel form-panel"><label>设备序列号<select value={device} onChange={(event) => setDevice(event.target.value)}><option value="">自动选择健康设备</option>{props.devices.map((item) => <option key={item}>{item}</option>)}</select></label><div className="diagnostic-note"><SlidersHorizontal size={18} /><p>检查触摸映射、输入事件和设备连接稳定性。</p></div>{!touchRunning ? <button className="button primary full" onClick={startTouchDiagnostic}><Activity size={16} />开始设备连接诊断</button> : <button className="button danger full" onClick={() => void window.bsManager.stopTask(touchTaskId)}><CircleStop size={16} />停止诊断</button>}</section><LogPanel title="设备连接诊断输出" text={props.logs[touchTaskId] ?? ""} actions={<button className="icon-button" title="复制日志" aria-label="复制日志" disabled={!props.logs[touchTaskId]} onClick={() => void copyDiagnosticLog(touchTaskId)}><Copy size={15} /></button>} /></div></div></div>;
 }
 
 export function SettingsPage(props: SharedProps) {

@@ -149,7 +149,7 @@ export function ChestPage(props: SharedProps) {
   const log = showRealtimeLogs
     ? rawLog
     : rawLog.split(/\r?\n/).filter((line) => !/if_image \[\d+\/\d+\] template .+ not matched|CMD (?:adb|hdc) shell input tap/.test(line)).join("\n");
-  const plan = props.plans.includes("开宝箱截图.json") ? "开宝箱截图.json" : "";
+  const plan = "开宝箱截图.json";
 
   const loadUsers = async () => {
     const nextUsers = await window.bsManager.chestUsers();
@@ -510,7 +510,7 @@ export function ChestPage(props: SharedProps) {
       }
       const activeSource = await syncActiveSource();
       if (!activeSource) return;
-      const args = [`${props.runtime.root}/adb_bot.py`, "--plan", `${props.runtime.plansDir}/${plan}`, "--adb", props.settings.adbPath, "--hdc", props.settings.hdcPath];
+      const args = [`${props.runtime.root}/adb_bot.py`, "--plan", `${props.runtime.internalPlansDir}/${plan}`, "--adb", props.settings.adbPath, "--hdc", props.settings.hdcPath];
       if (device) args.push("--device", device);
       args.push("--user-id", userId, "--source-id", source.id, "--source-name", source.name, "--source-file", activeSource.sourceFile);
       if (runMode === "skip_magnifier") args.push("--skip-magnifier");

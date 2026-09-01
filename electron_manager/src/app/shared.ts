@@ -19,7 +19,7 @@ export type SharedProps = {
   downloadUpdate: () => Promise<void>;
   installUpdate: () => Promise<void>;
   quitApp: () => Promise<void>;
-  runtime: { root: string; plansDir: string; templatesDir: string } | null;
+  runtime: { root: string; plansDir: string; internalPlansDir: string; templatesDir: string } | null;
   plans: string[];
   activePlan: string | null;
   source: string;

@@ -30,7 +30,7 @@ if (!window.bsManager) {
   const listeners = new Set<(event: { id: string; type: "started" | "log" | "exit"; code?: number; text?: string }) => void>();
   const notify = (event: { id: string; type: "started" | "log" | "exit"; code?: number; text?: string }) => listeners.forEach((listener) => listener(event));
   window.bsManager = {
-    runtimeState: async () => ({ root: "/preview/runtime", plansDir: "/preview/runtime/plans", templatesDir: "/preview/runtime/image_templates" }),
+    runtimeState: async () => ({ root: "/preview/runtime", plansDir: "/preview/runtime/plans", internalPlansDir: "/preview/runtime/internal_plans", templatesDir: "/preview/runtime/image_templates" }),
     settingsGet: async () => ({ adbPath: "adb", hdcPath: "hdc", hdcToolsDir: "", pythonPath: "python3", language: "zh" }),
     settingsSave: async (settings) => settings,
     hdcChooseToolsDirectory: async () => null,
@@ -55,6 +55,10 @@ if (!window.bsManager) {
     templatesOpenFolder: async () => {},
     templatesImport: async () => "../image_templates/imported_template.png",
     templatesSaveCapture: async (name) => `../image_templates/${name}.png`,
+    templatesImage: async (name) => `../image_templates/${name}`,
+    drawTemplateConfig: async () => ({ cancel: { template: "role_cancel.png", region: { x: 465, y: 1542, width: 148, height: 72 } }, max: { template: "role_count_max.png", region: { x: 636, y: 1258, width: 334, height: 140 } }, coin: { template: "role_done.png", region: { x: 337, y: 1380, width: 386, height: 149 } } }),
+    drawTemplateSave: async () => true,
+    drawTemplateReset: async () => true,
     drawListSessions: async () => [],
     drawEvents: async () => [],
     drawScreenshotPairs: async () => [],

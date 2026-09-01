@@ -43,7 +43,7 @@ export function App() {
   const initialRunnerPlan = query.get("plan") || "";
   const [page, setPage] = useState<Page>("runner");
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
-  const [runtime, setRuntime] = useState<{ root: string; plansDir: string; templatesDir: string } | null>(null);
+  const [runtime, setRuntime] = useState<{ root: string; plansDir: string; internalPlansDir: string; templatesDir: string } | null>(null);
   const [plans, setPlans] = useState<string[]>([]);
   const [activePlan, setActivePlan] = useState<string | null>(null);
   const [source, setSource] = useState("");

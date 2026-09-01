@@ -1,7 +1,7 @@
 {
   "name": "bs-manager-cross-platform",
   "private": true,
-  "version": "1.2.21",
+  "version": "1.2.22",
   "channel": "beta",
   "description": "Cross-platform BlueStacks automation manager",
   "author": "熊熊乐园小助手",
@@ -75,6 +75,14 @@
         "to": "runtime/record_touch.py"
       },
       {
+        "from": "../device_discovery_diagnostic.py",
+        "to": "runtime/device_discovery_diagnostic.py"
+      },
+      {
+        "from": "../hdc_device_diagnostic.py",
+        "to": "runtime/hdc_device_diagnostic.py"
+      },
+      {
         "from": "../chest_analyzer.py",
         "to": "runtime/chest_analyzer.py"
       },
@@ -85,6 +93,18 @@
       {
         "from": "default_plans",
         "to": "runtime/plans"
+      },
+      {
+        "from": "internal_plans",
+        "to": "runtime/internal_plans"
+      },
+      {
+        "from": "internal_plan_defaults",
+        "to": "runtime/internal_plan_defaults"
+      },
+      {
+        "from": "internal_template_defaults",
+        "to": "runtime/internal_template_defaults"
       },
       {
         "from": "../image_templates",
