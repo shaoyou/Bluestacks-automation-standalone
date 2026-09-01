@@ -109,6 +109,7 @@ let updatePolicyState: UpdatePolicyState = {
 };
 let updatePromptState: UpdatePromptState = {};
 let updatePromptMonitor: NodeJS.Timeout | null = null;
+let startupWarnings: string[] = [];
 const HDC_DEVICE_SUFFIX = " [HarmonyOS/HDC]";
 const DEFAULT_UPDATE_POLICY_URL = "https://raw.githubusercontent.com/shaoyou/Bluestacks-automation-standalone/main/electron_manager/update-policy.json";
 const UPDATE_PROMPT_FILE = "update-prompt.json";
@@ -479,6 +480,27 @@ function copyFileAtomic(source: string, target: string) {
   renameSync(temporary, target);
 }
 
+function recordStartupWarning(message: string) {
+  startupWarnings.push(message);
+  console.warn(message);
+}
+
+function safeCopyFileAtomic(source: string, target: string) {
+  try {
+    copyFileAtomic(source, target);
+  } catch (error) {
+    recordStartupWarning(`[runtime] skip file copy ${source} -> ${target}: ${String(error)}`);
+  }
+}
+
+function safeCopyResources(sourceDir: string, targetDir: string, overwriteExisting = false) {
+  try {
+    copyResources(sourceDir, targetDir, overwriteExisting);
+  } catch (error) {
+    recordStartupWarning(`[runtime] skip resource copy ${sourceDir} -> ${targetDir}: ${String(error)}`);
+  }
+}
+
 function migrateDrawPlanImageOnly() {
   const file = path.join(app.getPath("userData"), "runtime", "internal_plans", "choukaka.json");
   if (!existsSync(file)) return;
@@ -498,34 +520,67 @@ function migrateDrawPlanImageOnly() {
   } catch { /* Invalid internal plans are reported when the service starts. */ }
 }
 
-function runtimeRoot(): string {
-  const target = path.join(app.getPath("userData"), "runtime");
-  const source = bundledRuntimeRoot();
-  mkdirSync(target, { recursive: true });
-
-  for (const file of ["adb_bot.py", "record_touch.py", "device_discovery_diagnostic.py", "hdc_device_diagnostic.py", "chest_analyzer.py", "data_store.py"]) {
+function migrateRuntimeResources(source: string, target: string) {
+  const files = ["adb_bot.py", "record_touch.py", "device_discovery_diagnostic.py", "hdc_device_diagnostic.py", "chest_analyzer.py", "data_store.py"];
+  for (const file of files) {
     const sourceFile = path.join(source, file);
-    if (existsSync(sourceFile)) copyFileAtomic(sourceFile, path.join(target, file));
+    if (existsSync(sourceFile)) safeCopyFileAtomic(sourceFile, path.join(target, file));
   }
   for (const dir of ["windows/x64", "harmony/windows/x64"]) {
     const sourceDir = path.join(bundledToolRoot(), dir);
     const targetDir = path.join(target, dir);
-    copyResources(sourceDir, targetDir, true);
+    safeCopyResources(sourceDir, targetDir, true);
   }
   for (const dir of ["plans", "internal_plans", "internal_plan_defaults", "internal_template_defaults", "image_templates"]) {
     const sourceDir = dir === "plans" ? bundledPlansRoot() : dir === "internal_plans" ? bundledInternalPlansRoot() : dir === "internal_plan_defaults" ? bundledInternalPlanDefaultsRoot() : dir === "internal_template_defaults" ? bundledInternalTemplateDefaultsRoot() : path.join(source, dir);
     const targetDir = path.join(target, dir);
-    copyResources(sourceDir, targetDir, dir === "plans");
+    safeCopyResources(sourceDir, targetDir, dir === "plans");
   }
   for (const dir of ["diagnostics", "recording_profiles"]) {
-    mkdirSync(path.join(target, dir), { recursive: true });
+    try {
+      mkdirSync(path.join(target, dir), { recursive: true });
+    } catch (error) {
+      recordStartupWarning(`[runtime] skip directory create ${dir}: ${String(error)}`);
+    }
   }
   for (const name of ["choukaka.json", "开宝箱截图.json"]) {
     const editableCopy = path.join(target, "plans", name);
-    if (existsSync(editableCopy) && existsSync(path.join(target, "internal_plans", name))) unlinkSync(editableCopy);
+    try {
+      if (existsSync(editableCopy) && existsSync(path.join(target, "internal_plans", name))) unlinkSync(editableCopy);
+    } catch (error) {
+      recordStartupWarning(`[runtime] skip plan cleanup ${name}: ${String(error)}`);
+    }
   }
-  migrateDrawPlanImageOnly();
+}
+
+function runtimeRoot(): string {
+  const target = path.join(app.getPath("userData"), "runtime");
+  const source = bundledRuntimeRoot();
+  mkdirSync(target, { recursive: true });
+  migrateRuntimeResources(source, target);
+  try {
+    migrateDrawPlanImageOnly();
+  } catch (error) {
+    recordStartupWarning(`[runtime] skip draw plan image migration: ${String(error)}`);
+  }
   return target;
+}
+
+async function showStartupWarningsIfAny() {
+  if (startupWarnings.length === 0) return;
+  const details = startupWarnings.slice(0, 8).join("\n");
+  const suffix = startupWarnings.length > 8 ? `\n... 还有 ${startupWarnings.length - 8} 条` : "";
+  startupWarnings = [];
+  const options = {
+    type: "warning",
+    buttons: ["知道了"] as string[],
+    defaultId: 0,
+    title: "启动时发现资源迁移异常",
+    message: "应用已继续启动，但部分资源迁移失败。",
+    detail: `${details}${suffix}\n\n可把这段内容发给开发者排查。`,
+  } as const;
+  if (mainWindow) await dialog.showMessageBox(mainWindow, options);
+  else await dialog.showMessageBox(options);
 }
 
 function bundledWindowsScriptExecutable(scriptPath: string): string | null {
@@ -1100,10 +1155,25 @@ function createRunWindow(initialPlan?: string, mode: "runner" | "chest" = "runne
 
 app.whenReady().then(() => {
   void (async () => {
-    runtimeRoot();
-    migrateLegacyChestSources();
-    createWindow();
-    initializeAutoUpdater();
+    try {
+      runtimeRoot();
+      migrateLegacyChestSources();
+      createWindow();
+      await showStartupWarningsIfAny();
+      initializeAutoUpdater();
+    } catch (error) {
+      const message = `启动失败: ${String(error)}`;
+      console.error(message);
+      await dialog.showMessageBox({
+        type: "error",
+        buttons: ["关闭"] as string[],
+        defaultId: 0,
+        title: "应用启动失败",
+        message,
+        detail: "请把这段错误信息发给开发者。若窗口已部分出现，请先关闭后重试。",
+      });
+      throw error;
+    }
   })();
   if (updateState.supported) {
     setTimeout(() => void checkForUpdates(), 5_000);
