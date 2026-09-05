@@ -23,6 +23,19 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+
+def configure_console_encoding() -> None:
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+configure_console_encoding()
+
 WM_SIZE_RE = re.compile(r"(\d+)x(\d+)")
 ENV_REF_RE = re.compile(r"\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 LAST_IF_IMAGE_MATCH_KEY = "last_if_image_match"

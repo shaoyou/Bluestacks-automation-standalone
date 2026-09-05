@@ -65,6 +65,18 @@ ECODE_MAP = {
     "BTN_TOUCH": "014a",
 }
 
+def configure_console_encoding() -> None:
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+configure_console_encoding()
+
 DEFAULT_RECORDING_PROFILE: Dict[str, float] = {
     "tap_distance_px": 24.0,
     "tap_duration_sec": 0.45,

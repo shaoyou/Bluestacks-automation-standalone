@@ -12,6 +12,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
+def configure_console_encoding() -> None:
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+configure_console_encoding()
+
 def run_cmd(cmd: List[str], timeout: int = 10) -> Dict[str, Any]:
     print(f"[CMD] {' '.join(cmd)}")
     try:

@@ -9,6 +9,18 @@ from pathlib import Path
 from typing import Any
 
 
+def configure_console_encoding() -> None:
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+configure_console_encoding()
+
 def init(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """

@@ -27,6 +27,18 @@ except ImportError:  # pragma: no cover - Windows fallback
     import msvcrt
 
 
+def configure_console_encoding() -> None:
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+configure_console_encoding()
+
 EVENTS_FILE = "item_events.jsonl"
 CATALOG_FILE = "item_catalog.json"
 CORRECTIONS_FILE = "manual_item_corrections.json"
