@@ -95,7 +95,11 @@ if ($hdcSource) {
   $hdcSourceDir = Split-Path -Parent $sourcePath
   $hdcSharedDll = Join-Path $hdcSourceDir "libusb_shared.dll"
   if (Test-Path $hdcSharedDll) {
-    Copy-Item $hdcSharedDll (Join-Path $harmonyOutput "libusb_shared.dll") -Force
+    $dllSourcePath = [System.IO.Path]::GetFullPath($hdcSharedDll)
+    $dllTargetPath = [System.IO.Path]::GetFullPath((Join-Path $harmonyOutput "libusb_shared.dll"))
+    if ($dllSourcePath -ne $dllTargetPath) {
+      Copy-Item $dllSourcePath $dllTargetPath -Force
+    }
   } else {
     Write-Warning "libusb_shared.dll was not found next to hdc.exe; HDC may fail to start on Windows."
   }
