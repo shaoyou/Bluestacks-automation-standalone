@@ -28,18 +28,29 @@ Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $work, $output | Out-Null
 New-Item -ItemType Directory -Force $harmonyOutput | Out-Null
 
+function Invoke-Native {
+  param(
+    [string]$FilePath,
+    [string[]]$Arguments
+  )
+  & $FilePath @Arguments
+  if ($LASTEXITCODE -ne 0) {
+    throw "Command failed with exit code ${LASTEXITCODE}: $FilePath $($Arguments -join ' ')"
+  }
+}
+
 if ($Windows7Legacy) {
   # Electron 22 and this Python toolchain are the final maintained baseline that can run on Windows 7 SP1.
-  & $Python -m pip install --upgrade "pyinstaller==5.13.2" "numpy==1.24.4" "pillow==9.5.0"
+  Invoke-Native $Python @("-m", "pip", "install", "--upgrade", "pyinstaller==5.13.2", "numpy==1.24.4", "pillow==9.5.0")
 } else {
-  & $Python -m pip install --upgrade "pyinstaller==6.11.1" "numpy==2.0.2" "pillow==10.4.0"
+  Invoke-Native $Python @("-m", "pip", "install", "--upgrade", "pyinstaller==6.11.1", "numpy==2.0.2", "pillow==10.4.0")
 }
-& $Python -m PyInstaller --noconfirm --clean --onefile --name adb_bot --distpath (Join-Path $work "dist") --workpath (Join-Path $work "build") --specpath $work (Join-Path $projectRoot "adb_bot.py")
-& $Python -m PyInstaller --noconfirm --clean --onefile --name record_touch --distpath (Join-Path $work "dist") --workpath (Join-Path $work "build") --specpath $work (Join-Path $projectRoot "record_touch.py")
-& $Python -m PyInstaller --noconfirm --clean --onefile --name device_discovery_diagnostic --distpath (Join-Path $work "dist") --workpath (Join-Path $work "build") --specpath $work (Join-Path $projectRoot "device_discovery_diagnostic.py")
-& $Python -m PyInstaller --noconfirm --clean --onefile --name hdc_device_diagnostic --distpath (Join-Path $work "dist") --workpath (Join-Path $work "build") --specpath $work (Join-Path $projectRoot "hdc_device_diagnostic.py")
-& $Python -m PyInstaller --noconfirm --clean --onefile --name chest_analyzer --distpath (Join-Path $work "dist") --workpath (Join-Path $work "build") --specpath $work (Join-Path $projectRoot "chest_analyzer.py")
-& $Python -m PyInstaller --noconfirm --clean --onefile --name data_store --distpath (Join-Path $work "dist") --workpath (Join-Path $work "build") --specpath $work (Join-Path $projectRoot "data_store.py")
+Invoke-Native $Python @("-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--name", "adb_bot", "--distpath", (Join-Path $work "dist"), "--workpath", (Join-Path $work "build"), "--specpath", $work, (Join-Path $projectRoot "adb_bot.py"))
+Invoke-Native $Python @("-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--name", "record_touch", "--distpath", (Join-Path $work "dist"), "--workpath", (Join-Path $work "build"), "--specpath", $work, (Join-Path $projectRoot "record_touch.py"))
+Invoke-Native $Python @("-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--name", "device_discovery_diagnostic", "--distpath", (Join-Path $work "dist"), "--workpath", (Join-Path $work "build"), "--specpath", $work, (Join-Path $projectRoot "device_discovery_diagnostic.py"))
+Invoke-Native $Python @("-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--name", "hdc_device_diagnostic", "--distpath", (Join-Path $work "dist"), "--workpath", (Join-Path $work "build"), "--specpath", $work, (Join-Path $projectRoot "hdc_device_diagnostic.py"))
+Invoke-Native $Python @("-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--name", "chest_analyzer", "--distpath", (Join-Path $work "dist"), "--workpath", (Join-Path $work "build"), "--specpath", $work, (Join-Path $projectRoot "chest_analyzer.py"))
+Invoke-Native $Python @("-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--name", "data_store", "--distpath", (Join-Path $work "dist"), "--workpath", (Join-Path $work "build"), "--specpath", $work, (Join-Path $projectRoot "data_store.py"))
 Copy-Item (Join-Path $work "dist/adb_bot.exe") $output -Force
 Copy-Item (Join-Path $work "dist/record_touch.exe") $output -Force
 Copy-Item (Join-Path $work "dist/device_discovery_diagnostic.exe") $output -Force
@@ -100,3 +111,4 @@ Set-Content -Path (Join-Path $output "runtime-manifest.json") -Encoding UTF8 -Va
 } | ConvertTo-Json)
 
 Write-Host "Windows runtime ready: $output"
+exit 0

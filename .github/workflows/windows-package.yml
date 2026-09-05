@@ -44,7 +44,7 @@ jobs:
         run: |
           Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
           ./scripts/build_windows_runtime.ps1 -Python python *>&1 | Tee-Object -FilePath build-windows-runtime.log
-          exit $LASTEXITCODE
+          if (-not $?) { exit 1 }
 
       - name: Upload bundled runtime build log
         if: always()
