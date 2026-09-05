@@ -34,14 +34,31 @@ jobs:
       - name: Set up Python for bundled runtime
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
           architecture: x64
 
       - name: Build bundled automation runtime
+        id: build-runtime
+        continue-on-error: true
         shell: pwsh
         run: |
           Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
-          ./scripts/build_windows_runtime.ps1 -Python python
+          ./scripts/build_windows_runtime.ps1 -Python python *>&1 | Tee-Object -FilePath build-windows-runtime.log
+          exit $LASTEXITCODE
+
+      - name: Upload bundled runtime build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bs-manager-windows-runtime-build-log-${{ github.run_number }}
+          path: electron_manager/build-windows-runtime.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Stop when bundled runtime build fails
+        if: steps.build-runtime.outcome == 'failure'
+        shell: pwsh
+        run: exit 1
 
       - name: Package Windows 10/11 installer
         id: package-modern

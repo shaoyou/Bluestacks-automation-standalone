@@ -32,7 +32,7 @@ if ($Windows7Legacy) {
   # Electron 22 and this Python toolchain are the final maintained baseline that can run on Windows 7 SP1.
   & $Python -m pip install --upgrade "pyinstaller==5.13.2" "numpy==1.24.4" "pillow==9.5.0"
 } else {
-  & $Python -m pip install --upgrade pyinstaller numpy pillow
+  & $Python -m pip install --upgrade "pyinstaller==6.11.1" "numpy==2.0.2" "pillow==10.4.0"
 }
 & $Python -m PyInstaller --noconfirm --clean --onefile --name adb_bot --distpath (Join-Path $work "dist") --workpath (Join-Path $work "build") --specpath $work (Join-Path $projectRoot "adb_bot.py")
 & $Python -m PyInstaller --noconfirm --clean --onefile --name record_touch --distpath (Join-Path $work "dist") --workpath (Join-Path $work "build") --specpath $work (Join-Path $projectRoot "record_touch.py")
