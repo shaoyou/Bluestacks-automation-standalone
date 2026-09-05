@@ -80,6 +80,13 @@ if ($hdcSource) {
   if ($sourcePath -ne $targetPath) {
     Copy-Item $sourcePath $harmonyTarget -Force
   }
+  $hdcSourceDir = Split-Path -Parent $sourcePath
+  $hdcSharedDll = Join-Path $hdcSourceDir "libusb_shared.dll"
+  if (Test-Path $hdcSharedDll) {
+    Copy-Item $hdcSharedDll (Join-Path $harmonyOutput "libusb_shared.dll") -Force
+  } else {
+    Write-Warning "libusb_shared.dll was not found next to hdc.exe; HDC may fail to start on Windows."
+  }
 } else {
   Write-Warning "HDC was not found on this build machine, so the Windows package will not bundle it."
 }
