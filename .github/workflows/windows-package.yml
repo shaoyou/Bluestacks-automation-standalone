@@ -42,9 +42,9 @@ jobs:
         run: |
           Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
           ./scripts/build_windows_runtime.ps1 -Python python > build-windows-runtime.log 2>&1
-          $exitCode = $LASTEXITCODE
+          $buildSucceeded = $?
           Get-Content build-windows-runtime.log
-          exit $exitCode
+          if (-not $buildSucceeded) { exit 1 }
 
       - name: Upload bundled runtime build log
         if: always()
