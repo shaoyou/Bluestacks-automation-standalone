@@ -53,6 +53,17 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      - name: Annotate bundled runtime build failure
+        if: failure()
+        shell: pwsh
+        run: |
+          if (Test-Path build-windows-runtime.log) {
+            $log = Get-Content -Raw build-windows-runtime.log
+            $tail = if ($log.Length -gt 3500) { $log.Substring($log.Length - 3500) } else { $log }
+            $escaped = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+            Write-Host "::error title=Bundled runtime build log::$escaped"
+          }
+
       - name: Package Windows 10/11 installer
         id: package-modern
         continue-on-error: true
