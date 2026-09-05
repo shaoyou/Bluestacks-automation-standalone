@@ -38,8 +38,6 @@ jobs:
           architecture: x64
 
       - name: Build bundled automation runtime
-        id: build-runtime
-        continue-on-error: true
         shell: pwsh
         run: |
           Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
@@ -54,11 +52,6 @@ jobs:
           path: electron_manager/build-windows-runtime.log
           if-no-files-found: warn
           retention-days: 14
-
-      - name: Stop when bundled runtime build fails
-        if: steps.build-runtime.outcome == 'failure'
-        shell: pwsh
-        run: exit 1
 
       - name: Package Windows 10/11 installer
         id: package-modern
