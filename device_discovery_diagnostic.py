@@ -15,7 +15,15 @@ from typing import Any, Dict, List, Optional
 def run_cmd(cmd: List[str], timeout: int = 10) -> Dict[str, Any]:
     print(f"[CMD] {' '.join(cmd)}")
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
+        )
     except FileNotFoundError:
         return {"code": -1, "stdout": "", "stderr": "file not found", "text": "file not found"}
     except subprocess.TimeoutExpired:
@@ -78,6 +86,15 @@ def adb_shell_probe(adb: str, serial: str) -> Dict[str, Any]:
     return results
 
 
+def capture_devices(adb: str, phase: str, report: Dict[str, Any], label: str) -> List[Dict[str, str]]:
+    result = run_cmd([adb, "devices", "-l"])
+    report["commands"].append({"name": "adb devices -l", "phase": phase, **result})
+    devices = parse_devices(result["text"])
+    report["device_list"].append({"phase": phase, "devices": devices})
+    print_section(label, result["text"])
+    return devices
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="ADB device discovery diagnostic")
     parser.add_argument("--adb", default="adb", help="ADB executable path")
@@ -109,22 +126,24 @@ def main() -> int:
     report["commands"].append({"name": "adb version", **version})
     print_section("adb version", version["text"])
 
-    before = run_cmd([args.adb, "devices", "-l"])
-    report["commands"].append({"name": "adb devices -l", "phase": "before", **before})
-    before_devices = parse_devices(before["text"])
-    report["device_list"].append({"phase": "before", "devices": before_devices})
-    print_section("adb devices -l (before)", before["text"])
+    before_devices = capture_devices(args.adb, "before", report, "adb devices -l (before)")
+
+    kill_server = run_cmd([args.adb, "kill-server"])
+    report["commands"].append({"name": "adb kill-server", **kill_server})
+    print_section("adb kill-server", kill_server["text"])
+
+    start_server = run_cmd([args.adb, "start-server"])
+    report["commands"].append({"name": "adb start-server", **start_server})
+    print_section("adb start-server", start_server["text"])
+
+    restarted_devices = capture_devices(args.adb, "after_restart", report, "adb devices -l (after restart)")
 
     if args.connect_target:
         connect = run_cmd([args.adb, "connect", args.connect_target])
         report["commands"].append({"name": f"adb connect {args.connect_target}", **connect})
         print_section(f"adb connect {args.connect_target}", connect["text"])
 
-    after = run_cmd([args.adb, "devices", "-l"])
-    report["commands"].append({"name": "adb devices -l", "phase": "after", **after})
-    after_devices = parse_devices(after["text"])
-    report["device_list"].append({"phase": "after", "devices": after_devices})
-    print_section("adb devices -l (after)", after["text"])
+    after_devices = capture_devices(args.adb, "after_connect", report, "adb devices -l (after connect)")
 
     targets = [args.device] if args.device else []
     if not targets:
@@ -150,6 +169,7 @@ def main() -> int:
     summary_lines = [
         f"adb version exit={version['code']}",
         f"devices before={len(before_devices)} after={len(after_devices)}",
+        f"devices after restart={len(restarted_devices)}",
         f"online after={sum(1 for item in after_devices if item['state'] == 'device')}",
     ]
     print_section("Summary", "\n".join(summary_lines))
