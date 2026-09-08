@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 import datetime as dt
 import io
@@ -137,6 +138,13 @@ DRAW_STATS_EVENTS_JSONL_SUFFIX = "_events.jsonl"
 DRAW_STATS_SUMMARY_SUFFIX = "_summary.json"
 DRAW_STATS_LATEST_SUMMARY = "latest_summary.json"
 DEFAULT_RED_LIGHT_DEBUG_DIR = RUNTIME_DATA_ROOT / "diagnostics" / "red_light_debug"
+
+
+def persistent_runtime_root(ctx: RunContext) -> Path:
+    """Return the durable runtime root when running as a one-file executable."""
+    if getattr(sys, "frozen", False):
+        return ctx.plan_dir.parent
+    return RUNTIME_DATA_ROOT
 HDC_DEVICE_SUFFIX = " [HarmonyOS/HDC]"
 DEFAULT_RED_LIGHT_REGIONS = [
     {"name": "left", "x": 110, "y": 300, "width": 250, "height": 760},
@@ -974,7 +982,7 @@ def capture_device_screenshot(ctx: RunContext) -> Image.Image:
 def screenshot_output_dir(ctx: RunContext, action: Dict[str, Any]) -> Path:
     raw_dir = str(action.get("dir", "")).strip()
     if not raw_dir:
-        path = DEFAULT_RESULT_SCREENSHOT_DIR
+        path = persistent_runtime_root(ctx) / "diagnostics" / "draw_result_pairs"
     else:
         candidate = Path(os.path.expanduser(raw_dir))
         path = candidate if candidate.is_absolute() else (ctx.plan_dir / candidate).resolve()
@@ -1306,7 +1314,9 @@ def append_screenshot_index(output_dir: Path, record: Dict[str, Any]) -> None:
 def draw_stats_output_dir(ctx: RunContext, action: Dict[str, Any]) -> Path:
     raw_dir = str(action.get("dir", "")).strip()
     if not raw_dir:
-        path = DEFAULT_DRAW_STATS_DIR
+        # PyInstaller one-file builds unpack beside __file__ in a temporary
+        # directory. Resolve the default stats directory from the plan instead.
+        path = persistent_runtime_root(ctx) / "diagnostics" / "draw_stats"
     else:
         candidate = Path(os.path.expanduser(raw_dir))
         path = candidate if candidate.is_absolute() else (ctx.plan_dir / candidate).resolve()
@@ -1465,7 +1475,7 @@ def image_match_debug_dir(ctx: RunContext, action: Dict[str, Any]) -> Path:
     if raw_dir:
         path = resolve_action_file_path(ctx, raw_dir)
     else:
-        path = RUNTIME_DATA_ROOT / "diagnostics" / "image_match_debug"
+        path = persistent_runtime_root(ctx) / "diagnostics" / "image_match_debug"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -1475,7 +1485,7 @@ def red_light_debug_dir(ctx: RunContext, action: Dict[str, Any]) -> Path:
     if raw_dir:
         path = resolve_action_file_path(ctx, raw_dir)
     else:
-        path = DEFAULT_RED_LIGHT_DEBUG_DIR
+        path = persistent_runtime_root(ctx) / "diagnostics" / "red_light_debug"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -2301,6 +2311,85 @@ def do_find_text_click(ctx: RunContext, action: Dict[str, Any]) -> None:
                 f"text '{target_text}' not found (lang={lang}, match={match_mode})"
             )
         time.sleep(max(0.1, interval_sec))
+
+
+def verify_template_once(
+    ctx: RunContext,
+    templates: List[str],
+    region: Dict[str, Any],
+    threshold: float,
+) -> Dict[str, Any]:
+    screenshot = capture_device_screenshot(ctx)
+    action = {
+        "templates": templates,
+        "region": region,
+        "threshold": threshold,
+        "scales": [0.75, 1.0],
+        "max_candidates": 1,
+        "search_padding_ratio": 0.0,
+    }
+    template_paths = resolve_action_template_paths(ctx, action, "template verification")
+    minimum_size = required_template_search_size(ctx, template_paths, action)
+    search = prepare_search_image(ctx, screenshot, action, minimum_size=minimum_size)
+    matches: List[Tuple[Path, Optional[Dict[str, float]], Optional[Dict[str, float]]]] = []
+    for template_path in template_paths:
+        variants = get_prepared_template_variants(ctx, template_path, action, (search.gray.shape[1], search.gray.shape[0]))
+        match, best = find_image_match(search, variants, threshold, 0, action)
+        matches.append((template_path, match, best))
+    qualified = next(((path, match, best) for path, match, best in matches if match is not None), None)
+    best_entry = max(matches, key=lambda item: float((item[1] or item[2] or {}).get("similarity", 0.0)), default=None)
+    selected_path, match, best = qualified or best_entry or (template_paths[0], None, None)
+    marked = match or best
+    def result_for(path: Path, candidate: Optional[Dict[str, float]], best_candidate: Optional[Dict[str, float]]) -> Dict[str, Any]:
+        selected = candidate or best_candidate
+        box = None
+        overlay = screenshot.copy()
+        if selected is not None:
+            box = (
+                int(round(selected["x"])),
+                int(round(selected["y"])),
+                int(round(selected["x"] + selected["width"])),
+                int(round(selected["y"] + selected["height"])),
+            )
+            draw = ImageDraw.Draw(overlay, "RGBA")
+            color = (56, 211, 159, 90) if candidate is not None else (225, 141, 135, 90)
+            border = (56, 211, 159, 230) if candidate is not None else (225, 141, 135, 230)
+            draw.rectangle(box, fill=color, outline=border, width=max(3, round(min(screenshot.size) / 360)))
+        output = io.BytesIO()
+        overlay.save(output, format="PNG")
+        return {
+            "template": path.name,
+            "matched": candidate is not None,
+            "similarity": float(best_candidate["similarity"] if best_candidate is not None else 0.0),
+            "threshold": threshold,
+            "box": {"x": box[0], "y": box[1], "width": box[2] - box[0], "height": box[3] - box[1]} if box else None,
+            "image": "data:image/png;base64," + base64.b64encode(output.getvalue()).decode("ascii"),
+        }
+    results = [result_for(path, candidate, best_candidate) for path, candidate, best_candidate in matches]
+    aggregate = screenshot.copy()
+    aggregate_draw = ImageDraw.Draw(aggregate, "RGBA")
+    for item in results:
+        item_box = item.get("box")
+        if not isinstance(item_box, dict):
+            continue
+        left = int(item_box["x"])
+        top = int(item_box["y"])
+        right = left + int(item_box["width"])
+        bottom = top + int(item_box["height"])
+        color = (56, 211, 159, 90) if item["matched"] else (225, 141, 135, 90)
+        border = (56, 211, 159, 230) if item["matched"] else (225, 141, 135, 230)
+        aggregate_draw.rectangle((left, top, right, bottom), fill=color, outline=border, width=max(3, round(min(screenshot.size) / 360)))
+    aggregate_output = io.BytesIO()
+    aggregate.save(aggregate_output, format="PNG")
+    return {
+        "matched": match is not None,
+        "template": selected_path.name,
+        "similarity": float(best["similarity"] if best is not None else 0.0),
+        "threshold": threshold,
+        "box": results[0]["box"] if results else None,
+        "image": "data:image/png;base64," + base64.b64encode(aggregate_output.getvalue()).decode("ascii"),
+        "results": results,
+    }
 
 
 def remember_if_text_match(ctx: RunContext, action: Dict[str, Any], result: Dict[str, Any]) -> None:
@@ -3907,6 +3996,9 @@ def main() -> int:
     parser.add_argument("--device-backend", choices=["auto", "adb", "hdc"], default="auto", help="Device backend")
     parser.add_argument("--dry-run", action="store_true", help="Print actions without executing")
     parser.add_argument("--max-runtime-sec", type=int, default=0, help="Stop after N seconds (0 means unlimited)")
+    parser.add_argument("--verify-template", nargs="+", help="Capture one screen and verify one or more image templates")
+    parser.add_argument("--verify-region", nargs=4, type=int, metavar=("X", "Y", "WIDTH", "HEIGHT"))
+    parser.add_argument("--verify-threshold", type=float, default=0.88)
     args = parser.parse_args()
 
     plan_path = Path(args.plan).expanduser().resolve()
@@ -3963,6 +4055,18 @@ def main() -> int:
         trace_time_scale=trace_time_scale,
         plan_dir=plan_path.parent,
     )
+
+    if args.verify_template:
+        if not args.verify_region or args.verify_region[2] <= 0 or args.verify_region[3] <= 0:
+            raise BotError("--verify-region requires positive X Y WIDTH HEIGHT")
+        result = verify_template_once(
+            ctx,
+            args.verify_template,
+            {"x": args.verify_region[0], "y": args.verify_region[1], "width": args.verify_region[2], "height": args.verify_region[3]},
+            max(0.1, min(1.0, args.verify_threshold)),
+        )
+        print("__DRAW_TEMPLATE_VERIFY__" + json.dumps(result, ensure_ascii=False), flush=True)
+        return 0
 
     actions = plan.get("actions")
     if not isinstance(actions, list):

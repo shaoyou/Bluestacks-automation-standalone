@@ -98,8 +98,9 @@ declare global {
       templatesImport(): Promise<string | null>;
       templatesSaveCapture(name: string, dataUrl: string): Promise<string>;
       templatesImage(name: string): Promise<string | null>;
-      drawTemplateConfig(): Promise<{ cancel: { template: string; region: { x: number; y: number; width: number; height: number } }; max: { template: string; region: { x: number; y: number; width: number; height: number } }; coin: { template: string; region: { x: number; y: number; width: number; height: number } } }>;
+      drawTemplateConfig(): Promise<{ cancel: { templates: string[]; region: { x: number; y: number; width: number; height: number }; threshold: number }; max: { templates: string[]; region: { x: number; y: number; width: number; height: number }; threshold: number }; coin: { templates: string[]; region: { x: number; y: number; width: number; height: number }; threshold: number } }>;
       drawTemplateSave(calibration: unknown): Promise<boolean>;
+      drawTemplateVerify(templates: string[], region: unknown, threshold: number, device: string): Promise<{ matched: boolean; similarity: number; threshold: number; template: string; box: { x: number; y: number; width: number; height: number } | null; image: string; results?: Array<{ matched: boolean; similarity: number; threshold: number; template: string; box: { x: number; y: number; width: number; height: number } | null; image: string }> }>;
       drawTemplateReset(): Promise<boolean>;
       drawUsers(): Promise<Array<{ id: string; name: string; createdAt: string }>>;
       drawCreateUser(name: string): Promise<{ id: string; name: string; createdAt: string }>;

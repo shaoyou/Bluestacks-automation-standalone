@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld("bsManager", {
   templatesImage: (name: string) => ipcRenderer.invoke("templates:image", name),
   drawTemplateConfig: () => ipcRenderer.invoke("draw:template-config"),
   drawTemplateSave: (calibration: unknown) => ipcRenderer.invoke("draw:template-save", calibration),
+  drawTemplateVerify: (templates: string[], region: unknown, threshold: number, device: string) => ipcRenderer.invoke("draw:template-verify", templates, region, threshold, device),
   drawTemplateReset: () => ipcRenderer.invoke("draw:template-reset"),
   drawUsers: () => ipcRenderer.invoke("draw:users"),
   drawCreateUser: (name: string) => ipcRenderer.invoke("draw:user-create", name),

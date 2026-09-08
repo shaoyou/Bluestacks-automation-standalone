@@ -10,13 +10,15 @@ const defaultRedRoles = ["波斯王子", "卡卡西", "李白", "龙三", "绿�
 type User = { id: string; name: string; createdAt: string };
 type Range = "day" | "7d" | "month" | "custom";
 type ImageRegion = { x: number; y: number; width: number; height: number };
-type DrawTemplateConfig = { template: string; region: ImageRegion; preview?: string };
+type DrawTemplateConfig = { templates: string[]; region: ImageRegion; threshold: number; previews?: string[] };
 type DrawTemplateKey = "cancel" | "max" | "coin";
-type DrawCalibrationData = { configs: Record<DrawTemplateKey, DrawTemplateConfig>; images: Record<DrawTemplateKey, string | null> };
+type DrawVerificationResult = { matched: boolean; similarity: number; threshold: number; template: string; box: { x: number; y: number; width: number; height: number } | null; image: string };
+type DrawVerification = DrawVerificationResult & { results?: DrawVerificationResult[] };
+type DrawCalibrationData = { configs: Record<DrawTemplateKey, DrawTemplateConfig>; images: Record<DrawTemplateKey, string[]> };
 const defaultDrawTemplates: Record<DrawTemplateKey, DrawTemplateConfig> = {
-  cancel: { template: "role_cancel.png", region: { x: 465, y: 1542, width: 148, height: 72 } },
-  max: { template: "role_count_max.png", region: { x: 636, y: 1258, width: 334, height: 140 } },
-  coin: { template: "role_done.png", region: { x: 337, y: 1380, width: 386, height: 149 } },
+  cancel: { templates: ["role_cancel.png"], region: { x: 465, y: 1542, width: 148, height: 72 }, threshold: 0.88 },
+  max: { templates: ["role_count_max.png"], region: { x: 636, y: 1258, width: 334, height: 140 }, threshold: 0.7 },
+  coin: { templates: ["role_done.png"], region: { x: 337, y: 1380, width: 386, height: 149 }, threshold: 0.88 },
 };
 
 function scaleRegion(region: ImageRegion, from: ImageRegion, to: ImageRegion): ImageRegion {
@@ -36,24 +38,31 @@ function CropPanel({ image, size, region, onChange }: { image: string; size: Ima
   return <div className="draw-calibration-crop"><div className="capture-image-wrap"><img ref={imageRef} src={image} alt="设备截图" draggable={false} onMouseDown={(event) => { const start = point(event); if (start) { dragStart.current = start; onChange({ x: start.x, y: start.y, width: 0, height: 0 }); } }} onMouseMove={move} onMouseUp={(event) => { move(event); dragStart.current = null; }} /><i className="capture-selection" style={{ left: `${region.x / size.width * 100}%`, top: `${region.y / size.height * 100}%`, width: `${region.width / size.width * 100}%`, height: `${region.height / size.height * 100}%` }} /></div><code>{`x=${region.x}, y=${region.y}, ${region.width} x ${region.height}`}</code></div>;
 }
 
-function TemplateCalibrationModal({ image, size, configs, templateImages, captureLatest, onClose, onSave, onReset }: { image: string; size: { width: number; height: number }; configs: Record<DrawTemplateKey, DrawTemplateConfig>; templateImages: Record<DrawTemplateKey, string | null>; captureLatest: () => Promise<{ image: string; size: { width: number; height: number } }>; onClose: () => void; onSave: (configs: Record<DrawTemplateKey, DrawTemplateConfig>, size: { width: number; height: number }) => void; onReset: () => void }) {
+function TemplateCalibrationModal({ image, size, configs, templateImages, captureLatest, verifyTemplate, onClose, onSave, onReset }: { image: string; size: { width: number; height: number }; configs: Record<DrawTemplateKey, DrawTemplateConfig>; templateImages: Record<DrawTemplateKey, string[]>; captureLatest: () => Promise<{ image: string; size: { width: number; height: number } }>; verifyTemplate: (key: DrawTemplateKey, config: DrawTemplateConfig, size: { width: number; height: number }) => Promise<DrawVerification>; onClose: () => void; onSave: (configs: Record<DrawTemplateKey, DrawTemplateConfig>, previews: Record<DrawTemplateKey, string[]>, size: { width: number; height: number }) => void; onReset: () => void }) {
   const base = { width: 1080, height: 1920 };
-  const initialDrafts = Object.fromEntries((Object.keys(configs) as DrawTemplateKey[]).map((key) => [key, { ...configs[key], region: scaleRegion(configs[key].region, { x: 0, y: 0, ...base }, { x: 0, y: 0, ...size }) }])) as Record<DrawTemplateKey, DrawTemplateConfig>;
+  const initialDrafts = Object.fromEntries((Object.keys(configs) as DrawTemplateKey[]).map((key) => [key, { ...configs[key], templates: [...configs[key].templates], region: scaleRegion(configs[key].region, { x: 0, y: 0, ...base }, { x: 0, y: 0, ...size }) }])) as Record<DrawTemplateKey, DrawTemplateConfig>;
   const [editing, setEditing] = useState<DrawTemplateKey | null>(null);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [drafts, setDrafts] = useState(initialDrafts);
   const [confirmed, setConfirmed] = useState<Record<DrawTemplateKey, boolean>>({ cancel: true, max: true, coin: true });
   const [workingRegion, setWorkingRegion] = useState<ImageRegion | null>(null);
   const [currentImage, setCurrentImage] = useState(image);
   const [currentSize, setCurrentSize] = useState(size);
-  const [preview, setPreview] = useState<Record<DrawTemplateKey, string | null>>(templateImages);
+  const [preview, setPreview] = useState<Record<DrawTemplateKey, string[]>>(templateImages);
+  const [verification, setVerification] = useState<Record<DrawTemplateKey, DrawVerification | null>>({ cancel: null, max: null, coin: null });
+  const [templateVerification, setTemplateVerification] = useState<Record<string, DrawVerificationResult | null>>({});
   const [loading, setLoading] = useState<DrawTemplateKey | null>(null);
-  const begin = async (key: DrawTemplateKey) => {
+  const [verifyLoading, setVerifyLoading] = useState<DrawTemplateKey | null>(null);
+  const [singleVerifyLoading, setSingleVerifyLoading] = useState<string | null>(null);
+  const [verificationKey, setVerificationKey] = useState<DrawTemplateKey | null>(null);
+  const begin = async (key: DrawTemplateKey, index: number | null = null) => {
     setLoading(key);
     try {
       const latest = await captureLatest();
       setCurrentImage(latest.image);
       setCurrentSize(latest.size);
       setEditing(key);
+      setEditingIndex(index);
       setWorkingRegion(scaleRegion(drafts[key].region, { x: 0, y: 0, ...currentSize }, { x: 0, y: 0, ...latest.size }));
     } catch { /* The parent reports the capture error. */ }
     finally { setLoading(null); }
@@ -65,14 +74,46 @@ function TemplateCalibrationModal({ image, size, configs, templateImages, captur
     const canvas = document.createElement("canvas"); canvas.width = workingRegion.width; canvas.height = workingRegion.height;
     const context = canvas.getContext("2d"); if (!context) return;
     context.drawImage(source, workingRegion.x, workingRegion.y, workingRegion.width, workingRegion.height, 0, 0, workingRegion.width, workingRegion.height);
-    setDrafts((current) => ({ ...current, [editing]: { ...current[editing], region: workingRegion, preview: canvas.toDataURL("image/png") } }));
-    setPreview((current) => ({ ...current, [editing]: canvas.toDataURL("image/png") }));
+    const previewImage = canvas.toDataURL("image/png");
+    const templateName = `${editing}_template_${(editingIndex ?? drafts[editing].templates.length) + 1}.png`;
+    setDrafts((current) => ({ ...current, [editing]: { ...current[editing], templates: editingIndex === null ? [...current[editing].templates, templateName] : [...current[editing].templates], region: workingRegion } }));
+    setPreview((current) => ({ ...current, [editing]: editingIndex === null ? [...current[editing], previewImage] : current[editing].map((item, index) => index === editingIndex ? previewImage : item) }));
+    setEditingIndex(null);
     setConfirmed((current) => ({ ...current, [editing]: true }));
     setEditing(null);
   };
+  const verify = async (key: DrawTemplateKey) => {
+    setVerifyLoading(key);
+    try { const result = await verifyTemplate(key, drafts[key], currentSize); setVerification((current) => ({ ...current, [key]: result })); setVerificationKey(key); }
+    catch { /* The parent reports the verification error. */ }
+    finally { setVerifyLoading(null); }
+  };
+  const verifyOne = async (key: DrawTemplateKey, index: number) => {
+    const loadingKey = `${key}:${index}`;
+    setSingleVerifyLoading(loadingKey);
+    try {
+      const result = await verifyTemplate(key, { ...drafts[key], templates: [drafts[key].templates[index]] }, currentSize);
+      setTemplateVerification((current) => ({ ...current, [loadingKey]: result.results?.[0] ?? result }));
+    } catch { /* The parent reports the verification error. */ }
+    finally { setSingleVerifyLoading(null); }
+  };
+  const removeTemplate = (key: DrawTemplateKey, index: number) => {
+    if (drafts[key].templates.length <= 1) return;
+    setDrafts((current) => ({ ...current, [key]: { ...current[key], templates: current[key].templates.filter((_, itemIndex) => itemIndex !== index) } }));
+    setPreview((current) => ({ ...current, [key]: current[key].filter((_, itemIndex) => itemIndex !== index) }));
+    setVerification((current) => ({ ...current, [key]: null }));
+  };
+  const deleteEditingTemplate = () => {
+    if (!editing || editingIndex === null || drafts[editing].templates.length <= 1) return;
+    removeTemplate(editing, editingIndex);
+    setEditing(null);
+    setEditingIndex(null);
+  };
   const labels: Record<DrawTemplateKey, string> = { cancel: "放弃按钮", max: "最大倍数", coin: "金币" };
-  if (editing) return <div className="capture-modal-backdrop" role="dialog" aria-modal="true" aria-label="截取按钮模板"><section className="capture-modal draw-calibration-modal"><header><div><strong>截取{labels[editing]}模板</strong><span>已重新获取最新设备屏幕，拖动选择区域，点击确定后仅更新临时预览。</span></div><button type="button" className="icon-button" title="关闭" onClick={() => setEditing(null)}><X size={17} /></button></header><div className="draw-calibration-stage"><CropPanel image={currentImage} size={{ x: 0, y: 0, ...currentSize }} region={workingRegion ?? drafts[editing].region} onChange={setWorkingRegion} /></div><footer><button type="button" className="button secondary" onClick={() => setEditing(null)}>取消</button><button type="button" className="button primary" disabled={!workingRegion || workingRegion.width < 1 || workingRegion.height < 1} onClick={() => void confirm()}>确定</button></footer></section></div>;
-  return <div className="capture-modal-backdrop" role="dialog" aria-modal="true" aria-label="抽卡按钮模板校准"><section className="capture-modal draw-calibration-modal"><header><div><strong>抽卡按钮模板校准</strong><span>默认显示当前模板。每次点击自定义都会重新获取最新设备屏幕。</span></div><button type="button" className="icon-button" title="关闭" onClick={onClose}><X size={17} /></button></header><div className="draw-calibration-preview-grid">{(Object.keys(labels) as DrawTemplateKey[]).map((key) => <article key={key} className="draw-calibration-preview"><strong>{labels[key]}{confirmed[key] ? " ✓" : ""}</strong>{preview[key] ? <img src={preview[key] ?? undefined} alt={`${labels[key]}模板预览`} /> : <div className="draw-calibration-empty">模板图片不可用</div>}<code>{`x=${drafts[key].region.x}, y=${drafts[key].region.y}, ${drafts[key].region.width} x ${drafts[key].region.height}`}</code><button type="button" className="button secondary" disabled={loading !== null} onClick={() => void begin(key)}>{loading === key ? <><RefreshCw size={15} className="spin" />获取最新屏幕...</> : "自定义"}</button></article>)}</div><footer><button type="button" className="button quiet danger" onClick={onReset}>恢复默认</button><span /><button type="button" className="button secondary" onClick={onClose}>取消</button><button type="button" className="button primary" disabled={loading !== null} onClick={() => onSave(drafts, size)}>保存校准</button></footer></section></div>;
+  if (editing) return <div className="capture-modal-backdrop" role="dialog" aria-modal="true" aria-label="截取按钮模板"><section className="capture-modal draw-calibration-modal"><header><div><strong>{editingIndex === null ? "新增" : "编辑"}{labels[editing]}模板</strong><span>已重新获取最新设备屏幕，拖动选择区域，点击确定后仅更新临时预览。</span></div><button type="button" className="icon-button" title="关闭" onClick={() => { setEditing(null); setEditingIndex(null); }}><X size={17} /></button></header><div className="draw-calibration-stage"><CropPanel image={currentImage} size={{ x: 0, y: 0, ...currentSize }} region={workingRegion ?? drafts[editing].region} onChange={setWorkingRegion} /></div><footer><button type="button" className="button quiet danger" disabled={editingIndex === null || drafts[editing].templates.length <= 1} onClick={deleteEditingTemplate}>删除模板</button><span /><button type="button" className="button secondary" onClick={() => { setEditing(null); setEditingIndex(null); }}>取消</button><button type="button" className="button primary" disabled={!workingRegion || workingRegion.width < 1 || workingRegion.height < 1} onClick={() => void confirm()}>确定</button></footer></section></div>;
+  const selectedVerification = verificationKey ? verification[verificationKey] : null;
+  const selectedVerificationResults = selectedVerification?.results?.length ? selectedVerification.results : selectedVerification ? [selectedVerification] : [];
+ return <><div className="capture-modal-backdrop" role="dialog" aria-modal="true" aria-label="抽卡按钮模板校准"><section className="capture-modal draw-calibration-modal"><header><div><strong>抽卡按钮模板校准</strong><span>默认显示当前模板。每次点击自定义都会重新获取最新设备屏幕。</span></div><button type="button" className="icon-button" title="关闭" onClick={onClose}><X size={17} /></button></header><div className="draw-calibration-preview-grid">{(Object.keys(labels) as DrawTemplateKey[]).map((key) => { const result = verification[key]; return <article key={key} className="draw-calibration-preview"><strong>{labels[key]}{confirmed[key] ? " ✓" : ""} · {drafts[key].templates.length}个模板</strong><div className="draw-template-thumbnail-grid">{preview[key].map((item, index) => { const templateKey = `${key}:${index}`; const singleResult = templateVerification[templateKey] ?? result?.results?.[index] ?? null; return <div className="draw-template-item" key={templateKey}>{item ? <img src={item} alt={`${labels[key]}模板${index + 1}`} /> : <div className="draw-calibration-empty">模板图片不可用</div>}<div className="draw-template-item-actions"><button type="button" className="button quiet" disabled={loading !== null || verifyLoading !== null || singleVerifyLoading !== null} onClick={() => void begin(key, index)}>编辑模板</button><button type="button" className="button quiet" disabled={loading !== null || verifyLoading !== null || singleVerifyLoading !== null} onClick={() => void verifyOne(key, index)}>{singleVerifyLoading === templateKey ? <><RefreshCw size={12} className="spin" />识别中</> : "识别"}</button></div>{singleResult ? <small className={singleResult.matched ? "draw-verify-success" : "draw-verify-failure"}>{singleResult.matched ? "命中" : "未命中"} · 可信度 {(singleResult.similarity * 100).toFixed(1)}% <button type="button" className="button quiet" onClick={() => { setVerification((current) => ({ ...current, [key]: singleResult })); setVerificationKey(key); }}>查看截图</button></small> : null}</div>; })}</div><code>{`x=${drafts[key].region.x}, y=${drafts[key].region.y}, ${drafts[key].region.width} x ${drafts[key].region.height}`}</code><label className="draw-threshold-field">识别阈值<input type="number" min="0.1" max="1" step="0.01" value={drafts[key].threshold} onChange={(event) => { setDrafts((current) => ({ ...current, [key]: { ...current[key], threshold: Math.min(1, Math.max(0.1, Number(event.target.value) || 0.1)) } })); setVerification((current) => ({ ...current, [key]: null })); }} /></label>{result ? <span className={result.matched ? "draw-verify-success" : "draw-verify-failure"}>{result.matched ? "已匹配" : "未达到阈值"} · 可信度 {(result.similarity * 100).toFixed(1)}% · 阈值 {(result.threshold * 100).toFixed(1)}% <button type="button" className="button quiet" onClick={() => setVerificationKey(key)}>查看验证截图</button></span> : null}<div className="draw-calibration-card-actions"><button type="button" className="button secondary" disabled={loading !== null || verifyLoading !== null || singleVerifyLoading !== null} onClick={() => void begin(key)}>{loading === key ? <><RefreshCw size={15} className="spin" />获取最新屏幕...</> : "新增模板"}</button><button type="button" className="button quiet" disabled={loading !== null || verifyLoading !== null || singleVerifyLoading !== null} onClick={() => void verify(key)}>{verifyLoading === key ? <><RefreshCw size={15} className="spin" />验证中...</> : "模拟识别全部"}</button></div></article>; })}</div><footer><button type="button" className="button quiet danger" onClick={onReset}>恢复默认</button><span /><button type="button" className="button secondary" onClick={onClose}>取消</button><button type="button" className="button primary" disabled={loading !== null || verifyLoading !== null || singleVerifyLoading !== null} onClick={() => onSave(drafts, preview, size)}>保存校准</button></footer></section></div>{verificationKey && selectedVerification ? <div className="capture-modal-backdrop draw-verification-backdrop" role="dialog" aria-modal="true" aria-label="模板模拟识别结果"><section className="capture-modal draw-verification-modal"><header><div><strong>{labels[verificationKey]}模拟识别结果</strong><span>以下截图为本次验证使用的最新设备画面，模板卡片预览不会被替换。</span></div><button type="button" className="icon-button" title="关闭" onClick={() => setVerificationKey(null)}><X size={17} /></button></header><div className="draw-verification-content"><img src={selectedVerification.image} alt="模拟识别截图" /><div className={selectedVerification.matched ? "draw-verify-success" : "draw-verify-failure"}>{selectedVerification.matched ? "已匹配" : "未达到阈值"} · 可信度 {(selectedVerification.similarity * 100).toFixed(1)}% · 阈值 {(selectedVerification.threshold * 100).toFixed(1)}%{selectedVerification.box ? ` · 匹配区域 x=${selectedVerification.box.x}, y=${selectedVerification.box.y}, ${selectedVerification.box.width} x ${selectedVerification.box.height}` : ""}</div></div><footer><button type="button" className="button primary" onClick={() => setVerificationKey(null)}>关闭结果</button></footer></section></div> : null}</>;
 }
 
 export function DrawPage(props: SharedProps) {
@@ -180,8 +221,8 @@ export function DrawPage(props: SharedProps) {
       const size = await new Promise<{ width: number; height: number }>((resolve, reject) => { const source = new Image(); source.onload = () => resolve({ width: source.naturalWidth, height: source.naturalHeight }); source.onerror = () => reject(new Error("截图加载失败")); source.src = image; });
       setCalibrationImage(image);
       setCalibrationSize(size);
-      const templateImages = await Promise.all([window.bsManager.templatesImage(config.cancel.template), window.bsManager.templatesImage(config.max.template), window.bsManager.templatesImage(config.coin.template)]);
-      setCalibrationConfigs({ configs: config, images: { cancel: templateImages[0], max: templateImages[1], coin: templateImages[2] } });
+      const templateImages = await Promise.all((Object.keys(config) as DrawTemplateKey[]).map(async (key) => Promise.all(config[key].templates.map((template) => window.bsManager.templatesImage(template)))));
+      setCalibrationConfigs({ configs: config, images: { cancel: templateImages[0].filter((item): item is string => Boolean(item)), max: templateImages[1].filter((item): item is string => Boolean(item)), coin: templateImages[2].filter((item): item is string => Boolean(item)) } });
     } catch (error) { props.setNotice(`打开模板校准失败: ${String(error)}`); }
     finally { setCalibrationLoading(false); }
   };
@@ -191,7 +232,20 @@ export function DrawPage(props: SharedProps) {
     const latestSize = await new Promise<{ width: number; height: number }>((resolve, reject) => { const source = new Image(); source.onload = () => resolve({ width: source.naturalWidth, height: source.naturalHeight }); source.onerror = () => reject(new Error("截图加载失败")); source.src = latestImage; });
     return { image: latestImage, size: latestSize };
   };
-  const saveTemplateCalibration = async (drafts: Record<DrawTemplateKey, DrawTemplateConfig>, size: { width: number; height: number }) => {
+  const verifyTemplateCalibration = async (_key: DrawTemplateKey, config: DrawTemplateConfig, size: { width: number; height: number }) => {
+    try {
+      return await window.bsManager.drawTemplateVerify(
+        config.templates,
+        scaleRegion(config.region, { x: 0, y: 0, width: size.width, height: size.height }, { x: 0, y: 0, width: 1080, height: 1920 }),
+        config.threshold,
+        device,
+      );
+    } catch (error) {
+      props.setNotice(`模拟识别失败: ${String(error)}`);
+      throw error;
+    }
+  };
+  const saveTemplateCalibration = async (drafts: Record<DrawTemplateKey, DrawTemplateConfig>, previews: Record<DrawTemplateKey, string[]>, size: { width: number; height: number }) => {
     if (!calibrationImage) return;
     try {
       const source = new Image(); source.src = calibrationImage;
@@ -199,15 +253,28 @@ export function DrawPage(props: SharedProps) {
       const saved: Record<DrawTemplateKey, DrawTemplateConfig> = { cancel: { ...drafts.cancel }, max: { ...drafts.max }, coin: { ...drafts.coin } };
       for (const key of ["cancel", "max", "coin"] as const) {
         const region = drafts[key].region;
-        const name = `${drafts[key].template.replace(/\.png$/i, "").replace(/[\\/:*?"<>|]/g, "") || (key === "coin" ? "金币" : `${key}_button`)}.png`;
-        let dataUrl = drafts[key].preview;
-        if (!dataUrl) {
+        const templates: string[] = [];
+        for (const [index, preview] of previews[key].entries()) {
+          const original = drafts[key].templates[index] ?? `${key}_template_${index + 1}.png`;
+          const fallback = index === 0 ? (key === "coin" ? "金币" : defaultDrawTemplates[key].templates[0]) : `${key}_template_${index + 1}`;
+          const name = `${original.replace(/\.png$/i, "").replace(/[\\/:*?"<>|]/g, "") || fallback}.png`;
+          let dataUrl: string | undefined = preview;
+          if (!dataUrl) {
+            if (index > 0) continue;
+            const canvas = document.createElement("canvas"); canvas.width = region.width; canvas.height = region.height;
+            const context = canvas.getContext("2d"); if (!context) throw new Error("无法创建图片画布");
+            context.drawImage(source, region.x, region.y, region.width, region.height, 0, 0, region.width, region.height);
+            dataUrl = canvas.toDataURL("image/png");
+          }
+          templates.push((await window.bsManager.templatesSaveCapture(name, dataUrl)).split("/").pop() ?? name);
+        }
+        if (templates.length === 0) {
           const canvas = document.createElement("canvas"); canvas.width = region.width; canvas.height = region.height;
           const context = canvas.getContext("2d"); if (!context) throw new Error("无法创建图片画布");
           context.drawImage(source, region.x, region.y, region.width, region.height, 0, 0, region.width, region.height);
-          dataUrl = canvas.toDataURL("image/png");
+          templates.push((await window.bsManager.templatesSaveCapture(defaultDrawTemplates[key].templates[0], canvas.toDataURL("image/png"))).split("/").pop() ?? defaultDrawTemplates[key].templates[0]);
         }
-        saved[key] = { template: (await window.bsManager.templatesSaveCapture(name, dataUrl)).split("/").pop() ?? name, region: scaleRegion(region, { x: 0, y: 0, width: size.width, height: size.height }, { x: 0, y: 0, width: 1080, height: 1920 }) };
+        saved[key] = { templates, region: scaleRegion(region, { x: 0, y: 0, width: size.width, height: size.height }, { x: 0, y: 0, width: 1080, height: 1920 }), threshold: drafts[key].threshold };
       }
       await window.bsManager.drawTemplateSave(saved);
       setCalibrationImage(null); setCalibrationConfigs(null);
@@ -242,7 +309,7 @@ export function DrawPage(props: SharedProps) {
     {showUsers && <Modal title="抽卡用户管理" onClose={() => setShowUsers(false)}><div className="chest-label-list">{users.map((user) => <div className={`chest-user-row ${user.id === userId ? "selected" : ""}`} key={user.id}><button className="button quiet" onClick={() => selectUser(user.id)}>使用</button><input value={drafts[user.id] ?? user.name} onChange={(event) => setDrafts({ ...drafts, [user.id]: event.target.value })} /><button className="button quiet" onClick={() => void window.bsManager.drawRenameUser(user.id, drafts[user.id] ?? user.name).then(loadUsers)}>重命名</button></div>)}<div className="chest-user-create"><input placeholder="新用户名称" value={newUser} onChange={(event) => setNewUser(event.target.value)} /><button className="button primary" onClick={createUser}>新增</button></div></div></Modal>}
     {showReport && <Modal title="导出抽卡统计报表" onClose={() => setShowReport(false)}><div className="chest-export-options"><label>用户<select value={userId} onChange={(event) => setUserId(event.target.value)}>{users.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</select></label><label>统计范围<select value={reportRange} onChange={(event) => setReportRange(event.target.value as Range)}><option value="day">当天</option><option value="7d">近 7 天</option><option value="month">近 30 天</option><option value="custom">自定义</option></select></label>{reportRange === "custom" ? <label>开始日期<input type="date" value={reportStartDay} onChange={(event) => setReportStartDay(event.target.value)} /></label> : null}<label>结束日期<input type="date" value={reportEndDay} onChange={(event) => setReportEndDay(event.target.value)} /></label><button className="button primary" onClick={exportReport}>导出 CSV</button></div></Modal>}
     {calibrationLoading && <div className="draw-calibration-loading" role="status"><RefreshCw size={22} className="spin" /><span>正在获取设备屏幕和模板配置...</span></div>}
-    {calibrationImage && calibrationConfigs && <TemplateCalibrationModal image={calibrationImage} size={calibrationSize} configs={calibrationConfigs.configs} templateImages={calibrationConfigs.images} captureLatest={captureLatestCalibration} onClose={() => { setCalibrationImage(null); setCalibrationConfigs(null); }} onReset={() => void resetTemplateCalibration()} onSave={(drafts, size) => void saveTemplateCalibration(drafts, size)} />}
+    {calibrationImage && calibrationConfigs && <TemplateCalibrationModal image={calibrationImage} size={calibrationSize} configs={calibrationConfigs.configs} templateImages={calibrationConfigs.images} captureLatest={captureLatestCalibration} verifyTemplate={verifyTemplateCalibration} onClose={() => { setCalibrationImage(null); setCalibrationConfigs(null); }} onReset={() => void resetTemplateCalibration()} onSave={(drafts, previews, size) => void saveTemplateCalibration(drafts, previews, size)} />}
   </div>;
 }
 

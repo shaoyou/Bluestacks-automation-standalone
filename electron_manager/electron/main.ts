@@ -469,7 +469,16 @@ function copyResources(sourceDir: string, targetDir: string, overwriteExisting =
     if (entry.isDirectory()) {
       copyResources(source, target, overwriteExisting);
     } else if (entry.isFile() && (overwriteExisting || !existsSync(target))) {
-      copyFileSync(source, target);
+      try {
+        copyFileSync(source, target);
+      } catch (error) {
+        // Windows may lock adb.exe while its server is running. Keep the
+        // existing executable and continue migrating unrelated resources.
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "EBUSY" && code !== "EACCES" && code !== "EPERM") {
+          recordStartupWarning(`[runtime] skip resource ${source} -> ${target}: ${String(error)}`);
+        }
+      }
     }
   }
 }
@@ -797,9 +806,17 @@ function internalPlanPath(name: string): string {
 }
 
 type DrawTemplateCalibration = {
-  cancel: { template: string; region: { x: number; y: number; width: number; height: number } };
-  max: { template: string; region: { x: number; y: number; width: number; height: number } };
-  coin: { template: string; region: { x: number; y: number; width: number; height: number } };
+  cancel: { templates: string[]; region: { x: number; y: number; width: number; height: number }; threshold: number };
+  max: { templates: string[]; region: { x: number; y: number; width: number; height: number }; threshold: number };
+  coin: { templates: string[]; region: { x: number; y: number; width: number; height: number }; threshold: number };
+};
+
+type DrawTemplateVerification = {
+  matched: boolean;
+  similarity: number;
+  threshold: number;
+  box: { x: number; y: number; width: number; height: number } | null;
+  image: string;
 };
 
 function updateInternalDrawTemplates(calibration: DrawTemplateCalibration) {
@@ -813,11 +830,12 @@ function updateInternalDrawTemplates(calibration: DrawTemplateCalibration) {
     const key = values.some((item) => item.startsWith("role_cancel")) ? "cancel" : values.some((item) => item.startsWith("role_count_max")) ? "max" : values.some((item) => item.startsWith("role_done")) ? "coin" : null;
     if (key) {
       const config = calibration[key];
-      const templateName = path.basename(String(config.template || ""));
-      if (!templateName || templateName === "." || templateName === "..") throw new Error("模板文件名无效");
-      if (Array.isArray(action.templates)) action.templates = [`../image_templates/${templateName}`];
-      else action.template = `../image_templates/${templateName}`;
+      const templateNames = config.templates.map((item) => path.basename(String(item || ""))).filter((item) => item && item !== "." && item !== "..");
+      if (templateNames.length === 0) throw new Error("模板文件名无效");
+      action.templates = templateNames.map((item) => `../image_templates/${item}`);
+      delete action.template;
       action.region = { ...config.region };
+      action.threshold = Math.max(0.1, Math.min(1, Number(config.threshold)));
       if (action.cancel_region) action.cancel_region = { ...config.region };
     }
     Object.values(action).forEach(visit);
@@ -1263,23 +1281,46 @@ app.whenReady().then(() => {
     const mime = /\.jpe?g$/i.test(name) ? "image/jpeg" : /\.webp$/i.test(name) ? "image/webp" : "image/png";
     return `data:${mime};base64,${readFileSync(file).toString("base64")}`;
   });
+  async function verifyDrawTemplate(templates: string[], region: { x: number; y: number; width: number; height: number }, threshold: number, device: string): Promise<DrawTemplateVerification> {
+    const plan = internalPlanPath("choukaka.json");
+    const script = path.join(runtimeRoot(), "adb_bot.py");
+    const bundled = bundledWindowsScriptExecutable(script);
+    const executable = bundled ?? resolveExecutable(getSettings().pythonPath, process.platform === "win32" ? "python.exe" : "python3");
+    const args = bundled ? [] : [script];
+    args.push("--plan", plan, "--device", device, "--adb", getSettings().adbPath, "--hdc", getSettings().hdcPath, "--verify-template", ...templates.map((item) => `../image_templates/${path.basename(item)}`), "--verify-region", String(region.x), String(region.y), String(region.width), String(region.height), "--verify-threshold", String(threshold));
+    return new Promise((resolve, reject) => {
+      const child = spawn(executable, args, { cwd: runtimeRoot(), windowsHide: true, env: runtimeEnvironment() });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (data) => { stdout += data.toString("utf8"); });
+      child.stderr.on("data", (data) => { stderr += data.toString("utf8"); });
+      child.on("error", reject);
+      child.on("close", (code) => {
+        const line = stdout.split(/\r?\n/).find((item) => item.startsWith("__DRAW_TEMPLATE_VERIFY__"));
+        if (code !== 0 || !line) { reject(new Error(stderr.trim() || stdout.trim() || `模板验证退出码 ${code}`)); return; }
+        try { resolve(JSON.parse(line.slice("__DRAW_TEMPLATE_VERIFY__".length)) as DrawTemplateVerification); }
+        catch (error) { reject(new Error(`模板验证结果无效: ${String(error)}`)); }
+      });
+    });
+  }
+  ipcMain.handle("draw:template-verify", (_, templates: string[], region: { x: number; y: number; width: number; height: number }, threshold: number, device: string) => verifyDrawTemplate(templates, region, threshold, device));
   ipcMain.handle("draw:template-config", () => {
     const plan = JSON.parse(readFileSync(internalPlanPath("choukaka.json"), "utf8")) as Record<string, unknown>;
     const result: DrawTemplateCalibration = {
-      cancel: { template: "role_cancel.png", region: { x: 465, y: 1542, width: 148, height: 72 } },
-      max: { template: "role_count_max.png", region: { x: 636, y: 1258, width: 334, height: 140 } },
-      coin: { template: "role_done.png", region: { x: 337, y: 1380, width: 386, height: 149 } },
+      cancel: { templates: ["role_cancel.png"], region: { x: 465, y: 1542, width: 148, height: 72 }, threshold: 0.88 },
+      max: { templates: ["role_count_max.png"], region: { x: 636, y: 1258, width: 334, height: 140 }, threshold: 0.7 },
+      coin: { templates: ["role_done.png"], region: { x: 337, y: 1380, width: 386, height: 149 }, threshold: 0.88 },
     };
     const visit = (value: unknown) => {
       if (Array.isArray(value)) { value.forEach(visit); return; }
       if (!value || typeof value !== "object") return;
       const action = value as Record<string, unknown>;
-      const values = [action.template, ...(Array.isArray(action.templates) ? action.templates : [])].map((item) => path.basename(String(item ?? "")).toLowerCase());
+        const values = [action.template, ...(Array.isArray(action.templates) ? action.templates : [])].map((item) => path.basename(String(item ?? "")).toLowerCase());
       const key = values.some((item) => item.startsWith("role_cancel")) ? "cancel" : values.some((item) => item.startsWith("role_count_max")) ? "max" : values.some((item) => item.startsWith("role_done")) ? "coin" : null;
       if (key) {
         const region = action.region ?? action.cancel_region;
         const raw = region && typeof region === "object" ? region as Record<string, unknown> : {};
-        result[key] = { template: path.basename(String(Array.isArray(action.templates) ? action.templates[0] : action.template ?? result[key].template)), region: { x: Number(raw.x ?? result[key].region.x), y: Number(raw.y ?? result[key].region.y), width: Number(raw.width ?? result[key].region.width), height: Number(raw.height ?? result[key].region.height) } };
+        result[key] = { templates: Array.isArray(action.templates) ? action.templates.map((item) => path.basename(String(item))) : [path.basename(String(action.template ?? result[key].templates[0]))], region: { x: Number(raw.x ?? result[key].region.x), y: Number(raw.y ?? result[key].region.y), width: Number(raw.width ?? result[key].region.width), height: Number(raw.height ?? result[key].region.height) }, threshold: Number(action.threshold ?? result[key].threshold) };
       }
       Object.values(action).forEach(visit);
     };
@@ -1292,9 +1333,9 @@ app.whenReady().then(() => {
     if (!existsSync(source)) throw new Error("未找到抽卡默认脚本");
     copyFileAtomic(source, internalPlanPath("choukaka.json"));
     updateInternalDrawTemplates({
-      cancel: { template: "role_cancel.png", region: { x: 465, y: 1542, width: 148, height: 72 } },
-      max: { template: "role_count_max.png", region: { x: 636, y: 1258, width: 334, height: 140 } },
-      coin: { template: "role_done.png", region: { x: 337, y: 1380, width: 386, height: 149 } },
+      cancel: { templates: ["role_cancel.png"], region: { x: 465, y: 1542, width: 148, height: 72 }, threshold: 0.88 },
+      max: { templates: ["role_count_max.png"], region: { x: 636, y: 1258, width: 334, height: 140 }, threshold: 0.7 },
+      coin: { templates: ["role_done.png"], region: { x: 337, y: 1380, width: 386, height: 149 }, threshold: 0.88 },
     });
     for (const name of ["role_cancel.png", "role_count_max.png", "role_done.png"]) {
       const template = path.join(runtimeRoot(), "internal_template_defaults", name);
