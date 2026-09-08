@@ -149,7 +149,10 @@ jobs:
               for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
                 const file = path.join(directory, entry.name);
                 if (entry.isDirectory()) visit(file);
-                else if (/\.(exe|yml|blockmap)$/i.test(entry.name)) files.push(file);
+                else if (/\.(exe|yml|blockmap)$/i.test(entry.name)) {
+                  const relative = path.relative(root, file).split(path.sep).join('/');
+                  files.push({ file, name: relative.startsWith('win7-legacy/') ? `win7-legacy-${entry.name}` : entry.name });
+                }
               }
             };
             visit(root);
@@ -178,14 +181,15 @@ jobs:
               per_page: 100,
             });
             for (const asset of existing) {
-              if (files.some((file) => path.basename(file) === asset.name)) {
+              if (files.some((file) => file.name === asset.name)) {
                 await github.rest.repos.deleteReleaseAsset({ owner: context.repo.owner, repo: context.repo.repo, asset_id: asset.id });
               }
             }
 
             const contentType = (file) => file.endsWith('.exe') ? 'application/vnd.microsoft.portable-executable' : file.endsWith('.yml') ? 'text/yaml' : 'application/octet-stream';
-            for (const file of files) {
-              const name = path.basename(file);
+            for (const entry of files) {
+              const file = entry.file;
+              const name = entry.name;
               core.info(`Uploading ${name}`);
               await github.rest.repos.uploadReleaseAsset({
                 owner: context.repo.owner,
