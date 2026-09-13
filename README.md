@@ -347,6 +347,9 @@ adb -s 127.0.0.1:5555 shell input tap 500 500
 - 未识别到时走 `else_actions`
 - 也支持 `templates`，用于“多个目标图标出现任意一个就进 then_actions”
 - 在 `then_actions` 里可以写 `{ "type": "click_match" }`，直接点击当前这次 `if_image` 命中的图标中心
+- `if_image` 默认使用 `accurate` 匹配模式：综合形状和颜色相似度，并要求连续两次截图在相近位置命中后才进入成功分支
+- 设置 `"match_profile": "balanced"` 可恢复单帧快速判断；也可以显式设置 `"confirm_attempts": 1`
+- 准确模式会扫描多模板并选择可信度最高的命中；默认保留完整多尺度范围，尺寸漂移明显时可加 `"fine_scales": true`，目标尺寸稳定时建议显式设置 `"scales": [1.0]`
 
 ```json
 {

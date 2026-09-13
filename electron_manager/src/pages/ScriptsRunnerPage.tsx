@@ -207,7 +207,7 @@ export function ScriptsPage(props: SharedProps) {
     const threshold = Math.min(1, Math.max(0.1, numeric(quickThreshold, 0.92)));
     const timeout = Math.max(0.1, numeric(quickImageTimeout, 8));
     if (kind === "if_image") {
-      append({ type: kind, template, threshold, timeout_sec: timeout, interval_sec: 0.6, region: imageSearchRegion, remark: actionRemark("if_image", quickTemplate), then_actions: [{ type: "click_match", remark: "点击当前命中的图标" }], else_actions: [{ type: "wait", seconds: 0.5, remark: "未识别到图标后的分支" }] });
+      append({ type: kind, template, match_profile: "accurate", threshold, timeout_sec: timeout, interval_sec: 0.6, confirm_attempts: 2, confirm_interval_sec: 0.15, region: imageSearchRegion, remark: actionRemark("if_image", quickTemplate), then_actions: [{ type: "click_match", remark: "点击当前命中的图标" }], else_actions: [{ type: "wait", seconds: 0.5, remark: "未识别到图标后的分支" }] });
       return;
     }
     append({ type: kind, template, threshold, timeout_sec: timeout, interval_sec: 0.6, region: imageSearchRegion, ...(kind === "find_image_click" && previewOnly ? { preview_only: true } : {}), remark: actionRemark(kind, quickTemplate) });

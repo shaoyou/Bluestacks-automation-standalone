@@ -82,6 +82,11 @@ class PreparedSearchImage:
     crop_box: Tuple[int, int, int, int]
     rgb: np.ndarray
     gray: np.ndarray
+    fft_cache: Dict[Tuple[int, int], Tuple[np.ndarray, np.ndarray]] = field(
+        default_factory=dict,
+        compare=False,
+        repr=False,
+    )
 
 
 @dataclass(frozen=True)
@@ -94,11 +99,21 @@ class PreparedTemplateVariant:
     centered: np.ndarray
     weights_sum: float
     norm: float
+    fft_cache: Dict[Tuple[int, int], Tuple[np.ndarray, np.ndarray]] = field(
+        default_factory=dict,
+        compare=False,
+        repr=False,
+    )
 
 
 _TEMPLATE_IMAGE_CACHE: Dict[Tuple[str, int, int], Image.Image] = {}
-_TEMPLATE_VARIANT_CACHE: Dict[Tuple[str, int, int, int, int, Tuple[float, ...]], List[PreparedTemplateVariant]] = {}
+_TEMPLATE_VARIANT_CACHE: Dict[
+    Tuple[str, int, int, int, int, Tuple[float, ...], float, float, bool],
+    List[PreparedTemplateVariant],
+] = {}
 _TEMPLATE_RESOLUTION_VARIANT_CACHE: Dict[Tuple[str, int, int], List[Path]] = {}
+FFT_CACHE_MAX_ENTRY_BYTES = 2 * 1024 * 1024
+FFT_CACHE_MAX_SEARCH_ENTRIES = 4
 SCREENSHOT_SESSION_KEY = "_save_screenshot_session_id"
 SCREENSHOT_COUNTERS_KEY = "_save_screenshot_pair_counters"
 SCREENSHOT_ACTIVE_KEY = "_save_screenshot_active_pairs"
@@ -263,10 +278,12 @@ def resolve_action_template_paths(
 
     # The original cancel template is text-only and may match other labels. When
     # available, also try the contextual native screenshot template.
-    if any(path.name == "role_cancel.png" for path in template_paths):
+    if not bool_value(action.get("disable_contextual_cancel_template")) and any(path.name == "role_cancel.png" for path in template_paths):
         contextual_path = resolve_action_file_path(ctx, "../image_templates/role_cancel_phone.png")
         if contextual_path.exists() and contextual_path not in template_paths:
             template_paths.insert(0, contextual_path)
+    if bool_value(action.get("disable_resolution_template_variants")):
+        return template_paths
     return expand_resolution_template_paths(ctx, template_paths)
 
 
@@ -318,7 +335,7 @@ def expand_resolution_template_paths(ctx: RunContext, template_paths: List[Path]
 
 def image_search_action(action: Dict[str, Any], template_paths: List[Path]) -> Dict[str, Any]:
     """Add a wider default region for the contextual cancel-button lookup."""
-    if not any(path.name == "role_cancel.png" for path in template_paths):
+    if bool_value(action.get("disable_contextual_cancel_template")) or not any(path.name == "role_cancel.png" for path in template_paths):
         return action
     search_action = dict(action)
     search_action.setdefault("search_padding_ratio", 1.3)
@@ -1873,7 +1890,10 @@ def required_template_search_size(
     template_paths: List[Path],
     action: Dict[str, Any],
 ) -> Tuple[int, int]:
-    scale_x, scale_y = image_scale_factors(ctx, (ctx.dst_screen_w, ctx.dst_screen_h))
+    if bool_value(action.get("template_is_device_pixels")):
+        scale_x, scale_y = 1.0, 1.0
+    else:
+        scale_x, scale_y = image_scale_factors(ctx, (ctx.dst_screen_w, ctx.dst_screen_h))
     maximum_scale = max(build_template_scale_factors(action), default=1.0)
     required_w = 1
     required_h = 1
@@ -1944,6 +1964,29 @@ def fft_correlate2d_valid(image: np.ndarray, kernel: np.ndarray) -> np.ndarray:
     return valid.astype(np.float32, copy=False)
 
 
+def fft_correlate2d_valid_from_product(
+    product: np.ndarray,
+    image_shape: Tuple[int, int],
+    kernel_shape: Tuple[int, int],
+    fft_shape: Tuple[int, int],
+) -> np.ndarray:
+    """Finish a valid correlation when the forward FFTs are already cached."""
+    image_h, image_w = image_shape
+    kernel_h, kernel_w = kernel_shape
+    full = np.fft.irfftn(product, s=fft_shape, axes=(0, 1))
+    valid = full[kernel_h - 1 : image_h, kernel_w - 1 : image_w]
+    return valid.astype(np.float32, copy=False)
+
+
+def fft_cache_entry_bytes(fft_shape: Tuple[int, int], array_count: int = 2) -> int:
+    complex_columns = fft_shape[1] // 2 + 1
+    return fft_shape[0] * complex_columns * np.dtype(np.complex64).itemsize * array_count
+
+
+def can_cache_fft_entry(fft_shape: Tuple[int, int]) -> bool:
+    return fft_cache_entry_bytes(fft_shape) <= FFT_CACHE_MAX_ENTRY_BYTES
+
+
 def prepare_template_arrays(image: Image.Image) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     rgba = image.convert("RGBA")
     rgb = np.asarray(rgba.convert("RGB"), dtype=np.float32)
@@ -2012,8 +2055,8 @@ def build_template_variants(
     resample = Image.Resampling.LANCZOS
     variants: List[Tuple[float, Image.Image]] = []
     seen_sizes: set[Tuple[int, int]] = set()
-    coordinate_variants = [(scale_x, scale_y)]
-    if not (abs(scale_x - 1.0) < 1e-6 and abs(scale_y - 1.0) < 1e-6):
+    coordinate_variants = [(1.0, 1.0)] if bool_value(action.get("template_is_device_pixels")) else [(scale_x, scale_y)]
+    if not bool_value(action.get("template_is_device_pixels")) and not (abs(scale_x - 1.0) < 1e-6 and abs(scale_y - 1.0) < 1e-6):
         # Some user-added templates were captured on the current device rather
         # than the plan's logical reference screen. Keep that native-size option.
         coordinate_variants.append((1.0, 1.0))
@@ -2058,6 +2101,7 @@ def get_prepared_template_variants(
         scale_key,
         round(template_scale_x, 6),
         round(template_scale_y, 6),
+        bool_value(action.get("template_is_device_pixels")),
     )
     cached = _TEMPLATE_VARIANT_CACHE.get(cache_key)
     if cached is not None:
@@ -2106,6 +2150,46 @@ def extract_peak_candidates(score_map: np.ndarray, count: int, suppress_x: int, 
     return candidates
 
 
+def image_match_score(shape_similarity: float, color_similarity: float, action: Dict[str, Any]) -> float:
+    """Combine independent image signals without letting one hide a weak signal."""
+    mode = str(action.get("score_mode", "weighted")).strip().lower()
+    if mode in {"harmonic", "accurate", "strict"}:
+        total = shape_similarity + color_similarity
+        if total <= 1e-9:
+            return 0.0
+        return max(0.0, min(1.0, 2.0 * shape_similarity * color_similarity / total))
+    return max(0.0, min(1.0, 0.7 * shape_similarity + 0.3 * color_similarity))
+
+
+def image_match_center_distance(
+    left: Dict[str, float],
+    right: Dict[str, float],
+) -> float:
+    left_x = float(left.get("x", 0.0)) + float(left.get("width", 0.0)) / 2.0
+    left_y = float(left.get("y", 0.0)) + float(left.get("height", 0.0)) / 2.0
+    right_x = float(right.get("x", 0.0)) + float(right.get("width", 0.0)) / 2.0
+    right_y = float(right.get("y", 0.0)) + float(right.get("height", 0.0)) / 2.0
+    return float(math.hypot(left_x - right_x, left_y - right_y))
+
+
+def image_match_is_stable(
+    previous: Optional[Dict[str, float]],
+    current: Optional[Dict[str, float]],
+) -> bool:
+    if previous is None or current is None:
+        return False
+    previous_width = max(1.0, float(previous.get("width", 1.0)))
+    previous_height = max(1.0, float(previous.get("height", 1.0)))
+    current_width = max(1.0, float(current.get("width", 1.0)))
+    current_height = max(1.0, float(current.get("height", 1.0)))
+    width_ratio = max(previous_width, current_width) / min(previous_width, current_width)
+    height_ratio = max(previous_height, current_height) / min(previous_height, current_height)
+    if width_ratio > 2.5 or height_ratio > 2.5:
+        return False
+    max_shift = max(12.0, min(previous_width, previous_height, current_width, current_height) * 0.55)
+    return image_match_center_distance(previous, current) <= max_shift
+
+
 def find_image_match(
     search: PreparedSearchImage,
     template_variants: List[PreparedTemplateVariant],
@@ -2120,11 +2204,57 @@ def find_image_match(
     wanted = max(index + 1, int(action.get("max_candidates", 8)))
     # Allow plans to widen the candidate pool for small templates that have
     # many high-shape false positives before color scoring distinguishes them.
-    per_scale_peaks = max(4, min(128, wanted * 2))
+    raw_peak_count = action.get("candidate_peaks")
+    try:
+        per_scale_peaks = int(raw_peak_count) if raw_peak_count is not None else max(4, wanted * 2)
+    except (TypeError, ValueError):
+        raise BotError("candidate_peaks must be an integer when provided")
+    per_scale_peaks = max(1, min(128, per_scale_peaks))
     for variant in template_variants:
-        sum_i = fft_correlate2d_valid(search_gray, variant.weights)
-        sum_i2 = fft_correlate2d_valid(search_gray * search_gray, variant.weights)
-        numerator = fft_correlate2d_valid(search_gray, variant.centered)
+        image_h, image_w = search_gray.shape
+        kernel_shape = (variant.height, variant.width)
+        fft_shape = (image_h + variant.height - 1, image_w + variant.width - 1)
+        search_ffts = search.fft_cache.get(fft_shape)
+        if search_ffts is None:
+            search_ffts = (
+                np.fft.rfftn(search_gray, s=fft_shape, axes=(0, 1)),
+                np.fft.rfftn(search_gray * search_gray, s=fft_shape, axes=(0, 1)),
+            )
+            if (
+                can_cache_fft_entry(fft_shape)
+                and len(search.fft_cache) < FFT_CACHE_MAX_SEARCH_ENTRIES
+            ):
+                search.fft_cache[fft_shape] = search_ffts
+        image_fft, image_squared_fft = search_ffts
+
+        template_ffts = variant.fft_cache.get(fft_shape)
+        if template_ffts is None:
+            template_ffts = (
+                np.fft.rfftn(np.flipud(np.fliplr(variant.weights)), s=fft_shape, axes=(0, 1)),
+                np.fft.rfftn(np.flipud(np.fliplr(variant.centered)), s=fft_shape, axes=(0, 1)),
+            )
+            if can_cache_fft_entry(fft_shape):
+                variant.fft_cache[fft_shape] = template_ffts
+        weights_fft, centered_fft = template_ffts
+
+        sum_i = fft_correlate2d_valid_from_product(
+            image_fft * weights_fft,
+            search_gray.shape,
+            kernel_shape,
+            fft_shape,
+        )
+        sum_i2 = fft_correlate2d_valid_from_product(
+            image_squared_fft * weights_fft,
+            search_gray.shape,
+            kernel_shape,
+            fft_shape,
+        )
+        numerator = fft_correlate2d_valid_from_product(
+            image_fft * centered_fft,
+            search_gray.shape,
+            kernel_shape,
+            fft_shape,
+        )
 
         variance = np.maximum(sum_i2 - (sum_i * sum_i) / variant.weights_sum, 1e-6)
         scores = numerator / (np.sqrt(variance) * variant.norm)
@@ -2140,7 +2270,7 @@ def find_image_match(
         for peak_x, peak_y, raw_score in peaks:
             shape_similarity = max(0.0, min(1.0, (raw_score + 1.0) / 2.0))
             color_similarity = weighted_color_similarity(search_rgb, variant.rgb, variant.weights, peak_x, peak_y)
-            similarity = 0.7 * shape_similarity + 0.3 * color_similarity
+            similarity = image_match_score(shape_similarity, color_similarity, action)
             evaluated.append(
                 {
                     "x": float(crop_box[0] + peak_x),
@@ -2163,6 +2293,13 @@ def find_image_match(
         )
     except (TypeError, ValueError):
         raise BotError("min_color_similarity must be a number when provided")
+    min_shape_similarity = action.get("min_shape_similarity")
+    try:
+        min_shape_similarity = (
+            float(min_shape_similarity) if min_shape_similarity is not None else None
+        )
+    except (TypeError, ValueError):
+        raise BotError("min_shape_similarity must be a number when provided")
     qualified = [
         item
         for item in evaluated
@@ -2170,6 +2307,10 @@ def find_image_match(
         and (
             min_color_similarity is None
             or item["color_similarity"] >= min_color_similarity
+        )
+        and (
+            min_shape_similarity is None
+            or item["shape_similarity"] >= min_shape_similarity
         )
     ]
     if 0 <= index < len(qualified):
@@ -2324,24 +2465,49 @@ def verify_template_once(
         "templates": templates,
         "region": region,
         "threshold": threshold,
-        "scales": [0.75, 1.0],
+        "scales": [1.0],
         "max_candidates": 1,
         "search_padding_ratio": 0.0,
+        "disable_contextual_cancel_template": True,
+        "disable_resolution_template_variants": True,
+        "template_is_device_pixels": True,
     }
     template_paths = resolve_action_template_paths(ctx, action, "template verification")
-    minimum_size = required_template_search_size(ctx, template_paths, action)
-    search = prepare_search_image(ctx, screenshot, action, minimum_size=minimum_size)
-    matches: List[Tuple[Path, Optional[Dict[str, float]], Optional[Dict[str, float]]]] = []
+    template_errors: Dict[Path, str] = {}
+    valid_template_paths: List[Path] = []
     for template_path in template_paths:
-        variants = get_prepared_template_variants(ctx, template_path, action, (search.gray.shape[1], search.gray.shape[0]))
-        match, best = find_image_match(search, variants, threshold, 0, action)
-        matches.append((template_path, match, best))
-    qualified = next(((path, match, best) for path, match, best in matches if match is not None), None)
-    best_entry = max(matches, key=lambda item: float((item[1] or item[2] or {}).get("similarity", 0.0)), default=None)
-    selected_path, match, best = qualified or best_entry or (template_paths[0], None, None)
-    marked = match or best
-    def result_for(path: Path, candidate: Optional[Dict[str, float]], best_candidate: Optional[Dict[str, float]]) -> Dict[str, Any]:
+        try:
+            load_template_image(template_path)
+            valid_template_paths.append(template_path)
+        except BotError as exc:
+            template_errors[template_path] = str(exc)
+    minimum_size = required_template_search_size(ctx, valid_template_paths, action) if valid_template_paths else (1, 1)
+    search = prepare_search_image(ctx, screenshot, action, minimum_size=minimum_size)
+    matches: List[Tuple[Path, Optional[Dict[str, float]], Optional[Dict[str, float]], Optional[str]]] = []
+    for template_path in template_paths:
+        error = template_errors.get(template_path)
+        if error is not None:
+            matches.append((template_path, None, None, error))
+            continue
+        try:
+            variants = get_prepared_template_variants(ctx, template_path, action, (search.gray.shape[1], search.gray.shape[0]))
+            match, best = find_image_match(search, variants, threshold, 0, action)
+            matches.append((template_path, match, best, None))
+        except BotError as exc:
+            matches.append((template_path, None, None, str(exc)))
+    qualified_index = next((index for index, item in enumerate(matches) if item[1] is not None), None)
+    best_index = max(range(len(matches)), key=lambda index: float((matches[index][1] or matches[index][2] or {}).get("similarity", 0.0)))
+    selected_index = qualified_index if qualified_index is not None else best_index
+    selected_path, selected_match, selected_best, selected_error = matches[selected_index]
+    def result_for(path: Path, candidate: Optional[Dict[str, float]], best_candidate: Optional[Dict[str, float]], error: Optional[str]) -> Dict[str, Any]:
         selected = candidate or best_candidate
+        template_width: Optional[int] = None
+        template_height: Optional[int] = None
+        if error is None:
+            try:
+                template_width, template_height = load_template_image(path).size
+            except BotError as exc:
+                error = str(exc)
         box = None
         overlay = screenshot.copy()
         if selected is not None:
@@ -2357,15 +2523,21 @@ def verify_template_once(
             draw.rectangle(box, fill=color, outline=border, width=max(3, round(min(screenshot.size) / 360)))
         output = io.BytesIO()
         overlay.save(output, format="PNG")
-        return {
+        result: Dict[str, Any] = {
             "template": path.name,
             "matched": candidate is not None,
             "similarity": float(best_candidate["similarity"] if best_candidate is not None else 0.0),
+            "scale": float(selected["scale"] if selected is not None else 0.0),
             "threshold": threshold,
             "box": {"x": box[0], "y": box[1], "width": box[2] - box[0], "height": box[3] - box[1]} if box else None,
             "image": "data:image/png;base64," + base64.b64encode(output.getvalue()).decode("ascii"),
         }
-    results = [result_for(path, candidate, best_candidate) for path, candidate, best_candidate in matches]
+        if template_width is not None and template_height is not None:
+            result["template_size"] = {"width": template_width, "height": template_height}
+        if error is not None:
+            result["error"] = error
+        return result
+    results = [result_for(path, candidate, best_candidate, error) for path, candidate, best_candidate, error in matches]
     aggregate = screenshot.copy()
     aggregate_draw = ImageDraw.Draw(aggregate, "RGBA")
     for item in results:
@@ -2381,15 +2553,19 @@ def verify_template_once(
         aggregate_draw.rectangle((left, top, right, bottom), fill=color, outline=border, width=max(3, round(min(screenshot.size) / 360)))
     aggregate_output = io.BytesIO()
     aggregate.save(aggregate_output, format="PNG")
-    return {
-        "matched": match is not None,
+    result = {
+        "matched": selected_match is not None,
         "template": selected_path.name,
-        "similarity": float(best["similarity"] if best is not None else 0.0),
+        "similarity": float(selected_best["similarity"] if selected_best is not None else 0.0),
         "threshold": threshold,
-        "box": results[0]["box"] if results else None,
+        "region": region,
+        "box": results[selected_index]["box"],
         "image": "data:image/png;base64," + base64.b64encode(aggregate_output.getvalue()).decode("ascii"),
         "results": results,
     }
+    if selected_error is not None:
+        result["error"] = selected_error
+    return result
 
 
 def remember_if_text_match(ctx: RunContext, action: Dict[str, Any], result: Dict[str, Any]) -> None:
@@ -2491,12 +2667,76 @@ def execute_if_text(ctx: RunContext, action: Dict[str, Any]) -> None:
         time.sleep(max(0.1, interval_sec))
 
 
+def prepare_image_match_profile(
+    action: Dict[str, Any],
+    action_name: str,
+    threshold: float,
+    interval_sec: float,
+) -> Dict[str, Any]:
+    profile_raw = str(
+        action.get("match_profile")
+        or ("accurate" if action_name == "if_image" else "balanced")
+    ).strip().lower()
+    if profile_raw in {"accuracy", "strict"}:
+        profile = "accurate"
+    elif profile_raw in {"fast", "legacy"}:
+        profile = "balanced"
+    elif profile_raw in {"accurate", "balanced"}:
+        profile = profile_raw
+    else:
+        raise BotError("match_profile must be 'accurate' or 'balanced'")
+
+    match_action = dict(action)
+    match_action["match_profile"] = profile
+    if profile != "accurate":
+        match_action.setdefault("score_mode", "weighted")
+        return match_action
+
+    # Keep the existing default scale range for normal accuracy mode. Fine
+    # sampling is available explicitly for difficult scale-drift cases.
+    if (
+        bool_value(action.get("fine_scales"))
+        and "scales" not in action
+        and "scale_min" not in action
+        and "scale_max" not in action
+        and "scale_step" not in action
+    ):
+        match_action["scale_min"] = 0.75
+        match_action["scale_max"] = 1.25
+        match_action["scale_step"] = 0.05
+
+    match_action.setdefault("score_mode", "harmonic")
+    requested_candidates = max(1, int(action.get("max_candidates", 8)))
+    requested_index = max(0, int(action.get("index", 0)))
+    match_action.setdefault(
+        "candidate_peaks",
+        max(16, requested_candidates * 2, requested_index + 1),
+    )
+    if action.get("min_shape_similarity") is None:
+        match_action["min_shape_similarity"] = max(
+            0.0,
+            min(1.0, threshold - 0.12),
+        )
+    if action.get("min_color_similarity") is None:
+        match_action["min_color_similarity"] = max(
+            0.0,
+            min(1.0, threshold - 0.18),
+        )
+    if action_name == "if_image":
+        match_action.setdefault("confirm_attempts", 2)
+        match_action.setdefault(
+            "confirm_interval_sec",
+            max(0.1, min(0.3, interval_sec / 2.0)),
+        )
+        match_action.setdefault("evaluate_all_templates", True)
+    return match_action
+
+
 def resolve_find_image_action(
     ctx: RunContext,
     action: Dict[str, Any],
     action_name: str,
 ) -> Dict[str, Any]:
-    template_paths = resolve_action_template_paths(ctx, action, action_name)
     threshold = float(action.get("threshold", 0.92))
     timeout_sec = float(action.get("timeout_sec", 8.0))
     interval_sec = float(action.get("interval_sec", 0.6))
@@ -2506,6 +2746,15 @@ def resolve_find_image_action(
     offset_y = int(action.get("offset_y", 0))
     preview_only = bool_value(action.get("preview_only")) or bool_value(action.get("debug_preview"))
     save_debug = bool_value(action.get("save_debug", True), default=True)
+    match_action = prepare_image_match_profile(action, action_name, threshold, interval_sec)
+    template_paths = resolve_action_template_paths(ctx, match_action, action_name)
+    confirm_attempts = max(1, int(match_action.get("confirm_attempts", 1)))
+    if max_attempts > 0:
+        confirm_attempts = min(confirm_attempts, max_attempts)
+    confirm_interval_sec = max(
+        0.0,
+        float(match_action.get("confirm_interval_sec", interval_sec)),
+    )
     return {
         "template_paths": template_paths,
         "threshold": threshold,
@@ -2517,6 +2766,10 @@ def resolve_find_image_action(
         "offset_y": offset_y,
         "preview_only": preview_only,
         "save_debug": save_debug,
+        "match_action": match_action,
+        "match_profile": str(match_action.get("match_profile", "balanced")),
+        "confirm_attempts": confirm_attempts,
+        "confirm_interval_sec": confirm_interval_sec,
     }
 
 
@@ -2541,15 +2794,19 @@ def perform_find_image(
     index = settings["index"]
     save_debug = settings["save_debug"]
     preview_only = settings["preview_only"]
+    match_profile = settings["match_profile"]
+    confirm_attempts = settings["confirm_attempts"]
+    confirm_interval_sec = settings["confirm_interval_sec"]
     log_template_progress = action.get("templates") is not None
-    search_action = image_search_action(action, template_paths)
+    search_action = image_search_action(settings["match_action"], template_paths)
     minimum_template_size = required_template_search_size(ctx, template_paths, search_action)
     if ctx.dry_run:
         attempt_text = f" max_attempts={max_attempts}" if max_attempts > 0 else ""
         log(
             with_action_remark(
                 f"[DRY-RUN] {action_name} {image_action_target_summary(template_paths)} "
-                f"threshold={threshold:.3f} timeout={timeout_sec:.1f}s{attempt_text} preview_only={preview_only}",
+                f"threshold={threshold:.3f} timeout={timeout_sec:.1f}s{attempt_text} "
+                f"profile={match_profile} confirm={confirm_attempts} preview_only={preview_only}",
                 action,
             )
         )
@@ -2571,6 +2828,8 @@ def perform_find_image(
     best_template_path: Optional[Path] = None
     best_screenshot: Optional[Image.Image] = None
     best_attempt = 0
+    pending_match: Optional[Dict[str, float]] = None
+    pending_count = 0
     while True:
         check_stop(ctx)
         attempt += 1
@@ -2587,6 +2846,10 @@ def perform_find_image(
         matched_template_candidate: Optional[Dict[str, float]] = None
 
         template_total = len(template_paths)
+        evaluate_all_templates = bool_value(
+            search_action.get("evaluate_all_templates"),
+            default=False,
+        )
         for template_index, template_path in enumerate(template_paths, start=1):
             prepared_variants = get_prepared_template_variants(ctx, template_path, search_action, search_size)
             match, candidate_best = find_image_match(
@@ -2622,38 +2885,61 @@ def perform_find_image(
                         )
                     )
             if match is not None:
-                matched_template_path = template_path
-                matched_template_candidate = match
-                break
+                if (
+                    matched_template_candidate is None
+                    or match["similarity"] > matched_template_candidate["similarity"]
+                ):
+                    matched_template_path = template_path
+                    matched_template_candidate = match
+                if not evaluate_all_templates:
+                    break
 
         if matched_template_path is not None and matched_template_candidate is not None:
-            debug_paths: Optional[Dict[str, Path]] = None
-            if save_debug:
-                debug_paths = save_image_match_debug_assets(
-                    ctx=ctx,
-                    screenshot=screenshot,
-                    template_path=matched_template_path,
-                    action=action,
-                    status=matched_status,
-                    threshold=threshold,
-                    attempt=attempt,
-                    match=matched_template_candidate,
-                    note=matched_note,
-                )
-                log_image_match_debug_assets(debug_paths)
-            return {
-                "matched": True,
-                "match": matched_template_candidate,
-                "best_similarity": best_similarity,
-                "template_path": matched_template_path,
-                "threshold": threshold,
-                "preview_only": preview_only,
-                "dry_run": False,
-                "debug_paths": debug_paths,
-                "attempt": attempt,
-                "screenshot": screenshot.copy(),
-            }
-        attempts_exhausted = max_attempts > 0 and attempt >= max_attempts
+            if confirm_attempts <= 1:
+                pending_count = 1
+            elif image_match_is_stable(pending_match, matched_template_candidate):
+                pending_count += 1
+            else:
+                pending_count = 1
+            pending_match = dict(matched_template_candidate)
+
+            if pending_count >= confirm_attempts:
+                debug_paths: Optional[Dict[str, Path]] = None
+                if save_debug:
+                    debug_paths = save_image_match_debug_assets(
+                        ctx=ctx,
+                        screenshot=screenshot,
+                        template_path=matched_template_path,
+                        action=action,
+                        status=matched_status,
+                        threshold=threshold,
+                        attempt=attempt,
+                        match=matched_template_candidate,
+                        note=matched_note,
+                    )
+                    log_image_match_debug_assets(debug_paths)
+                return {
+                    "matched": True,
+                    "match": matched_template_candidate,
+                    "best_similarity": best_similarity,
+                    "template_path": matched_template_path,
+                    "threshold": threshold,
+                    "preview_only": preview_only,
+                    "dry_run": False,
+                    "debug_paths": debug_paths,
+                    "attempt": attempt,
+                    "screenshot": screenshot,
+                }
+        else:
+            pending_match = None
+            pending_count = 0
+
+        confirmation_in_progress = 0 < pending_count < confirm_attempts
+        attempts_exhausted = (
+            max_attempts > 0
+            and attempt >= max_attempts
+            and not confirmation_in_progress
+        )
         timed_out = time.time() >= deadline
         if attempts_exhausted or timed_out:
             debug_suffix = ""
@@ -2704,7 +2990,8 @@ def perform_find_image(
                 )
             )
             return result
-        time.sleep(max(0.1, interval_sec))
+        sleep_interval = confirm_interval_sec if pending_count > 0 else interval_sec
+        time.sleep(max(0.1, sleep_interval))
 
 
 def do_find_image_click(ctx: RunContext, action: Dict[str, Any]) -> None:

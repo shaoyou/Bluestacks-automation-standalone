@@ -232,6 +232,14 @@
 - `then_actions` 和 `else_actions` 都必须是数组，允许为空数组
 - 图像匹配相关字段与 `find_image_click` 一致，也支持 `templates`
 - 在 `then_actions` 中可以使用 `click_match`，直接点击当前这次 `if_image` 命中的目标点
+- `match_profile` (string, 可选，默认 `accurate`): `accurate` 会使用更严格的形状/颜色综合评分、更多候选校验，并要求连续稳定命中；`balanced` 保留单帧快速判断
+- `confirm_attempts` (number, 可选，准确模式默认 `2`): 连续多少次截图都命中且位置稳定后才进入 `then_actions`
+- `confirm_interval_sec` (number, 可选，准确模式默认按轮询间隔取 `0.1~0.3`): 连续确认之间的截图间隔
+- `min_shape_similarity` / `min_color_similarity` (number, 可选): 分别限制结构相似度和颜色相似度下限；准确模式会按总阈值自动设置保守下限
+- `candidate_peaks` (number, 可选): 每个缩放级别参与颜色复核的候选点数量；准确模式默认保留更多候选点
+- `evaluate_all_templates` (bool, 可选，准确模式默认 `true`): 多模板时扫描全部模板并选择可信度最高的命中，避免数组前面的弱候选遮挡更准确的模板
+- `fine_scales` (bool, 可选，默认 `false`): 准确模式下把默认缩放步长从 `0.125` 收窄到 `0.05`，用于处理设备缩放漂移
+- 准确模式默认保留完整的多尺度范围；遇到尺寸漂移较大的设备时可加 `fine_scales: true` 使用更密的比例扫描，目标尺寸稳定时可显式写 `scales: [1.0]` 保持更快
 
 ```json
 {

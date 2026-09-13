@@ -58,7 +58,7 @@ if (!window.bsManager) {
     templatesImage: async (name) => `../image_templates/${name}`,
     drawTemplateConfig: async () => ({ cancel: { templates: ["role_cancel.png"], region: { x: 465, y: 1542, width: 148, height: 72 }, threshold: 0.88 }, max: { templates: ["role_count_max.png"], region: { x: 636, y: 1258, width: 334, height: 140 }, threshold: 0.7 }, coin: { templates: ["role_done.png"], region: { x: 337, y: 1380, width: 386, height: 149 }, threshold: 0.88 } }),
     drawTemplateSave: async () => true,
-    drawTemplateVerify: async () => ({ matched: false, similarity: 0, threshold: 0.88, box: null, image: "" }),
+    drawTemplateVerify: async () => ({ matched: false, similarity: 0, threshold: 0.88, template: "preview-template.png", box: null, image: "" }),
     drawTemplateReset: async () => true,
     drawListSessions: async () => [],
     drawEvents: async () => [],

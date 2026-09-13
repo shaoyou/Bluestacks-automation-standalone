@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import electronUpdater from "electron-updater";
 import { ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, copyFileSync, renameSync, writeFileSync, unlinkSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, copyFileSync, renameSync, writeFileSync, unlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -827,13 +827,19 @@ function updateInternalDrawTemplates(calibration: DrawTemplateCalibration) {
     if (!value || typeof value !== "object") return;
     const action = value as Record<string, unknown>;
     const values = [action.template, ...(Array.isArray(action.templates) ? action.templates : [])].map((item) => path.basename(String(item ?? "")).toLowerCase());
-    const key = values.some((item) => item.startsWith("role_cancel")) ? "cancel" : values.some((item) => item.startsWith("role_count_max")) ? "max" : values.some((item) => item.startsWith("role_done")) ? "coin" : null;
+    const markedKey = action.draw_template_key === "cancel" || action.draw_template_key === "max" || action.draw_template_key === "coin" ? action.draw_template_key : null;
+    const key = markedKey ?? (values.some((item) => item.startsWith("role_cancel") || item.startsWith("cancel_template")) ? "cancel" : values.some((item) => item.startsWith("role_count_max") || item.startsWith("max_template")) ? "max" : values.some((item) => item.startsWith("role_done") || item.startsWith("coin_template")) ? "coin" : null);
     if (key) {
       const config = calibration[key];
       const templateNames = config.templates.map((item) => path.basename(String(item || ""))).filter((item) => item && item !== "." && item !== "..");
       if (templateNames.length === 0) throw new Error("模板文件名无效");
       action.templates = templateNames.map((item) => `../image_templates/${item}`);
       delete action.template;
+      action.draw_template_key = key;
+      action.disable_contextual_cancel_template = true;
+      action.disable_resolution_template_variants = true;
+      action.scales = [1.0];
+      action.template_is_device_pixels = true;
       action.region = { ...config.region };
       action.threshold = Math.max(0.1, Math.min(1, Number(config.threshold)));
       if (action.cancel_region) action.cancel_region = { ...config.region };
@@ -1281,29 +1287,55 @@ app.whenReady().then(() => {
     const mime = /\.jpe?g$/i.test(name) ? "image/jpeg" : /\.webp$/i.test(name) ? "image/webp" : "image/png";
     return `data:${mime};base64,${readFileSync(file).toString("base64")}`;
   });
-  async function verifyDrawTemplate(templates: string[], region: { x: number; y: number; width: number; height: number }, threshold: number, device: string): Promise<DrawTemplateVerification> {
+  async function verifyDrawTemplate(templates: string[], region: { x: number; y: number; width: number; height: number }, threshold: number, device: string, templateImages: Array<string | null> = []): Promise<DrawTemplateVerification> {
     const plan = internalPlanPath("choukaka.json");
     const script = path.join(runtimeRoot(), "adb_bot.py");
     const bundled = bundledWindowsScriptExecutable(script);
     const executable = bundled ?? resolveExecutable(getSettings().pythonPath, process.platform === "win32" ? "python.exe" : "python3");
     const args = bundled ? [] : [script];
-    args.push("--plan", plan, "--device", device, "--adb", getSettings().adbPath, "--hdc", getSettings().hdcPath, "--verify-template", ...templates.map((item) => `../image_templates/${path.basename(item)}`), "--verify-region", String(region.x), String(region.y), String(region.width), String(region.height), "--verify-threshold", String(threshold));
-    return new Promise((resolve, reject) => {
-      const child = spawn(executable, args, { cwd: runtimeRoot(), windowsHide: true, env: runtimeEnvironment() });
-      let stdout = "";
-      let stderr = "";
-      child.stdout.on("data", (data) => { stdout += data.toString("utf8"); });
-      child.stderr.on("data", (data) => { stderr += data.toString("utf8"); });
-      child.on("error", reject);
-      child.on("close", (code) => {
-        const line = stdout.split(/\r?\n/).find((item) => item.startsWith("__DRAW_TEMPLATE_VERIFY__"));
-        if (code !== 0 || !line) { reject(new Error(stderr.trim() || stdout.trim() || `模板验证退出码 ${code}`)); return; }
-        try { resolve(JSON.parse(line.slice("__DRAW_TEMPLATE_VERIFY__".length)) as DrawTemplateVerification); }
-        catch (error) { reject(new Error(`模板验证结果无效: ${String(error)}`)); }
+    const stagingDirectory = mkdtempSync(path.join(tmpdir(), "bsmanager-draw-verify-"));
+    try {
+      const verifyTemplates = templates.map((item, index) => {
+        const preview = templateImages[index];
+        if (typeof preview !== "string" || !preview) return `../image_templates/${path.basename(item)}`;
+        const match = /^data:image\/(?:png|jpe?g|webp);base64,([A-Za-z0-9+/=]+)$/i.exec(preview);
+        if (!match) throw new Error(`模板预览数据无效: ${path.basename(item) || `第${index + 1}个模板`}`);
+        const rawName = path.basename(String(item || "")).replace(/[\\/:*?"<>|]/g, "").trim();
+        const baseName = rawName && rawName !== "." && rawName !== ".." ? rawName : `template-${index + 1}.png`;
+        const output = path.join(stagingDirectory, existsSync(path.join(stagingDirectory, baseName)) ? `${index + 1}-${baseName}` : baseName);
+        writeFileSync(output, Buffer.from(match[1], "base64"));
+        return output;
       });
-    });
+      args.push("--plan", plan, "--device", device, "--adb", getSettings().adbPath, "--hdc", getSettings().hdcPath, "--verify-template", ...verifyTemplates, "--verify-region", String(region.x), String(region.y), String(region.width), String(region.height), "--verify-threshold", String(threshold));
+      return await new Promise((resolve, reject) => {
+        const child = spawn(executable, args, { cwd: runtimeRoot(), windowsHide: true, env: runtimeEnvironment() });
+        let stdout = "";
+        let stderr = "";
+        let settled = false;
+        const timeout = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          child.kill();
+          reject(new Error("模板识别超时（30秒）"));
+        }, 30_000);
+        child.stdout.on("data", (data) => { stdout += data.toString("utf8"); });
+        child.stderr.on("data", (data) => { stderr += data.toString("utf8"); });
+        child.on("error", (error) => { if (!settled) { settled = true; clearTimeout(timeout); reject(error); } });
+        child.on("close", (code) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          const line = stdout.split(/\r?\n/).find((item) => item.startsWith("__DRAW_TEMPLATE_VERIFY__"));
+          if (code !== 0 || !line) { reject(new Error(stderr.trim() || stdout.trim() || `模板验证退出码 ${code}`)); return; }
+          try { resolve(JSON.parse(line.slice("__DRAW_TEMPLATE_VERIFY__".length)) as DrawTemplateVerification); }
+          catch (error) { reject(new Error(`模板验证结果无效: ${String(error)}`)); }
+        });
+      });
+    } finally {
+      rmSync(stagingDirectory, { recursive: true, force: true });
+    }
   }
-  ipcMain.handle("draw:template-verify", (_, templates: string[], region: { x: number; y: number; width: number; height: number }, threshold: number, device: string) => verifyDrawTemplate(templates, region, threshold, device));
+  ipcMain.handle("draw:template-verify", (_, templates: string[], region: { x: number; y: number; width: number; height: number }, threshold: number, device: string, templateImages?: Array<string | null>) => verifyDrawTemplate(templates, region, threshold, device, templateImages));
   ipcMain.handle("draw:template-config", () => {
     const plan = JSON.parse(readFileSync(internalPlanPath("choukaka.json"), "utf8")) as Record<string, unknown>;
     const result: DrawTemplateCalibration = {
@@ -1316,7 +1348,8 @@ app.whenReady().then(() => {
       if (!value || typeof value !== "object") return;
       const action = value as Record<string, unknown>;
         const values = [action.template, ...(Array.isArray(action.templates) ? action.templates : [])].map((item) => path.basename(String(item ?? "")).toLowerCase());
-      const key = values.some((item) => item.startsWith("role_cancel")) ? "cancel" : values.some((item) => item.startsWith("role_count_max")) ? "max" : values.some((item) => item.startsWith("role_done")) ? "coin" : null;
+      const markedKey = action.draw_template_key === "cancel" || action.draw_template_key === "max" || action.draw_template_key === "coin" ? action.draw_template_key : null;
+      const key = markedKey ?? (values.some((item) => item.startsWith("role_cancel") || item.startsWith("cancel_template")) ? "cancel" : values.some((item) => item.startsWith("role_count_max") || item.startsWith("max_template")) ? "max" : values.some((item) => item.startsWith("role_done") || item.startsWith("coin_template")) ? "coin" : null);
       if (key) {
         const region = action.region ?? action.cancel_region;
         const raw = region && typeof region === "object" ? region as Record<string, unknown> : {};

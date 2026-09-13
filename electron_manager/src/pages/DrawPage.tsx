@@ -12,9 +12,10 @@ type Range = "day" | "7d" | "month" | "custom";
 type ImageRegion = { x: number; y: number; width: number; height: number };
 type DrawTemplateConfig = { templates: string[]; region: ImageRegion; threshold: number; previews?: string[] };
 type DrawTemplateKey = "cancel" | "max" | "coin";
-type DrawVerificationResult = { matched: boolean; similarity: number; threshold: number; template: string; box: { x: number; y: number; width: number; height: number } | null; image: string };
+type DrawVerificationResult = { matched: boolean; similarity: number; scale?: number; threshold: number; template: string; template_size?: { width: number; height: number }; region?: ImageRegion; box: { x: number; y: number; width: number; height: number } | null; image: string; error?: string };
 type DrawVerification = DrawVerificationResult & { results?: DrawVerificationResult[] };
-type DrawCalibrationData = { configs: Record<DrawTemplateKey, DrawTemplateConfig>; images: Record<DrawTemplateKey, string[]> };
+type DrawCalibrationData = { configs: Record<DrawTemplateKey, DrawTemplateConfig>; images: Record<DrawTemplateKey, Array<string | null>> };
+const drawTemplateBase = { width: 1080, height: 1920 };
 const defaultDrawTemplates: Record<DrawTemplateKey, DrawTemplateConfig> = {
   cancel: { templates: ["role_cancel.png"], region: { x: 465, y: 1542, width: 148, height: 72 }, threshold: 0.88 },
   max: { templates: ["role_count_max.png"], region: { x: 636, y: 1258, width: 334, height: 140 }, threshold: 0.7 },
@@ -38,9 +39,8 @@ function CropPanel({ image, size, region, onChange }: { image: string; size: Ima
   return <div className="draw-calibration-crop"><div className="capture-image-wrap"><img ref={imageRef} src={image} alt="设备截图" draggable={false} onMouseDown={(event) => { const start = point(event); if (start) { dragStart.current = start; onChange({ x: start.x, y: start.y, width: 0, height: 0 }); } }} onMouseMove={move} onMouseUp={(event) => { move(event); dragStart.current = null; }} /><i className="capture-selection" style={{ left: `${region.x / size.width * 100}%`, top: `${region.y / size.height * 100}%`, width: `${region.width / size.width * 100}%`, height: `${region.height / size.height * 100}%` }} /></div><code>{`x=${region.x}, y=${region.y}, ${region.width} x ${region.height}`}</code></div>;
 }
 
-function TemplateCalibrationModal({ image, size, configs, templateImages, captureLatest, verifyTemplate, onClose, onSave, onReset }: { image: string; size: { width: number; height: number }; configs: Record<DrawTemplateKey, DrawTemplateConfig>; templateImages: Record<DrawTemplateKey, string[]>; captureLatest: () => Promise<{ image: string; size: { width: number; height: number } }>; verifyTemplate: (key: DrawTemplateKey, config: DrawTemplateConfig, size: { width: number; height: number }) => Promise<DrawVerification>; onClose: () => void; onSave: (configs: Record<DrawTemplateKey, DrawTemplateConfig>, previews: Record<DrawTemplateKey, string[]>, size: { width: number; height: number }) => void; onReset: () => void }) {
-  const base = { width: 1080, height: 1920 };
-  const initialDrafts = Object.fromEntries((Object.keys(configs) as DrawTemplateKey[]).map((key) => [key, { ...configs[key], templates: [...configs[key].templates], region: scaleRegion(configs[key].region, { x: 0, y: 0, ...base }, { x: 0, y: 0, ...size }) }])) as Record<DrawTemplateKey, DrawTemplateConfig>;
+function TemplateCalibrationModal({ image, size, configs, templateImages, captureLatest, verifyTemplate, onVerifyError, onClose, onSave, onReset }: { image: string; size: { width: number; height: number }; configs: Record<DrawTemplateKey, DrawTemplateConfig>; templateImages: Record<DrawTemplateKey, Array<string | null>>; captureLatest: () => Promise<{ image: string; size: { width: number; height: number } }>; verifyTemplate: (key: DrawTemplateKey, config: DrawTemplateConfig, previews: Array<string | null>, size: { width: number; height: number }) => Promise<DrawVerification>; onVerifyError: (message: string) => void; onClose: () => void; onSave: (configs: Record<DrawTemplateKey, DrawTemplateConfig>, previews: Record<DrawTemplateKey, Array<string | null>>, size: { width: number; height: number }) => void; onReset: () => void }) {
+  const initialDrafts = Object.fromEntries((Object.keys(configs) as DrawTemplateKey[]).map((key) => [key, { ...configs[key], templates: [...configs[key].templates], region: { ...configs[key].region } }])) as Record<DrawTemplateKey, DrawTemplateConfig>;
   const [editing, setEditing] = useState<DrawTemplateKey | null>(null);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [drafts, setDrafts] = useState(initialDrafts);
@@ -48,7 +48,7 @@ function TemplateCalibrationModal({ image, size, configs, templateImages, captur
   const [workingRegion, setWorkingRegion] = useState<ImageRegion | null>(null);
   const [currentImage, setCurrentImage] = useState(image);
   const [currentSize, setCurrentSize] = useState(size);
-  const [preview, setPreview] = useState<Record<DrawTemplateKey, string[]>>(templateImages);
+  const [preview, setPreview] = useState<Record<DrawTemplateKey, Array<string | null>>>(templateImages);
   const [verification, setVerification] = useState<Record<DrawTemplateKey, DrawVerification | null>>({ cancel: null, max: null, coin: null });
   const [templateVerification, setTemplateVerification] = useState<Record<string, DrawVerificationResult | null>>({});
   const [loading, setLoading] = useState<DrawTemplateKey | null>(null);
@@ -63,7 +63,7 @@ function TemplateCalibrationModal({ image, size, configs, templateImages, captur
       setCurrentSize(latest.size);
       setEditing(key);
       setEditingIndex(index);
-      setWorkingRegion(scaleRegion(drafts[key].region, { x: 0, y: 0, ...currentSize }, { x: 0, y: 0, ...latest.size }));
+      setWorkingRegion(scaleRegion(drafts[key].region, { x: 0, y: 0, ...drawTemplateBase }, { x: 0, y: 0, ...latest.size }));
     } catch { /* The parent reports the capture error. */ }
     finally { setLoading(null); }
   };
@@ -75,16 +75,18 @@ function TemplateCalibrationModal({ image, size, configs, templateImages, captur
     const context = canvas.getContext("2d"); if (!context) return;
     context.drawImage(source, workingRegion.x, workingRegion.y, workingRegion.width, workingRegion.height, 0, 0, workingRegion.width, workingRegion.height);
     const previewImage = canvas.toDataURL("image/png");
+    const logicalRegion = scaleRegion(workingRegion, { x: 0, y: 0, ...currentSize }, { x: 0, y: 0, ...drawTemplateBase });
     const templateName = `${editing}_template_${(editingIndex ?? drafts[editing].templates.length) + 1}.png`;
-    setDrafts((current) => ({ ...current, [editing]: { ...current[editing], templates: editingIndex === null ? [...current[editing].templates, templateName] : [...current[editing].templates], region: workingRegion } }));
+    setDrafts((current) => ({ ...current, [editing]: { ...current[editing], templates: editingIndex === null ? [...current[editing].templates, templateName] : [...current[editing].templates], region: logicalRegion } }));
     setPreview((current) => ({ ...current, [editing]: editingIndex === null ? [...current[editing], previewImage] : current[editing].map((item, index) => index === editingIndex ? previewImage : item) }));
+    setVerification((current) => ({ ...current, [editing]: null }));
     setEditingIndex(null);
     setConfirmed((current) => ({ ...current, [editing]: true }));
     setEditing(null);
   };
   const verify = async (key: DrawTemplateKey) => {
     setVerifyLoading(key);
-    try { const result = await verifyTemplate(key, drafts[key], currentSize); setVerification((current) => ({ ...current, [key]: result })); setVerificationKey(key); }
+    try { const result = await verifyTemplate(key, drafts[key], preview[key], currentSize); setVerification((current) => ({ ...current, [key]: result })); setVerificationKey(key); }
     catch { /* The parent reports the verification error. */ }
     finally { setVerifyLoading(null); }
   };
@@ -92,9 +94,18 @@ function TemplateCalibrationModal({ image, size, configs, templateImages, captur
     const loadingKey = `${key}:${index}`;
     setSingleVerifyLoading(loadingKey);
     try {
-      const result = await verifyTemplate(key, { ...drafts[key], templates: [drafts[key].templates[index]] }, currentSize);
-      setTemplateVerification((current) => ({ ...current, [loadingKey]: result.results?.[0] ?? result }));
-    } catch { /* The parent reports the verification error. */ }
+      const result = await verifyTemplate(key, { ...drafts[key], templates: [drafts[key].templates[index]] }, [preview[key][index] ?? null], currentSize);
+      const singleResult = result.results?.[0] ?? result;
+      setTemplateVerification((current) => ({ ...current, [loadingKey]: singleResult }));
+      setVerification((current) => ({ ...current, [key]: singleResult }));
+      setVerificationKey(key);
+    } catch (error) {
+      const failed: DrawVerification = { matched: false, similarity: 0, threshold: drafts[key].threshold, template: drafts[key].templates[index], region: drafts[key].region, box: null, image: currentImage };
+      setTemplateVerification((current) => ({ ...current, [loadingKey]: failed }));
+      setVerification((current) => ({ ...current, [key]: failed }));
+      setVerificationKey(key);
+      onVerifyError(`模板识别失败: ${String(error)}`);
+    }
     finally { setSingleVerifyLoading(null); }
   };
   const removeTemplate = (key: DrawTemplateKey, index: number) => {
@@ -102,6 +113,7 @@ function TemplateCalibrationModal({ image, size, configs, templateImages, captur
     setDrafts((current) => ({ ...current, [key]: { ...current[key], templates: current[key].templates.filter((_, itemIndex) => itemIndex !== index) } }));
     setPreview((current) => ({ ...current, [key]: current[key].filter((_, itemIndex) => itemIndex !== index) }));
     setVerification((current) => ({ ...current, [key]: null }));
+    setTemplateVerification((current) => Object.fromEntries(Object.entries(current).filter(([name]) => !name.startsWith(`${key}:`))));
   };
   const deleteEditingTemplate = () => {
     if (!editing || editingIndex === null || drafts[editing].templates.length <= 1) return;
@@ -222,7 +234,7 @@ export function DrawPage(props: SharedProps) {
       setCalibrationImage(image);
       setCalibrationSize(size);
       const templateImages = await Promise.all((Object.keys(config) as DrawTemplateKey[]).map(async (key) => Promise.all(config[key].templates.map((template) => window.bsManager.templatesImage(template)))));
-      setCalibrationConfigs({ configs: config, images: { cancel: templateImages[0].filter((item): item is string => Boolean(item)), max: templateImages[1].filter((item): item is string => Boolean(item)), coin: templateImages[2].filter((item): item is string => Boolean(item)) } });
+      setCalibrationConfigs({ configs: config, images: { cancel: templateImages[0], max: templateImages[1], coin: templateImages[2] } });
     } catch (error) { props.setNotice(`打开模板校准失败: ${String(error)}`); }
     finally { setCalibrationLoading(false); }
   };
@@ -232,20 +244,21 @@ export function DrawPage(props: SharedProps) {
     const latestSize = await new Promise<{ width: number; height: number }>((resolve, reject) => { const source = new Image(); source.onload = () => resolve({ width: source.naturalWidth, height: source.naturalHeight }); source.onerror = () => reject(new Error("截图加载失败")); source.src = latestImage; });
     return { image: latestImage, size: latestSize };
   };
-  const verifyTemplateCalibration = async (_key: DrawTemplateKey, config: DrawTemplateConfig, size: { width: number; height: number }) => {
+  const verifyTemplateCalibration = async (_key: DrawTemplateKey, config: DrawTemplateConfig, templateImages: Array<string | null>, _size: { width: number; height: number }) => {
     try {
       return await window.bsManager.drawTemplateVerify(
         config.templates,
-        scaleRegion(config.region, { x: 0, y: 0, width: size.width, height: size.height }, { x: 0, y: 0, width: 1080, height: 1920 }),
+        config.region,
         config.threshold,
         device,
+        templateImages,
       );
     } catch (error) {
       props.setNotice(`模拟识别失败: ${String(error)}`);
       throw error;
     }
   };
-  const saveTemplateCalibration = async (drafts: Record<DrawTemplateKey, DrawTemplateConfig>, previews: Record<DrawTemplateKey, string[]>, size: { width: number; height: number }) => {
+  const saveTemplateCalibration = async (drafts: Record<DrawTemplateKey, DrawTemplateConfig>, previews: Record<DrawTemplateKey, Array<string | null>>, size: { width: number; height: number }) => {
     if (!calibrationImage) return;
     try {
       const source = new Image(); source.src = calibrationImage;
@@ -254,27 +267,27 @@ export function DrawPage(props: SharedProps) {
       for (const key of ["cancel", "max", "coin"] as const) {
         const region = drafts[key].region;
         const templates: string[] = [];
-        for (const [index, preview] of previews[key].entries()) {
-          const original = drafts[key].templates[index] ?? `${key}_template_${index + 1}.png`;
+        const captureRegion = scaleRegion(region, { x: 0, y: 0, ...drawTemplateBase }, { x: 0, y: 0, ...size });
+        for (const [index, original] of drafts[key].templates.entries()) {
+          const preview = previews[key][index] ?? null;
           const fallback = index === 0 ? (key === "coin" ? "金币" : defaultDrawTemplates[key].templates[0]) : `${key}_template_${index + 1}`;
           const name = `${original.replace(/\.png$/i, "").replace(/[\\/:*?"<>|]/g, "") || fallback}.png`;
-          let dataUrl: string | undefined = preview;
+          let dataUrl: string | null = preview;
           if (!dataUrl) {
-            if (index > 0) continue;
-            const canvas = document.createElement("canvas"); canvas.width = region.width; canvas.height = region.height;
+            const canvas = document.createElement("canvas"); canvas.width = captureRegion.width; canvas.height = captureRegion.height;
             const context = canvas.getContext("2d"); if (!context) throw new Error("无法创建图片画布");
-            context.drawImage(source, region.x, region.y, region.width, region.height, 0, 0, region.width, region.height);
+            context.drawImage(source, captureRegion.x, captureRegion.y, captureRegion.width, captureRegion.height, 0, 0, captureRegion.width, captureRegion.height);
             dataUrl = canvas.toDataURL("image/png");
           }
           templates.push((await window.bsManager.templatesSaveCapture(name, dataUrl)).split("/").pop() ?? name);
         }
         if (templates.length === 0) {
-          const canvas = document.createElement("canvas"); canvas.width = region.width; canvas.height = region.height;
+          const canvas = document.createElement("canvas"); canvas.width = captureRegion.width; canvas.height = captureRegion.height;
           const context = canvas.getContext("2d"); if (!context) throw new Error("无法创建图片画布");
-          context.drawImage(source, region.x, region.y, region.width, region.height, 0, 0, region.width, region.height);
+          context.drawImage(source, captureRegion.x, captureRegion.y, captureRegion.width, captureRegion.height, 0, 0, captureRegion.width, captureRegion.height);
           templates.push((await window.bsManager.templatesSaveCapture(defaultDrawTemplates[key].templates[0], canvas.toDataURL("image/png"))).split("/").pop() ?? defaultDrawTemplates[key].templates[0]);
         }
-        saved[key] = { templates, region: scaleRegion(region, { x: 0, y: 0, width: size.width, height: size.height }, { x: 0, y: 0, width: 1080, height: 1920 }), threshold: drafts[key].threshold };
+        saved[key] = { templates, region: { ...region }, threshold: drafts[key].threshold };
       }
       await window.bsManager.drawTemplateSave(saved);
       setCalibrationImage(null); setCalibrationConfigs(null);
@@ -309,7 +322,7 @@ export function DrawPage(props: SharedProps) {
     {showUsers && <Modal title="抽卡用户管理" onClose={() => setShowUsers(false)}><div className="chest-label-list">{users.map((user) => <div className={`chest-user-row ${user.id === userId ? "selected" : ""}`} key={user.id}><button className="button quiet" onClick={() => selectUser(user.id)}>使用</button><input value={drafts[user.id] ?? user.name} onChange={(event) => setDrafts({ ...drafts, [user.id]: event.target.value })} /><button className="button quiet" onClick={() => void window.bsManager.drawRenameUser(user.id, drafts[user.id] ?? user.name).then(loadUsers)}>重命名</button></div>)}<div className="chest-user-create"><input placeholder="新用户名称" value={newUser} onChange={(event) => setNewUser(event.target.value)} /><button className="button primary" onClick={createUser}>新增</button></div></div></Modal>}
     {showReport && <Modal title="导出抽卡统计报表" onClose={() => setShowReport(false)}><div className="chest-export-options"><label>用户<select value={userId} onChange={(event) => setUserId(event.target.value)}>{users.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</select></label><label>统计范围<select value={reportRange} onChange={(event) => setReportRange(event.target.value as Range)}><option value="day">当天</option><option value="7d">近 7 天</option><option value="month">近 30 天</option><option value="custom">自定义</option></select></label>{reportRange === "custom" ? <label>开始日期<input type="date" value={reportStartDay} onChange={(event) => setReportStartDay(event.target.value)} /></label> : null}<label>结束日期<input type="date" value={reportEndDay} onChange={(event) => setReportEndDay(event.target.value)} /></label><button className="button primary" onClick={exportReport}>导出 CSV</button></div></Modal>}
     {calibrationLoading && <div className="draw-calibration-loading" role="status"><RefreshCw size={22} className="spin" /><span>正在获取设备屏幕和模板配置...</span></div>}
-    {calibrationImage && calibrationConfigs && <TemplateCalibrationModal image={calibrationImage} size={calibrationSize} configs={calibrationConfigs.configs} templateImages={calibrationConfigs.images} captureLatest={captureLatestCalibration} verifyTemplate={verifyTemplateCalibration} onClose={() => { setCalibrationImage(null); setCalibrationConfigs(null); }} onReset={() => void resetTemplateCalibration()} onSave={(drafts, previews, size) => void saveTemplateCalibration(drafts, previews, size)} />}
+    {calibrationImage && calibrationConfigs && <TemplateCalibrationModal image={calibrationImage} size={calibrationSize} configs={calibrationConfigs.configs} templateImages={calibrationConfigs.images} captureLatest={captureLatestCalibration} verifyTemplate={verifyTemplateCalibration} onVerifyError={props.setNotice} onClose={() => { setCalibrationImage(null); setCalibrationConfigs(null); }} onReset={() => void resetTemplateCalibration()} onSave={(drafts, previews, size) => void saveTemplateCalibration(drafts, previews, size)} />}
   </div>;
 }
 
