@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import electronUpdater from "electron-updater";
-import { ChildProcess, spawn } from "node:child_process";
+import { ChildProcess, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, copyFileSync, renameSync, writeFileSync, unlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -883,10 +883,28 @@ function trackTask(taskId: string, task: ChildProcess, ownerWebContentsId?: numb
   });
 }
 
+function killTaskProcess(task: ChildProcess) {
+  if (process.platform !== "win32") {
+    task.kill("SIGINT");
+    return;
+  }
+  // Bundled Windows scripts are PyInstaller onefile executables: the spawned
+  // process is a bootloader parent and the actual bot runs in its child process.
+  // kill() would terminate only the parent and orphan the running worker, so
+  // terminate the whole tree; keep kill() as a fallback if taskkill is unavailable.
+  if (typeof task.pid === "number") {
+    try {
+      spawnSync("taskkill", ["/pid", String(task.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+    } catch {
+      // Fall through to the direct kill below.
+    }
+  }
+  task.kill();
+}
+
 function stopAllTasks() {
   for (const task of tasks.values()) {
-    if (process.platform === "win32") task.kill();
-    else task.kill("SIGINT");
+    killTaskProcess(task);
   }
   tasks.clear();
   taskOwners.clear();
@@ -1168,7 +1186,7 @@ function createRunWindow(initialPlan?: string, mode: "runner" | "chest" = "runne
     }
     for (const taskId of ownedTaskIds) {
       const task = tasks.get(taskId);
-      if (task) process.platform === "win32" ? task.kill() : task.kill("SIGINT");
+      if (task) killTaskProcess(task);
     }
   });
   window.on("closed", () => {
@@ -1315,7 +1333,7 @@ app.whenReady().then(() => {
         const timeout = setTimeout(() => {
           if (settled) return;
           settled = true;
-          child.kill();
+          killTaskProcess(child);
           reject(new Error("模板识别超时（30秒）"));
         }, 30_000);
         child.stdout.on("data", (data) => { stdout += data.toString("utf8"); });
@@ -1618,8 +1636,7 @@ app.whenReady().then(() => {
   ipcMain.handle("task:stop", (_, id: string) => {
     const task = tasks.get(id);
     if (!task) return;
-    if (process.platform === "win32") task.kill();
-    else task.kill("SIGINT");
+    killTaskProcess(task);
   });
 });
 
