@@ -53,6 +53,10 @@ class BotError(RuntimeError):
     pass
 
 
+class DeviceError(BotError):
+    """Device/ADB/HDC-level failure; the bot may recover once the link is back."""
+
+
 @dataclass
 class RunContext:
     adb_path: str
@@ -75,6 +79,7 @@ class RunContext:
     runtime_values: Dict[str, Any] = field(default_factory=dict)
     motionevent_supported: Optional[bool] = None
     stats_lock: threading.RLock = field(default_factory=threading.RLock)
+    image_match_debug: bool = False
 
 
 @dataclass(frozen=True)
@@ -82,11 +87,14 @@ class PreparedSearchImage:
     crop_box: Tuple[int, int, int, int]
     rgb: np.ndarray
     gray: np.ndarray
-    fft_cache: Dict[Tuple[int, int], Tuple[np.ndarray, np.ndarray]] = field(
-        default_factory=dict,
-        compare=False,
-        repr=False,
-    )
+    # Lazily filled correlation buffers shared by every template variant:
+    # one search-side FFT pair plus float64 summed-area tables, all computed
+    # at most once per screenshot regardless of how many variants run.
+    gray_fft: Optional[np.ndarray] = None
+    gray_fft_shape: Optional[Tuple[int, int]] = None
+    gray_squared_fft: Optional[np.ndarray] = None
+    integral_gray: Optional[np.ndarray] = None
+    integral_gray_squared: Optional[np.ndarray] = None
 
 
 @dataclass(frozen=True)
@@ -99,11 +107,10 @@ class PreparedTemplateVariant:
     centered: np.ndarray
     weights_sum: float
     norm: float
-    fft_cache: Dict[Tuple[int, int], Tuple[np.ndarray, np.ndarray]] = field(
-        default_factory=dict,
-        compare=False,
-        repr=False,
-    )
+    is_opaque: bool
+    fft_shape: Optional[Tuple[int, int]] = None
+    weights_fft: Optional[np.ndarray] = None
+    centered_fft: Optional[np.ndarray] = None
 
 
 _TEMPLATE_IMAGE_CACHE: Dict[Tuple[str, int, int], Image.Image] = {}
@@ -112,8 +119,8 @@ _TEMPLATE_VARIANT_CACHE: Dict[
     List[PreparedTemplateVariant],
 ] = {}
 _TEMPLATE_RESOLUTION_VARIANT_CACHE: Dict[Tuple[str, int, int], List[Path]] = {}
-FFT_CACHE_MAX_ENTRY_BYTES = 2 * 1024 * 1024
-FFT_CACHE_MAX_SEARCH_ENTRIES = 4
+FFT_CACHE_TOTAL_BUDGET_BYTES = 512 * 1024 * 1024
+_FFT_CACHE_TOTAL_BYTES = 0
 SCREENSHOT_SESSION_KEY = "_save_screenshot_session_id"
 SCREENSHOT_COUNTERS_KEY = "_save_screenshot_pair_counters"
 SCREENSHOT_ACTIVE_KEY = "_save_screenshot_active_pairs"
@@ -621,7 +628,7 @@ def hdc_touch_move(
     result = run_cmd(build_backend_cmd(ctx, ["shell"] + args), check=False)
     if result.returncode != 0:
         text = (result.stderr or result.stdout or "").strip()
-        raise BotError(f"HDC touch move failed: hdc shell {pretty}\n{text}")
+        raise DeviceError(f"HDC touch move failed: hdc shell {pretty}\n{text}")
 
 
 def adb_output_is_transient(text: str) -> bool:
@@ -672,7 +679,7 @@ def adb_shell(ctx: RunContext, shell_args: List[str]) -> None:
         result = run_cmd(build_backend_cmd(ctx, ["shell"] + hdc_args), check=False)
         if result.returncode != 0:
             text = (result.stderr or result.stdout or "").strip()
-            raise BotError(f"HDC shell failed: hdc shell {hdc_pretty}\n{text}")
+            raise DeviceError(f"HDC shell failed: hdc shell {hdc_pretty}\n{text}")
         return
     if ctx.dry_run:
         log(f"[DRY-RUN] {ctx.device_backend} shell {pretty}")
@@ -708,13 +715,13 @@ def adb_shell(ctx: RunContext, shell_args: List[str]) -> None:
                             ctx.device = candidate
                             return
                     retry_details = retry_stderr or retry_stdout or str(retry_exc)
-                    raise BotError(
+                    raise DeviceError(
                         f"ADB shell failed after reconnect and fallback: adb shell {pretty}\n{retry_details}"
                     ) from retry_exc
                 retry_details = retry_stderr or retry_stdout or str(retry_exc)
-                raise BotError(f"ADB shell failed after reconnect: adb shell {pretty}\n{retry_details}") from retry_exc
+                raise DeviceError(f"ADB shell failed after reconnect: adb shell {pretty}\n{retry_details}") from retry_exc
         details = stderr or stdout or str(exc)
-        raise BotError(f"ADB shell failed: adb shell {pretty}\n{details}") from exc
+        raise DeviceError(f"ADB shell failed: adb shell {pretty}\n{details}") from exc
 
 
 def adb_shell_result(ctx: RunContext, shell_args: List[str]) -> subprocess.CompletedProcess[str]:
@@ -980,20 +987,95 @@ def do_click_match(ctx: RunContext, action: Dict[str, Any]) -> None:
     log(with_action_remark(f"Click match '{template_name}' at ({x}, {y})", action))
 
 
-def capture_device_screenshot(ctx: RunContext) -> Image.Image:
-    result = adb_exec_out_result(ctx, ["screencap", "-p"])
-    if result.returncode != 0:
-        text = (result.stderr or b"").decode("utf-8", errors="ignore").strip()
-        raise BotError(f"{ctx.device_backend.upper()} screenshot failed:\n{text or 'unknown error'}")
-    image_bytes = result.stdout
-    if not image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
-        raise BotError(f"{ctx.device_backend.upper()} screenshot did not return a PNG image.")
+RAW_SCREENCAP_ENV = "BS_BOT_RAW_SCREENCAP"
+# android.graphics.PixelFormat values emitted by `screencap` raw output.
+_RAW_FORMAT_RGBA_8888 = 1
+_RAW_FORMAT_RGBX_8888 = 2
+_RAW_FORMAT_BGRA_8888 = 5
+
+
+def raw_screencap_enabled() -> bool:
+    return os.environ.get(RAW_SCREENCAP_ENV, "1").strip().lower() not in {"0", "false", "off", "no"}
+
+
+def parse_raw_screencap(data: bytes) -> Optional[Image.Image]:
+    """Decode `adb exec-out screencap` raw RGBA frames, or None if malformed."""
+    if len(data) < 16:
+        return None
+    width = int.from_bytes(data[0:4], "little")
+    height = int.from_bytes(data[4:8], "little")
+    pixel_format = int.from_bytes(data[8:12], "little")
+    if width <= 0 or height <= 0 or width > 8192 or height > 16384:
+        return None
+    pixel_count = width * height
+    raw_size = pixel_count * 4
+    # Newer Android builds append a colorspace word to the 12-byte header.
+    if len(data) == raw_size + 16:
+        header_size = 16
+    elif len(data) == raw_size + 12:
+        header_size = 12
+    else:
+        return None
+    if pixel_format not in (_RAW_FORMAT_RGBA_8888, _RAW_FORMAT_RGBX_8888, _RAW_FORMAT_BGRA_8888):
+        return None
+    if pixel_format != _RAW_FORMAT_RGBX_8888:
+        # screencap alpha is always opaque; a violation means the payload is
+        # not the raw frame we expect (e.g. interleaved shell output).
+        alpha = np.frombuffer(data, dtype=np.uint8, count=pixel_count, offset=header_size + 3)[::4]
+        if not bool((alpha == 255).all()):
+            return None
+    # PIL's raw decoder does the 4->3 byte channel pick in one C pass.
+    # frombytes (not frombuffer) so the result is a real RGB-mode image.
+    rawmode = {_RAW_FORMAT_RGBA_8888: "RGBX", _RAW_FORMAT_RGBX_8888: "RGBX", _RAW_FORMAT_BGRA_8888: "BGRX"}[pixel_format]
     try:
-        image = Image.open(io.BytesIO(image_bytes))
-        image.load()
-        return image.convert("RGB")
-    except Exception as exc:
-        raise BotError(f"Failed to decode screencap PNG: {exc}") from exc
+        return Image.frombytes("RGB", (width, height), data[header_size:], "raw", rawmode, 0, 4)
+    except Exception:
+        return None
+
+
+SCREENSHOT_RETRY_ATTEMPTS = 3
+
+
+def capture_device_screenshot(ctx: RunContext) -> Image.Image:
+    """Capture one screenshot, retrying transient ADB/HDC failures.
+
+    BlueStacks periodically fails `screencap` with an empty error for a few
+    seconds while the emulator is busy; a single failure used to kill the plan.
+    """
+    last_error: Optional[BotError] = None
+    for attempt in range(1, SCREENSHOT_RETRY_ATTEMPTS + 1):
+        if ctx.device_backend == "adb" and not ctx.dry_run and raw_screencap_enabled():
+            result = adb_exec_out_result(ctx, ["screencap"])
+            if result.returncode == 0:
+                image = parse_raw_screencap(result.stdout)
+                if image is not None:
+                    return image
+            # Raw framing differs across Android versions; fall back to PNG.
+        result = adb_exec_out_result(ctx, ["screencap", "-p"])
+        if result.returncode != 0:
+            text = (result.stderr or b"").decode("utf-8", errors="ignore").strip()
+            last_error = DeviceError(f"{ctx.device_backend.upper()} screenshot failed:\n{text or 'unknown error'}")
+        elif not result.stdout.startswith(b"\x89PNG\r\n\x1a\n"):
+            last_error = DeviceError(f"{ctx.device_backend.upper()} screenshot did not return a PNG image.")
+        else:
+            try:
+                image = Image.open(io.BytesIO(result.stdout))
+                image.load()
+                return image.convert("RGB")
+            except Exception as exc:
+                last_error = DeviceError(f"Failed to decode screencap PNG: {exc}")
+        if attempt >= SCREENSHOT_RETRY_ATTEMPTS or ctx.dry_run:
+            break
+        # Screenshots fail in bursts when the device/ADB link hiccups; wait a
+        # moment and reconnect before spending the next attempt.
+        if attempt == 1 and ctx.device_backend == "adb" and ctx.device:
+            run_cmd([ctx.adb_path, "connect", ctx.device], check=False)
+        elif attempt == 2 and ctx.device_backend == "adb":
+            log("Screenshot still failing; restarting ADB server before last attempt ...")
+            recover_adb_server(ctx.adb_path, ctx.device)
+        time.sleep(0.5 * attempt)
+    assert last_error is not None
+    raise last_error
 
 
 def screenshot_output_dir(ctx: RunContext, action: Dict[str, Any]) -> Path:
@@ -1983,8 +2065,75 @@ def fft_cache_entry_bytes(fft_shape: Tuple[int, int], array_count: int = 2) -> i
     return fft_shape[0] * complex_columns * np.dtype(np.complex64).itemsize * array_count
 
 
-def can_cache_fft_entry(fft_shape: Tuple[int, int]) -> bool:
-    return fft_cache_entry_bytes(fft_shape) <= FFT_CACHE_MAX_ENTRY_BYTES
+def shared_search_fft_shape(search: PreparedSearchImage, template_variants: List[PreparedTemplateVariant]) -> Tuple[int, int]:
+    """Padded FFT shape covering every variant so the search-side FFT pair is
+    computed once per screenshot instead of once per template size."""
+    image_h, image_w = search.gray.shape
+    max_h = max(variant.height for variant in template_variants)
+    max_w = max(variant.width for variant in template_variants)
+    return (image_h + max_h - 1, image_w + max_w - 1)
+
+
+def ensure_search_gray_fft(search: PreparedSearchImage, fft_shape: Tuple[int, int]) -> np.ndarray:
+    if search.gray_fft is not None and search.gray_fft_shape == fft_shape:
+        return search.gray_fft
+    fft = np.fft.rfftn(search.gray, s=fft_shape, axes=(0, 1))
+    object.__setattr__(search, "gray_fft", fft)
+    object.__setattr__(search, "gray_fft_shape", fft_shape)
+    return fft
+
+
+def ensure_search_squared_fft(search: PreparedSearchImage, fft_shape: Tuple[int, int]) -> np.ndarray:
+    if search.gray_squared_fft is not None and search.gray_fft_shape == fft_shape:
+        return search.gray_squared_fft
+    fft = np.fft.rfftn(search.gray * search.gray, s=fft_shape, axes=(0, 1))
+    object.__setattr__(search, "gray_squared_fft", fft)
+    return fft
+
+
+def ensure_search_integrals(search: PreparedSearchImage) -> Tuple[np.ndarray, np.ndarray]:
+    """Summed-area tables of gray and gray^2 for O(1) box sums in float64."""
+    if search.integral_gray is not None:
+        return search.integral_gray, search.integral_gray_squared
+    gray64 = search.gray.astype(np.float64)
+    integral = np.zeros((gray64.shape[0] + 1, gray64.shape[1] + 1), dtype=np.float64)
+    integral[1:, 1:] = gray64.cumsum(axis=0).cumsum(axis=1)
+    integral_sq = np.zeros_like(integral)
+    integral_sq[1:, 1:] = (gray64 * gray64).cumsum(axis=0).cumsum(axis=1)
+    object.__setattr__(search, "integral_gray", integral)
+    object.__setattr__(search, "integral_gray_squared", integral_sq)
+    return integral, integral_sq
+
+
+def box_sums_valid(integral: np.ndarray, kernel_h: int, kernel_w: int) -> np.ndarray:
+    """Box-filter sums over every valid kernel-sized window."""
+    return (
+        integral[kernel_h:, kernel_w:]
+        - integral[:-kernel_h, kernel_w:]
+        - integral[kernel_h:, :-kernel_w]
+        + integral[:-kernel_h, :-kernel_w]
+    )
+
+
+def ensure_template_ffts(variant: PreparedTemplateVariant, fft_shape: Tuple[int, int]) -> Tuple[np.ndarray, np.ndarray]:
+    """Per-variant FFTs at the shared padded shape, cached across attempts."""
+    global _FFT_CACHE_TOTAL_BYTES
+    if variant.fft_shape == fft_shape and variant.weights_fft is not None:
+        return variant.weights_fft, variant.centered_fft
+    weights_fft = np.fft.rfftn(np.flipud(np.fliplr(variant.weights)), s=fft_shape, axes=(0, 1)).astype(np.complex64)
+    centered_fft = np.fft.rfftn(np.flipud(np.fliplr(variant.centered)), s=fft_shape, axes=(0, 1)).astype(np.complex64)
+    object.__setattr__(variant, "fft_shape", fft_shape)
+    object.__setattr__(variant, "weights_fft", weights_fft)
+    object.__setattr__(variant, "centered_fft", centered_fft)
+    _FFT_CACHE_TOTAL_BYTES += fft_cache_entry_bytes(fft_shape)
+    if _FFT_CACHE_TOTAL_BYTES > FFT_CACHE_TOTAL_BUDGET_BYTES:
+        for prepared in _TEMPLATE_VARIANT_CACHE.values():
+            for cached_variant in prepared:
+                object.__setattr__(cached_variant, "fft_shape", None)
+                object.__setattr__(cached_variant, "weights_fft", None)
+                object.__setattr__(cached_variant, "centered_fft", None)
+        _FFT_CACHE_TOTAL_BYTES = fft_cache_entry_bytes(fft_shape)
+    return weights_fft, centered_fft
 
 
 def prepare_template_arrays(image: Image.Image) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -2040,6 +2189,7 @@ def prepare_template_variant(variant: Image.Image, scale: float) -> PreparedTemp
         centered=template_centered,
         weights_sum=weights_sum,
         norm=template_norm,
+        is_opaque=bool(np.all(weights == 1.0)),
     )
 
 
@@ -2126,26 +2276,70 @@ def weighted_color_similarity(
     if patch.shape[:2] != template_rgb.shape[:2]:
         return 0.0
     diff = patch - template_rgb
-    mse = float((((diff * diff).mean(axis=2)) * weights).sum() / max(float(weights.sum()), 1.0))
+    squared = np.einsum("ijc,ijc->ij", diff, diff)
+    mse = float((squared * weights).sum() / max(float(weights.sum()), 1.0) / 3.0)
     return max(0.0, 1.0 - (mse ** 0.5) / 255.0)
 
 
 def extract_peak_candidates(score_map: np.ndarray, count: int, suppress_x: int, suppress_y: int) -> List[Tuple[int, int, float]]:
+    """Greedy non-max-suppressed peaks, selection-identical to the classic
+    repeated-argmax scan: candidates come from one argpartition pool extended
+    with every position tied at the pool boundary (so first-occurrence tie
+    ordering is preserved), and degenerate maps with huge tie plateaus fall
+    back to the exhaustive masked scan."""
     if score_map.size == 0 or count <= 0:
         return []
-    work = score_map.copy()
+    map_h, map_w = score_map.shape
+    flat = score_map.reshape(-1)
+    total = flat.size
+    pool_size = min(total, max(count * 8, count + 64))
+    if pool_size < total:
+        pool = np.argpartition(flat, total - pool_size)[total - pool_size:]
+        boundary = float(flat[pool].min())
+        tied = np.flatnonzero(flat == boundary)
+        if tied.size > pool_size + 4096:
+            pool = None
+        else:
+            pool = np.union1d(pool, tied)
+    else:
+        pool = np.arange(total)
+
     candidates: List[Tuple[int, int, float]] = []
-    for _ in range(count):
+    picked: List[Tuple[int, int]] = []
+    if pool is not None:
+        order = pool[np.argsort(-flat[pool], kind="stable")]
+        for flat_index in order:
+            best_score = float(flat[flat_index])
+            if not math.isfinite(best_score):
+                break
+            y, x = divmod(int(flat_index), map_w)
+            if any(abs(py - y) <= suppress_y and abs(px - x) <= suppress_x for px, py in picked):
+                continue
+            candidates.append((x, y, best_score))
+            picked.append((x, y))
+            if len(candidates) >= count:
+                return candidates
+
+    # Tie plateau too large or pool exhausted before `count` peaks:
+    # finish with the exhaustive masked scan.
+    work = score_map.copy()
+    for x, y in picked:
+        y0 = max(0, y - suppress_y)
+        y1 = min(map_h, y + suppress_y + 1)
+        x0 = max(0, x - suppress_x)
+        x1 = min(map_w, x + suppress_x + 1)
+        work[y0:y1, x0:x1] = -np.inf
+    while len(candidates) < count:
         flat_index = int(np.argmax(work))
         best_score = float(work.flat[flat_index])
         if not np.isfinite(best_score):
             break
-        y, x = np.unravel_index(flat_index, work.shape)
+        y, x = divmod(flat_index, map_w)
         candidates.append((x, y, best_score))
         y0 = max(0, y - suppress_y)
-        y1 = min(work.shape[0], y + suppress_y + 1)
+        y1 = min(map_h, y + suppress_y + 1)
         x0 = max(0, x - suppress_x)
-        x1 = min(work.shape[1], x + suppress_x + 1)
+        x1 = min(map_w, x + suppress_x + 1)
         work[y0:y1, x0:x1] = -np.inf
     return candidates
 
@@ -2196,10 +2390,13 @@ def find_image_match(
     threshold: float,
     index: int,
     action: Dict[str, Any],
+    fft_shape: Optional[Tuple[int, int]] = None,
 ) -> Tuple[Optional[Dict[str, float]], Optional[Dict[str, float]]]:
     crop_box = search.crop_box
     search_rgb = search.rgb
     search_gray = search.gray
+    if not template_variants:
+        return None, None
     evaluated: List[Dict[str, float]] = []
     wanted = max(index + 1, int(action.get("max_candidates", 8)))
     # Allow plans to widen the candidate pool for small templates that have
@@ -2210,51 +2407,48 @@ def find_image_match(
     except (TypeError, ValueError):
         raise BotError("candidate_peaks must be an integer when provided")
     per_scale_peaks = max(1, min(128, per_scale_peaks))
+    if fft_shape is None:
+        fft_shape = shared_search_fft_shape(search, template_variants)
+    gray_fft = ensure_search_gray_fft(search, fft_shape)
     for variant in template_variants:
-        image_h, image_w = search_gray.shape
         kernel_shape = (variant.height, variant.width)
-        fft_shape = (image_h + variant.height - 1, image_w + variant.width - 1)
-        search_ffts = search.fft_cache.get(fft_shape)
-        if search_ffts is None:
-            search_ffts = (
-                np.fft.rfftn(search_gray, s=fft_shape, axes=(0, 1)),
-                np.fft.rfftn(search_gray * search_gray, s=fft_shape, axes=(0, 1)),
+        if variant.is_opaque:
+            # Fully opaque templates make the weighted sums plain box filters,
+            # so two of the three full-size FFT correlations per variant
+            # collapse into summed-area-table lookups. The sums are still
+            # reduced to float32 afterwards so the variance/score arithmetic
+            # keeps the exact same rounding behavior as the FFT path.
+            integral_gray, integral_gray_squared = ensure_search_integrals(search)
+            sum_i = box_sums_valid(integral_gray, variant.height, variant.width).astype(np.float32)
+            sum_i2 = box_sums_valid(integral_gray_squared, variant.height, variant.width).astype(np.float32)
+            _, centered_fft = ensure_template_ffts(variant, fft_shape)
+            numerator = fft_correlate2d_valid_from_product(
+                gray_fft * centered_fft,
+                search_gray.shape,
+                kernel_shape,
+                fft_shape,
             )
-            if (
-                can_cache_fft_entry(fft_shape)
-                and len(search.fft_cache) < FFT_CACHE_MAX_SEARCH_ENTRIES
-            ):
-                search.fft_cache[fft_shape] = search_ffts
-        image_fft, image_squared_fft = search_ffts
-
-        template_ffts = variant.fft_cache.get(fft_shape)
-        if template_ffts is None:
-            template_ffts = (
-                np.fft.rfftn(np.flipud(np.fliplr(variant.weights)), s=fft_shape, axes=(0, 1)),
-                np.fft.rfftn(np.flipud(np.fliplr(variant.centered)), s=fft_shape, axes=(0, 1)),
+        else:
+            weights_fft, centered_fft = ensure_template_ffts(variant, fft_shape)
+            squared_fft = ensure_search_squared_fft(search, fft_shape)
+            sum_i = fft_correlate2d_valid_from_product(
+                gray_fft * weights_fft,
+                search_gray.shape,
+                kernel_shape,
+                fft_shape,
             )
-            if can_cache_fft_entry(fft_shape):
-                variant.fft_cache[fft_shape] = template_ffts
-        weights_fft, centered_fft = template_ffts
-
-        sum_i = fft_correlate2d_valid_from_product(
-            image_fft * weights_fft,
-            search_gray.shape,
-            kernel_shape,
-            fft_shape,
-        )
-        sum_i2 = fft_correlate2d_valid_from_product(
-            image_squared_fft * weights_fft,
-            search_gray.shape,
-            kernel_shape,
-            fft_shape,
-        )
-        numerator = fft_correlate2d_valid_from_product(
-            image_fft * centered_fft,
-            search_gray.shape,
-            kernel_shape,
-            fft_shape,
-        )
+            sum_i2 = fft_correlate2d_valid_from_product(
+                squared_fft * weights_fft,
+                search_gray.shape,
+                kernel_shape,
+                fft_shape,
+            )
+            numerator = fft_correlate2d_valid_from_product(
+                gray_fft * centered_fft,
+                search_gray.shape,
+                kernel_shape,
+                fft_shape,
+            )
 
         variance = np.maximum(sum_i2 - (sum_i * sum_i) / variant.weights_sum, 1e-6)
         scores = numerator / (np.sqrt(variance) * variant.norm)
@@ -2484,14 +2678,26 @@ def verify_template_once(
     minimum_size = required_template_search_size(ctx, valid_template_paths, action) if valid_template_paths else (1, 1)
     search = prepare_search_image(ctx, screenshot, action, minimum_size=minimum_size)
     matches: List[Tuple[Path, Optional[Dict[str, float]], Optional[Dict[str, float]], Optional[str]]] = []
+    prepared_by_template: Dict[Path, List[PreparedTemplateVariant]] = {}
+    for template_path in valid_template_paths:
+        try:
+            prepared_by_template[template_path] = get_prepared_template_variants(
+                ctx, template_path, action, (search.gray.shape[1], search.gray.shape[0])
+            )
+        except BotError as exc:
+            template_errors[template_path] = str(exc)
+    shared_fft_shape = shared_search_fft_shape(
+        search,
+        [variant for variants in prepared_by_template.values() for variant in variants],
+    ) if prepared_by_template else None
     for template_path in template_paths:
         error = template_errors.get(template_path)
         if error is not None:
             matches.append((template_path, None, None, error))
             continue
         try:
-            variants = get_prepared_template_variants(ctx, template_path, action, (search.gray.shape[1], search.gray.shape[0]))
-            match, best = find_image_match(search, variants, threshold, 0, action)
+            variants = prepared_by_template.get(template_path, [])
+            match, best = find_image_match(search, variants, threshold, 0, action, fft_shape=shared_fft_shape)
             matches.append((template_path, match, best, None))
         except BotError as exc:
             matches.append((template_path, None, None, str(exc)))
@@ -2745,7 +2951,7 @@ def resolve_find_image_action(
     offset_x = int(action.get("offset_x", 0))
     offset_y = int(action.get("offset_y", 0))
     preview_only = bool_value(action.get("preview_only")) or bool_value(action.get("debug_preview"))
-    save_debug = bool_value(action.get("save_debug", True), default=True)
+    save_debug = bool_value(action.get("save_debug"), default=ctx.image_match_debug)
     match_action = prepare_image_match_profile(action, action_name, threshold, interval_sec)
     template_paths = resolve_action_template_paths(ctx, match_action, action_name)
     confirm_attempts = max(1, int(match_action.get("confirm_attempts", 1)))
@@ -2850,14 +3056,22 @@ def perform_find_image(
             search_action.get("evaluate_all_templates"),
             default=False,
         )
-        for template_index, template_path in enumerate(template_paths, start=1):
-            prepared_variants = get_prepared_template_variants(ctx, template_path, search_action, search_size)
+        prepared_variants_by_template = [
+            get_prepared_template_variants(ctx, template_path, search_action, search_size)
+            for template_path in template_paths
+        ]
+        shared_fft_shape = shared_search_fft_shape(
+            search,
+            [variant for variants in prepared_variants_by_template for variant in variants],
+        )
+        for template_index, (template_path, prepared_variants) in enumerate(zip(template_paths, prepared_variants_by_template), start=1):
             match, candidate_best = find_image_match(
                 search=search,
                 template_variants=prepared_variants,
                 threshold=threshold,
                 index=index,
                 action=search_action,
+                fft_shape=shared_fft_shape,
             )
             if candidate_best is not None and candidate_best["similarity"] >= best_similarity:
                 best_similarity = candidate_best["similarity"]
@@ -3320,12 +3534,19 @@ def match_red_role_in_slot(
     best_template: Optional[Path] = None
     best_match: Optional[Dict[str, float]] = None
     second_best_similarity = 0.0
+    prepared_by_template: List[Tuple[Path, List[PreparedTemplateVariant]]] = []
     for template_path in template_paths:
         try:
             variants = get_prepared_template_variants(ctx, template_path, search_action, search_size)
         except BotError:
             continue
-        _, candidate = find_image_match(search, variants, 0.0, 0, search_action)
+        prepared_by_template.append((template_path, variants))
+    shared_fft_shape = shared_search_fft_shape(
+        search,
+        [variant for _, variants in prepared_by_template for variant in variants],
+    ) if prepared_by_template else None
+    for template_path, variants in prepared_by_template:
+        _, candidate = find_image_match(search, variants, 0.0, 0, search_action, fft_shape=shared_fft_shape)
         if candidate is None:
             continue
         candidate_similarity = float(candidate.get("similarity", 0.0))
@@ -4173,6 +4394,90 @@ def ensure_device_connected(adb_path: str, device: Optional[str]) -> Optional[st
     return device
 
 
+DEFAULT_RECOVERY_GRACE_SEC = 300.0
+RECOVERY_PROBE_INTERVAL_SEC = 5.0
+RECOVERY_NO_PROGRESS_WINDOW_SEC = 20.0
+RECOVERY_MAX_NO_PROGRESS_RESUMES = 3
+
+
+def device_ready_for_plan(ctx: RunContext) -> bool:
+    """True once the backend answers shell and screenshot probes again."""
+    if ctx.dry_run:
+        return True
+    try:
+        if ctx.device_backend == "hdc":
+            if ctx.device:
+                return _is_hdc_shell_healthy(ctx.hdc_path, ctx.device)
+            return bool(_list_hdc_devices(ctx.hdc_path))
+        if ctx.device:
+            if not _is_device_shell_healthy(ctx.adb_path, ctx.device):
+                return False
+            # Screenshots are what failed; only report recovery once screencap works.
+            result = adb_exec_out_result(ctx, ["screencap", "-p"])
+            return result.returncode == 0 and result.stdout.startswith(b"\x89PNG\r\n\x1a\n")
+        return any(_is_device_shell_healthy(ctx.adb_path, serial) for serial in _list_connected_devices(ctx.adb_path))
+    except Exception as error:
+        log(f"Recovery probe failed: {error}")
+        return False
+
+
+def recover_device_connection(ctx: RunContext, grace_sec: float) -> bool:
+    """Probe the device until it answers again or the grace window expires."""
+    deadline = time.time() + max(0.0, grace_sec)
+    if ctx.stop_at is not None:
+        deadline = min(deadline, ctx.stop_at)
+    attempt = 0
+    while True:
+        attempt += 1
+        if ctx.device_backend == "adb" and ctx.device and not ctx.dry_run:
+            run_cmd([ctx.adb_path, "connect", ctx.device], check=False)
+        if device_ready_for_plan(ctx):
+            if attempt > 1:
+                log(f"Device answered again after {attempt} probe(s).")
+            return True
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return False
+        if attempt == 2 and ctx.device_backend == "adb" and not ctx.dry_run:
+            log("Reconnect did not help; restarting ADB server ...")
+            recover_adb_server(ctx.adb_path, ctx.device)
+        time.sleep(min(RECOVERY_PROBE_INTERVAL_SEC, max(0.5, remaining)))
+
+
+def run_actions_with_recovery(ctx: RunContext, actions: List[Dict[str, Any]], grace_sec: float) -> None:
+    """Run the plan; on device errors recover the connection instead of exiting.
+
+    After a successful recovery the plan restarts from its first action — plans
+    begin with state checks (red light / button detection), so re-entry is safe.
+    The bot only stops when the grace window is exhausted, or when the plan
+    keeps failing right after a resume (a real config/template problem).
+    """
+    if grace_sec <= 0 or ctx.dry_run:
+        execute_actions(ctx, actions)
+        return
+    no_progress_resumes = 0
+    resumed_at: Optional[float] = None
+    while True:
+        try:
+            execute_actions(ctx, actions)
+            return
+        except DeviceError as exc:
+            log(f"ERROR: {exc}")
+            if resumed_at is not None and time.monotonic() - resumed_at <= RECOVERY_NO_PROGRESS_WINDOW_SEC:
+                no_progress_resumes += 1
+                if no_progress_resumes >= RECOVERY_MAX_NO_PROGRESS_RESUMES:
+                    log("Plan keeps failing right after recovery; giving up.")
+                    raise
+            else:
+                no_progress_resumes = 0
+            log(f"Entering recovery mode: retrying the device connection for up to {int(grace_sec)}s ...")
+            if not recover_device_connection(ctx, grace_sec):
+                log("Device did not recover within the grace period; stopping.")
+                raise
+            resumed_at = time.monotonic()
+            log("Device recovered; restarting the plan.")
+
+
 def load_plan(path: Path) -> Dict[str, Any]:
     try:
         raw_plan = json.loads(path.read_text(encoding="utf-8"))
@@ -4282,7 +4587,18 @@ def main() -> int:
     parser.add_argument("--hdc", default="hdc", help="HDC binary path for HarmonyOS devices")
     parser.add_argument("--device-backend", choices=["auto", "adb", "hdc"], default="auto", help="Device backend")
     parser.add_argument("--dry-run", action="store_true", help="Print actions without executing")
+    parser.add_argument(
+        "--image-match-debug",
+        action="store_true",
+        help="Save image match debug overlays by default (per-action save_debug still overrides)",
+    )
     parser.add_argument("--max-runtime-sec", type=int, default=0, help="Stop after N seconds (0 means unlimited)")
+    parser.add_argument(
+        "--recovery-grace-sec",
+        type=float,
+        default=None,
+        help="On device/ADB failure keep retrying recovery for N seconds before stopping (default 300, 0 disables)",
+    )
     parser.add_argument("--verify-template", nargs="+", help="Capture one screen and verify one or more image templates")
     parser.add_argument("--verify-region", nargs=4, type=int, metavar=("X", "Y", "WIDTH", "HEIGHT"))
     parser.add_argument("--verify-threshold", type=float, default=0.88)
@@ -4299,6 +4615,11 @@ def main() -> int:
     trace_time_scale = float(plan.get("trace_time_scale", 1.0))
     runtime_limit = args.max_runtime_sec or int(plan.get("max_runtime_sec", 0))
     stop_at = None if runtime_limit <= 0 else time.time() + runtime_limit
+    raw_recovery_grace = args.recovery_grace_sec if args.recovery_grace_sec is not None else plan.get("recovery_grace_sec", DEFAULT_RECOVERY_GRACE_SEC)
+    try:
+        recovery_grace_sec = max(0.0, float(raw_recovery_grace))
+    except (TypeError, ValueError):
+        raise BotError(f"recovery_grace_sec must be a number, got {raw_recovery_grace!r}")
     screen_cfg = plan.get("screen_size", {})
     has_screen_cfg = isinstance(screen_cfg, dict) and "width" in screen_cfg and "height" in screen_cfg
     if has_screen_cfg:
@@ -4341,6 +4662,7 @@ def main() -> int:
         dst_screen_h=dst_screen_h,
         trace_time_scale=trace_time_scale,
         plan_dir=plan_path.parent,
+        image_match_debug=args.image_match_debug,
     )
 
     if args.verify_template:
@@ -4374,8 +4696,9 @@ def main() -> int:
     log(f"Config jitter_px={ctx.jitter}")
     log(f"Config trace_time_scale={ctx.trace_time_scale}")
     log(f"Screen scale {ctx.src_screen_w}x{ctx.src_screen_h} -> {ctx.dst_screen_w}x{ctx.dst_screen_h}")
+    log(f"Config recovery_grace_sec={recovery_grace_sec:g}")
     try:
-        execute_actions(ctx, actions)
+        run_actions_with_recovery(ctx, actions, recovery_grace_sec)
     except KeyboardInterrupt:
         log("Bot stopped")
     wait_background_tasks(ctx)

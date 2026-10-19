@@ -28,7 +28,7 @@ const navItems: { id: Page; label: string; icon: typeof Code2 }[] = [
   { id: "settings", label: "设置", icon: Settings2 },
 ];
 
-const defaultSettings: AppSettings = { adbPath: "adb", hdcPath: "hdc", hdcToolsDir: "", pythonPath: "python3", language: "zh" };
+const defaultSettings: AppSettings = { adbPath: "adb", hdcPath: "hdc", hdcToolsDir: "", pythonPath: "python3", language: "zh", imageMatchDebug: false };
 
 function logTime() {
   return new Date().toLocaleTimeString("zh-CN", { hour12: false });

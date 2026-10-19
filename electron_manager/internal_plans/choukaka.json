@@ -181,7 +181,8 @@
               "timeout_sec": 3,
               "type": "if_image",
               "templates": [
-                "../image_templates/role_done.png"
+                "../image_templates/role_done.png",
+                "../image_templates/role_gem.png"
               ]
             }
           ],
@@ -246,6 +247,14 @@
               "type": "wait"
             },
             {
+              "type": "save_screenshot",
+              "pair_key": "draw_result",
+              "stage": "before",
+              "label": "max",
+              "reuse_last_red_light_screenshot": true,
+              "remark": "红卡出现即保存抽卡前截图"
+            },
+            {
               "type": "if_image",
               "threshold": 0.88,
               "timeout_sec": 3,
@@ -272,21 +281,14 @@
                   "remark": "记录大抽开始"
                 },
                 {
-                  "type": "save_screenshot",
-                  "pair_key": "draw_result",
-                  "stage": "before",
-                  "label": "max",
-                  "reuse_last_red_light_screenshot": true,
-                  "remark": "保存抽卡前截图"
-                },
-                {
                   "type": "click_match",
                   "remark": "点击最大抽卡按钮"
                 }
               ],
               "else_actions": [],
               "templates": [
-                "../image_templates/role_done.png"
+                "../image_templates/role_done.png",
+                "../image_templates/role_gem.png"
               ]
             },
             {
@@ -533,7 +535,8 @@
               "timeout_sec": 3,
               "type": "if_image",
               "templates": [
-                "../image_templates/role_done.png"
+                "../image_templates/role_done.png",
+                "../image_templates/role_gem.png"
               ]
             }
           ]

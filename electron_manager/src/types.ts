@@ -4,6 +4,7 @@ export type AppSettings = {
   hdcToolsDir: string;
   pythonPath: string;
   language: "zh" | "en";
+  imageMatchDebug: boolean;
 };
 
 export type TaskKind = "runner" | "draw" | "chest" | "recorder" | "clickPicker" | "diagnostic";

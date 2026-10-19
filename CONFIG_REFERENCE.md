@@ -12,6 +12,7 @@
   "device": "127.0.0.1:5555",
   "jitter_px": 3,
   "max_runtime_sec": 0,
+  "recovery_grace_sec": 300,
   "variables": [
     { "name": "WAIT_SHORT", "value": "0.5", "note": "短等待秒数" }
   ],
@@ -32,6 +33,12 @@
   - 最大运行秒数。
   - `0` 表示不限制。
   - 也可被命令行 `--max-runtime-sec` 覆盖。
+
+- `recovery_grace_sec` (number, 可选，默认 `300`)
+  - 设备/ADB 连接出现错误（如截图失败、设备掉线）时的恢复宽限秒数。
+  - 期间脚本会自动重试：`adb connect` → 重启 ADB server → 探测截图恢复，恢复后自动从脚本开头继续（脚本开头应为状态判断类动作，如 `if_red_light` / `if_image`）。
+  - 宽限期内未恢复、或恢复后立即再次失败连续 3 次，才会真正停止。
+  - `0` 表示关闭恢复（出错立即停止），也可被命令行 `--recovery-grace-sec` 覆盖。
 
 - `variables` (array, 可选)
   - 当前脚本自己的变量列表。
@@ -188,7 +195,7 @@
 - `scale_min` `scale_max` `scale_step` (number, 可选): 控制自动多尺度匹配范围，默认约 `0.75 ~ 1.25`
 - `scales` (array[number], 可选): 直接指定要尝试的缩放列表，例如 `[0.75, 0.9, 1.0, 1.1]`
 - `preview_only` (bool, 可选，默认 `false`): 命中后只保存高亮预览，不点击
-- `save_debug` (bool, 可选，默认 `true`): 是否自动保存最佳候选调试图
+- `save_debug` (bool, 可选，默认跟随全局设置): 是否自动保存最佳候选调试图；应用设置中的“保存图像匹配调试图”开关控制全局默认（默认关闭，对应命令行 `--image-match-debug`），动作里显式设置 `true`/`false` 可覆盖全局
 - `debug_dir` (string, 可选): 自定义调试图输出目录
 - 说明：推荐使用裁剪紧凑、背景干净的 PNG 图标；透明区域会自动忽略；若在 `timeout_sec` 内未命中，会记录日志并跳过当前动作，继续执行下一个动作
 - 性能建议：尽量缩小 `region`；如果图标大小稳定，优先用 `scales: [1.0]` 或很窄的缩放范围；`templates` 中把最常出现的图标放前面；只做存在性判断时可配 `max_candidates: 1`

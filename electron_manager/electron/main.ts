@@ -16,6 +16,7 @@ type Settings = {
   hdcToolsDir: string;
   pythonPath: string;
   language: "zh" | "en";
+  imageMatchDebug: boolean;
 };
 
 type TaskRequest = {
@@ -700,6 +701,7 @@ function getSettings(): Settings {
     hdcToolsDir: "",
     pythonPath: process.platform === "win32" ? "python.exe" : "python3",
     language: "zh",
+    imageMatchDebug: false,
   };
   try {
     return { ...defaults, ...JSON.parse(readFileSync(settingsFile, "utf8")) };
@@ -785,6 +787,7 @@ function resolveHdcExecutableFromDirectory(rawPath: string): string {
 
 function saveSettings(settings: Settings): Settings {
   const normalized = { ...getSettings(), ...settings };
+  normalized.imageMatchDebug = Boolean(normalized.imageMatchDebug);
   writeFileSync(
     path.join(app.getPath("userData"), "settings.json"),
     JSON.stringify(normalized, null, 2),
@@ -931,8 +934,12 @@ function spawnTask(request: TaskRequest, ownerWebContentsId?: number) {
   const settings = getSettings();
   const scriptPath = request.args[0];
   const bundledExecutable = typeof scriptPath === "string" ? bundledWindowsScriptExecutable(scriptPath) : null;
+  const taskArgs = [...request.args];
+  if (settings.imageMatchDebug && typeof scriptPath === "string" && path.basename(scriptPath).toLowerCase() === "adb_bot.py") {
+    taskArgs.push("--image-match-debug");
+  }
   const executable = bundledExecutable ?? resolveExecutable(settings.pythonPath, process.platform === "win32" ? "python.exe" : "python3");
-  const args = bundledExecutable ? request.args.slice(1) : ["-u", ...request.args];
+  const args = bundledExecutable ? taskArgs.slice(1) : ["-u", ...taskArgs];
   const task = spawn(executable, args, {
     cwd: request.cwd ?? runtimeRoot(),
     env: {
