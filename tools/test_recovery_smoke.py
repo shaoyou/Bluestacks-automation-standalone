@@ -10,6 +10,8 @@ from PIL import Image  # noqa: E402
 
 import adb_bot  # noqa: E402
 
+REAL_RUN_CMD = adb_bot.run_cmd  # captured before any test monkeypatches it
+
 
 def make_png_bytes(w=8, h=6):
     buf = io.BytesIO()
@@ -169,6 +171,63 @@ def test_zero_grace_keeps_old_behavior():
         raise AssertionError("expected DeviceError to propagate")
 
 
+def test_spawn_lock_retried_in_run_cmd():
+    import subprocess as sp
+
+    attempts = {"n": 0}
+
+    def fake_run(cmd, **kwargs):
+        attempts["n"] += 1
+        if attempts["n"] <= 2:
+            raise PermissionError(32, "另一个程序正在使用此文件，进程无法访问。")
+        return sp.CompletedProcess(args=cmd, returncode=0, stdout="ok", stderr="")
+
+    original_run = adb_bot.subprocess.run
+    adb_bot.subprocess.run = fake_run
+    try:
+        result = REAL_RUN_CMD(["adb", "devices"])
+        assert result.returncode == 0
+        assert attempts["n"] == 3, attempts
+    finally:
+        adb_bot.subprocess.run = original_run
+    print("test_spawn_lock_retried_in_run_cmd OK")
+
+
+def test_spawn_lock_escalates_to_device_error():
+    import subprocess as sp
+
+    def fake_run(cmd, **kwargs):
+        raise PermissionError(32, "另一个程序正在使用此文件，进程无法访问。")
+
+    original_run = adb_bot.subprocess.run
+    adb_bot.subprocess.run = fake_run
+    try:
+        REAL_RUN_CMD(["adb", "devices"])
+    except PermissionError:
+        print("test_spawn_lock_escalates_to_device_error OK")
+    else:
+        raise AssertionError("expected PermissionError to propagate")
+    finally:
+        adb_bot.subprocess.run = original_run
+
+
+def test_recovery_handles_oserror():
+    ctx = make_ctx()
+    runs = {"n": 0}
+    recovered = {"recovered": 0}
+
+    def fake_execute(c, actions):
+        runs["n"] += 1
+        if runs["n"] == 1:
+            raise PermissionError(32, "另一个程序正在使用此文件，进程无法访问。")
+
+    adb_bot.execute_actions = fake_execute
+    adb_bot.recover_device_connection = lambda c, g: recovered.__setitem__("recovered", recovered["recovered"] + 1) or True
+    adb_bot.run_actions_with_recovery(ctx, [{"type": "loop"}], 300.0)
+    assert runs["n"] == 2 and recovered["recovered"] == 1, (runs, recovered)
+    print("test_recovery_handles_oserror OK")
+
+
 if __name__ == "__main__":
     test_screenshot_retry_recovers()
     test_screenshot_raises_deviceerror_after_retries()
@@ -176,4 +235,7 @@ if __name__ == "__main__":
     test_recovery_gives_up_when_grace_expires()
     test_recovery_gives_up_on_immediate_refailures()
     test_zero_grace_keeps_old_behavior()
+    test_spawn_lock_retried_in_run_cmd()
+    test_spawn_lock_escalates_to_device_error()
+    test_recovery_handles_oserror()
     print("ALL SMOKE TESTS PASSED")

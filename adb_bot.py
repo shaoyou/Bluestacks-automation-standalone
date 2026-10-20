@@ -514,8 +514,31 @@ def current_chest_capture_actions(actions: List[Any]) -> List[Dict[str, Any]]:
     return []
 
 
+SPAWN_RETRY_ATTEMPTS = 3
+
+
+def run_process_with_spawn_retry(cmd: List[str], **kwargs: Any) -> subprocess.CompletedProcess:
+    """subprocess.run that tolerates transient OS-level spawn failures.
+
+    Windows antiviruses briefly lock freshly unpacked binaries while the plan
+    is spawning adb.exe several times per second (WinError 32 "another program
+    is using this file"); such locks usually clear within a few hundred ms.
+    """
+    last_error: Optional[OSError] = None
+    for attempt in range(1, SPAWN_RETRY_ATTEMPTS + 1):
+        try:
+            return subprocess.run(cmd, **kwargs)
+        except OSError as exc:
+            last_error = exc
+            if attempt < SPAWN_RETRY_ATTEMPTS:
+                log(f"Command could not start: {exc}; retrying ({attempt}/{SPAWN_RETRY_ATTEMPTS - 1}) ...")
+                time.sleep(0.3 * attempt)
+    assert last_error is not None
+    raise last_error
+
+
 def run_cmd(cmd: List[str], check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, text=True, encoding="utf-8", errors="replace", capture_output=True, check=check)
+    return run_process_with_spawn_retry(cmd, text=True, encoding="utf-8", errors="replace", capture_output=True, check=check)
 
 
 def split_device_backend(raw_device: Optional[str], preferred_backend: str = "auto") -> Tuple[str, Optional[str]]:
@@ -742,7 +765,7 @@ def adb_exec_out_result(ctx: RunContext, extra: List[str]) -> subprocess.Complet
     if ctx.device_backend == "hdc":
         return hdc_screenshot_result(ctx.hdc_path, ctx.device)
     cmd = build_adb_cmd(ctx, ["exec-out"] + extra)
-    return subprocess.run(cmd, capture_output=True, check=False)
+    return run_process_with_spawn_retry(cmd, capture_output=True, check=False)
 
 
 def map_input_point(ctx: RunContext, x: int, y: int) -> Tuple[int, int]:
@@ -4451,6 +4474,7 @@ def run_actions_with_recovery(ctx: RunContext, actions: List[Dict[str, Any]], gr
     begin with state checks (red light / button detection), so re-entry is safe.
     The bot only stops when the grace window is exhausted, or when the plan
     keeps failing right after a resume (a real config/template problem).
+    OSError (e.g. Windows locking adb.exe mid-spawn) is treated the same way.
     """
     if grace_sec <= 0 or ctx.dry_run:
         execute_actions(ctx, actions)
@@ -4461,7 +4485,7 @@ def run_actions_with_recovery(ctx: RunContext, actions: List[Dict[str, Any]], gr
         try:
             execute_actions(ctx, actions)
             return
-        except DeviceError as exc:
+        except (DeviceError, OSError) as exc:
             log(f"ERROR: {exc}")
             if resumed_at is not None and time.monotonic() - resumed_at <= RECOVERY_NO_PROGRESS_WINDOW_SEC:
                 no_progress_resumes += 1
