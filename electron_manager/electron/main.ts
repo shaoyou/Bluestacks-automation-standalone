@@ -906,6 +906,9 @@ function killTaskProcess(task: ChildProcess) {
 }
 
 function stopAllTasks() {
+  for (const run of queueRuns.values()) {
+    if (run.taskId && run.status === "running") run.status = "stopping";
+  }
   for (const task of tasks.values()) {
     killTaskProcess(task);
   }
@@ -925,7 +928,7 @@ function assertRunnerCapacity() {
   }
 }
 
-function spawnTask(request: TaskRequest, ownerWebContentsId?: number) {
+function spawnTask(request: TaskRequest, ownerWebContentsId?: number): ChildProcess {
   if (tasks.has(request.id)) throw new Error("Task is already running");
   if (shouldBlockTaskStart()) {
     throw new Error("当前版本需要先完成更新，暂不允许启动脚本");
@@ -949,6 +952,257 @@ function spawnTask(request: TaskRequest, ownerWebContentsId?: number) {
     windowsHide: true,
   });
   trackTask(request.id, task, ownerWebContentsId, `${executable} ${args.join(" ")}`);
+  return task;
+}
+
+type QueueGroupItem = {
+  plan: string;
+  maxRuntimeSec: number;
+  enabled: boolean;
+};
+
+type QueueGroup = {
+  id: string;
+  name: string;
+  items: QueueGroupItem[];
+  onError: "continue" | "stop";
+  repeat: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+type QueueRunStatus = "running" | "stopping" | "completed" | "stopped";
+
+type QueueRunItem = { plan: string; runtimeSec: number };
+
+type QueueRun = {
+  groupId: string;
+  groupName: string;
+  device: string;
+  status: QueueRunStatus;
+  round: number;
+  index: number;
+  items: QueueRunItem[];
+  results: Array<{ plan: string; status: "pending" | "running" | "ok" | "failed" | "skipped" | "stopped"; exitCode?: number | null; error?: string }>;
+  onError: "continue" | "stop";
+  repeat: boolean;
+  taskId: string | null;
+  error?: string;
+};
+
+type QueueRunSnapshot = QueueRun & { total: number };
+
+const queueRuns = new Map<string, QueueRun>();
+
+function queueGroupsDir(): string {
+  return path.join(runtimeRoot(), "queues");
+}
+
+function queueGroupFilePath(id: string): string {
+  return path.join(queueGroupsDir(), `${id}.json`);
+}
+
+function normalizeQueueGroup(raw: unknown): QueueGroup {
+  if (!raw || typeof raw !== "object") throw new Error("计划组数据无效");
+  const value = raw as Partial<QueueGroup> & Record<string, unknown>;
+  const name = String(value.name ?? "").trim();
+  if (!name) throw new Error("计划组名称不能为空");
+  const items: QueueGroupItem[] = [];
+  const rawItems = Array.isArray(value.items) ? value.items : [];
+  for (const entry of rawItems) {
+    if (!entry || typeof entry !== "object") continue;
+    const item = entry as Partial<QueueGroupItem> & Record<string, unknown>;
+    const plan = path.basename(String(item.plan ?? ""));
+    if (!plan.endsWith(".json")) continue;
+    const maxRuntimeSec = Number(item.maxRuntimeSec);
+    items.push({
+      plan,
+      maxRuntimeSec: Number.isFinite(maxRuntimeSec) && maxRuntimeSec > 0 ? Math.round(maxRuntimeSec) : 0,
+      enabled: item.enabled !== false,
+    });
+  }
+  const fallbackId = `qg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const id = String(value.id ?? "").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 64) || fallbackId;
+  return {
+    id,
+    name: name.slice(0, 60),
+    items,
+    onError: value.onError === "stop" ? "stop" : "continue",
+    repeat: Boolean(value.repeat),
+    createdAt: typeof value.createdAt === "string" ? value.createdAt : undefined,
+    updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : undefined,
+  };
+}
+
+function readQueueGroups(): QueueGroup[] {
+  const dir = queueGroupsDir();
+  if (!existsSync(dir)) return [];
+  const groups: QueueGroup[] = [];
+  const names = readdirSync(dir).filter((name) => name.endsWith(".json")).sort((a, b) => a.localeCompare(b, "zh-CN"));
+  for (const name of names) {
+    try {
+      groups.push(normalizeQueueGroup(JSON.parse(readFileSync(path.join(dir, name), "utf8"))));
+    } catch (error) {
+      recordStartupWarning(`[queue] skip invalid group ${name}: ${String(error)}`);
+    }
+  }
+  return groups;
+}
+
+function writeQueueGroup(group: QueueGroup) {
+  mkdirSync(queueGroupsDir(), { recursive: true });
+  writeFileSync(queueGroupFilePath(group.id), `${JSON.stringify(group, null, 2)}\n`, "utf8");
+}
+
+function queueRunSnapshot(run: QueueRun): QueueRunSnapshot {
+  return { ...run, total: run.items.length, results: run.results.map((result) => ({ ...result })) };
+}
+
+function sendQueueEvent(run: QueueRun) {
+  const event = queueRunSnapshot(run);
+  for (const window of BrowserWindow.getAllWindows()) {
+    window.webContents.send("queue:event", event);
+  }
+}
+
+function skipRemainingQueueItems(run: QueueRun, from: number) {
+  for (let index = from; index < run.items.length; index += 1) {
+    run.results[index] = { plan: run.items[index].plan, status: "skipped" };
+  }
+}
+
+function finishQueueRun(run: QueueRun, status: "completed" | "stopped", error?: string) {
+  run.status = status;
+  run.taskId = null;
+  if (error) run.error = error;
+  sendQueueEvent(run);
+}
+
+function spawnQueueItem(run: QueueRun, ownerWebContentsId?: number) {
+  const item = run.items[run.index];
+  if (!item) {
+    finishQueueRun(run, "completed");
+    return;
+  }
+  const taskId = `runner-queue-${run.groupId}`;
+  const args = [path.join(runtimeRoot(), "adb_bot.py"), "--plan", safePlanPath(item.plan), "--adb", getSettings().adbPath, "--hdc", getSettings().hdcPath];
+  if (run.device.trim()) args.push("--device", run.device.trim());
+  if (item.runtimeSec > 0) args.push("--max-runtime-sec", String(Math.round(item.runtimeSec)));
+  let settled = false;
+  const onItemDone = (exitCode: number | null) => {
+    if (settled) return;
+    settled = true;
+    run.taskId = null;
+    if (run.status !== "running") {
+      run.results[run.index] = { plan: item.plan, status: "stopped", exitCode };
+      skipRemainingQueueItems(run, run.index + 1);
+      finishQueueRun(run, "stopped");
+      return;
+    }
+    run.results[run.index] = { plan: item.plan, status: exitCode === 0 ? "ok" : "failed", exitCode };
+    if (exitCode !== 0 && run.onError === "stop") {
+      skipRemainingQueueItems(run, run.index + 1);
+      finishQueueRun(run, "stopped");
+      return;
+    }
+    run.index += 1;
+    advanceQueueRun(run, ownerWebContentsId);
+  };
+  try {
+    const task = spawnTask({ id: taskId, kind: "runner", args }, ownerWebContentsId);
+    run.taskId = taskId;
+    run.results[run.index] = { plan: item.plan, status: "running" };
+    task.once("exit", (code) => onItemDone(code));
+    task.once("error", () => onItemDone(-1));
+  } catch (error) {
+    const message = String((error as Error)?.message ?? error);
+    run.results[run.index] = { plan: item.plan, status: "failed", exitCode: null, error: message };
+    skipRemainingQueueItems(run, run.index + 1);
+    finishQueueRun(run, "stopped", message);
+    return;
+  }
+  sendQueueEvent(run);
+}
+
+function advanceQueueRun(run: QueueRun, ownerWebContentsId?: number) {
+  if (run.status !== "running") return;
+  if (run.index >= run.items.length) {
+    if (!run.repeat) {
+      finishQueueRun(run, "completed");
+      return;
+    }
+    run.round += 1;
+    run.index = 0;
+    run.results = run.items.map((item) => ({ plan: item.plan, status: "pending" as const }));
+  }
+  spawnQueueItem(run, ownerWebContentsId);
+}
+
+function planHasUnboundedLoop(actions: unknown): boolean {
+  if (!Array.isArray(actions)) return false;
+  for (const entry of actions) {
+    if (!entry || typeof entry !== "object") continue;
+    const action = entry as Record<string, unknown>;
+    const type = String(action.type ?? "").toLowerCase();
+    if (type === "loop" && Number(action.count ?? 1) < 0) return true;
+    if (type === "patrol" && Number(action.rounds ?? 1) < 0) return true;
+    if (planHasUnboundedLoop(action.actions) || planHasUnboundedLoop(action.then_actions) || planHasUnboundedLoop(action.else_actions)) return true;
+  }
+  return false;
+}
+
+function startQueueRun(group: QueueGroup, device: string, ownerWebContentsId?: number) {
+  const enabledItems = group.items.filter((item) => item.enabled !== false);
+  if (enabledItems.length === 0) throw new Error("计划组中没有可运行的脚本");
+  const existing = queueRuns.get(group.id);
+  if (existing && (existing.status === "running" || existing.status === "stopping")) {
+    throw new Error(`计划组「${group.name}」正在运行`);
+  }
+  const lastEnabledIndex = enabledItems.length - 1;
+  const runItems: QueueRunItem[] = enabledItems.map((item, index) => {
+    let planMaxRuntimeSec = 0;
+    let unbounded = false;
+    try {
+      const plan = JSON.parse(readFileSync(safePlanPath(item.plan), "utf8")) as Record<string, unknown>;
+      planMaxRuntimeSec = Number(plan.max_runtime_sec ?? 0) || 0;
+      unbounded = planHasUnboundedLoop(plan.actions);
+    } catch {
+      throw new Error(`无法读取计划 ${item.plan}`);
+    }
+    const runtimeSec = item.maxRuntimeSec > 0 ? item.maxRuntimeSec : planMaxRuntimeSec;
+    if (runtimeSec <= 0 && unbounded && !(index === lastEnabledIndex && !group.repeat)) {
+      throw new Error(`脚本 ${item.plan} 会无限运行且未设置时长：请为它填写运行时长，或把它放在计划组最后并关闭整队循环`);
+    }
+    return { plan: item.plan, runtimeSec };
+  });
+  const run: QueueRun = {
+    groupId: group.id,
+    groupName: group.name,
+    device,
+    status: "running",
+    round: 1,
+    index: 0,
+    items: runItems,
+    results: runItems.map((item) => ({ plan: item.plan, status: "pending" as const })),
+    onError: group.onError,
+    repeat: Boolean(group.repeat),
+    taskId: null,
+  };
+  queueRuns.set(group.id, run);
+  spawnQueueItem(run, ownerWebContentsId);
+}
+
+function stopQueueRun(groupId: string) {
+  const run = queueRuns.get(groupId);
+  if (!run || run.status !== "running") return;
+  run.status = "stopping";
+  sendQueueEvent(run);
+  const task = run.taskId ? tasks.get(run.taskId) : undefined;
+  if (task) killTaskProcess(task);
+  else {
+    skipRemainingQueueItems(run, run.index);
+    finishQueueRun(run, "stopped");
+  }
 }
 
 function commandToolPaths(raw: unknown): { adbPath: string; hdcPath: string } {
@@ -1274,6 +1528,32 @@ app.whenReady().then(() => {
     return name;
   });
   ipcMain.handle("plans:delete", (_, name: string) => rmSync(safePlanPath(name)));
+
+  ipcMain.handle("queue-groups:list", () => readQueueGroups());
+  ipcMain.handle("queue-groups:save", (_, raw: unknown) => {
+    const group = normalizeQueueGroup(raw);
+    const timestamp = new Date().toISOString();
+    group.updatedAt = timestamp;
+    group.createdAt = group.createdAt ?? timestamp;
+    writeQueueGroup(group);
+    return group;
+  });
+  ipcMain.handle("queue-groups:delete", (_, rawId: string) => {
+    const id = String(rawId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+    if (!id) throw new Error("计划组 ID 无效");
+    const run = queueRuns.get(id);
+    if (run && (run.status === "running" || run.status === "stopping")) throw new Error("请先停止正在运行的计划组");
+    rmSync(queueGroupFilePath(id), { force: true });
+    queueRuns.delete(id);
+  });
+  ipcMain.handle("queue:start", (event, rawGroupId: string, rawDevice: unknown) => {
+    const id = String(rawGroupId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+    const group = readQueueGroups().find((item) => item.id === id);
+    if (!group) throw new Error("未找到该计划组，可能已被删除");
+    startQueueRun(group, String(rawDevice ?? ""), event.sender.id);
+  });
+  ipcMain.handle("queue:stop", (_, rawGroupId: string) => stopQueueRun(String(rawGroupId || "").replace(/[^a-zA-Z0-9_-]/g, "")));
+  ipcMain.handle("queue:states", () => [...queueRuns.values()].map(queueRunSnapshot));
 
   ipcMain.handle("templates:list", () =>
     readdirSync(path.join(runtimeRoot(), "image_templates"))

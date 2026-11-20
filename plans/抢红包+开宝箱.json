@@ -1,0 +1,147 @@
+{
+  "actions": [
+    {
+      "type": "loop",
+      "count": -1,
+      "remark": "抢红包+开宝箱主循环：爆发期抢红包，间歇检查宝箱；开宝箱期间抢红包自动暂停，结束后自动恢复",
+      "actions": [
+        {
+          "type": "loop",
+          "count": 4,
+          "remark": "抢红包爆发期（4轮约3-6秒，轮数可调：越大抢红包越连贯，宝箱响应越慢）",
+          "actions": [
+            {
+              "remark": "点击左下角红包",
+              "type": "click",
+              "x": 92,
+              "y": 1329
+            },
+            {
+              "remark": "等待0.31秒",
+              "seconds": 0.31,
+              "type": "wait"
+            },
+            {
+              "remark": "点击开",
+              "type": "click",
+              "x": 550,
+              "y": 900
+            },
+            {
+              "remark": "等待0.1秒",
+              "seconds": 0.1,
+              "type": "wait"
+            },
+            {
+              "remark": "点击开",
+              "type": "click",
+              "x": 550,
+              "y": 900
+            },
+            {
+              "remark": "等待0.1秒",
+              "seconds": 0.1,
+              "type": "wait"
+            },
+            {
+              "remark": "点击开",
+              "type": "click",
+              "x": 550,
+              "y": 900
+            },
+            {
+              "remark": "等待0.1秒",
+              "seconds": 0.1,
+              "type": "wait"
+            }
+          ]
+        },
+        {
+          "type": "if_image",
+          "remark": "爆发期结束快速检查宝箱图标（查不到立即返回抢红包）",
+          "templates": [
+            "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
+            "../image_templates/bl_baoxiaoxing_1080x1920.png",
+            "../image_templates/bl_baoxiaoxing.png"
+          ],
+          "region": {
+            "x": 137,
+            "y": 378,
+            "width": 828,
+            "height": 1191
+          },
+          "threshold": 0.88,
+          "timeout_sec": 0.5,
+          "interval_sec": 0.3,
+          "then_actions": [
+            {
+              "remark": "识别到宝箱，暂停抢红包，稍等图标稳定",
+              "seconds": 0.5,
+              "type": "wait"
+            },
+            {
+              "interval_sec": 0.6,
+              "region": {
+                "height": 1191,
+                "width": 828,
+                "x": 137,
+                "y": 378
+              },
+              "remark": "识别图标bl_baoxiaoxing.png并点击",
+              "threshold": 0.88,
+              "timeout_sec": 8,
+              "type": "find_image_click",
+              "templates": [
+                "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
+                "../image_templates/bl_baoxiaoxing_1080x1920.png",
+                "../image_templates/bl_baoxiaoxing.png"
+              ]
+            },
+            {
+              "remark": "等待1秒",
+              "seconds": 1,
+              "type": "wait"
+            },
+            {
+              "interval_sec": 0.6,
+              "region": {
+                "height": 1191,
+                "width": 828,
+                "x": 137,
+                "y": 378
+              },
+              "remark": "识别图标bl_baoxiaoxing-done.png并点击",
+              "template": "../image_templates/bl_baoxiaoxing-done.png",
+              "threshold": 0.88,
+              "timeout_sec": 8,
+              "type": "find_image_click"
+            },
+            {
+              "remark": "等待2秒",
+              "seconds": 2,
+              "type": "wait"
+            },
+            {
+              "remark": "关闭领取页面",
+              "type": "click",
+              "x": 530,
+              "y": 1450
+            },
+            {
+              "remark": "宝箱开启完成，稍候片刻即恢复抢红包",
+              "seconds": 3,
+              "type": "wait"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "jitter_px": 3,
+  "max_runtime_sec": 0,
+  "screen_size": {
+    "height": 1920,
+    "width": 1080
+  },
+  "variables": []
+}

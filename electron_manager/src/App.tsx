@@ -5,6 +5,7 @@ import {
   Bot,
   Code2,
   Crosshair,
+  Layers,
   Play,
   Radio,
   Settings2,
@@ -13,12 +14,14 @@ import type { AppSettings, LicenseStatus, TaskEvent, UpdatePolicyState, UpdatePr
 import { appendPlanAction, type Page, type PickedCoordinate, type SharedProps } from "./app/shared";
 import { LicenseActivationDialog, UpdateCheckingDialog, UpdateRequiredDialog } from "./components/layout";
 import { ScriptsPage, RunnerPage } from "./pages/ScriptsRunnerPage";
+import { QueueGroupPage } from "./pages/QueueGroupPage";
 import { CalibrationPage, DiagnosticsPage, RecorderPage, SettingsPage } from "./pages/DevicePages";
 import { DrawPage } from "./pages/DrawPage";
 import { ChestPage } from "./pages/ChestPage";
 
 const navItems: { id: Page; label: string; icon: typeof Code2 }[] = [
   { id: "runner", label: "运行", icon: Play },
+  { id: "queue", label: "计划组", icon: Layers },
   { id: "draw", label: "抽卡", icon: Activity },
   { id: "chest", label: "开宝箱", icon: Archive },
   { id: "scripts", label: "脚本", icon: Code2 },
@@ -373,6 +376,7 @@ export function App() {
         <section className="workbench">
           {page === "scripts" && <ScriptsPage {...context} />}
           {page === "runner" && <RunnerPage {...context} />}
+          {page === "queue" && <QueueGroupPage {...context} />}
           {page === "draw" && <DrawPage {...context} />}
           {page === "chest" && <ChestPage {...context} />}
           {page === "recorder" && <RecorderPage {...context} />}

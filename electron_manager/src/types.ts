@@ -69,6 +69,42 @@ export type UpdatePromptState = {
   lastChangedAt?: string;
 };
 
+export type QueueGroupItem = { plan: string; maxRuntimeSec: number; enabled: boolean };
+
+export type QueueGroup = {
+  id: string;
+  name: string;
+  items: QueueGroupItem[];
+  onError: "continue" | "stop";
+  repeat: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type QueueItemStatus = "pending" | "running" | "ok" | "failed" | "skipped" | "stopped";
+
+export type QueueItemResult = {
+  plan: string;
+  status: QueueItemStatus;
+  exitCode?: number | null;
+  error?: string;
+};
+
+export type QueueRunStatus = "running" | "stopping" | "completed" | "stopped";
+
+export type QueueRunSnapshot = {
+  groupId: string;
+  groupName: string;
+  device: string;
+  status: QueueRunStatus;
+  round: number;
+  index: number;
+  total: number;
+  plan: string | null;
+  results: QueueItemResult[];
+  error?: string;
+};
+
 declare global {
   interface Window {
     bsManager: {
@@ -94,6 +130,13 @@ declare global {
       plansSave(name: string, text: string): Promise<void>;
       plansCreate(name: string): Promise<string>;
       plansDelete(name: string): Promise<void>;
+      queueGroupsList(): Promise<QueueGroup[]>;
+      queueGroupsSave(group: QueueGroup): Promise<QueueGroup>;
+      queueGroupsDelete(id: string): Promise<void>;
+      queueStart(groupId: string, device: string): Promise<void>;
+      queueStop(groupId: string): Promise<void>;
+      queueStates(): Promise<QueueRunSnapshot[]>;
+      onQueueEvent(listener: (event: QueueRunSnapshot) => void): () => void;
       templatesList(): Promise<string[]>;
       templatesOpenFolder(): Promise<void>;
       templatesImport(): Promise<string | null>;

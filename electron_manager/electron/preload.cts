@@ -23,6 +23,17 @@ contextBridge.exposeInMainWorld("bsManager", {
   plansSave: (name: string, text: string) => ipcRenderer.invoke("plans:save", name, text),
   plansCreate: (name: string) => ipcRenderer.invoke("plans:create", name),
   plansDelete: (name: string) => ipcRenderer.invoke("plans:delete", name),
+  queueGroupsList: () => ipcRenderer.invoke("queue-groups:list"),
+  queueGroupsSave: (group: unknown) => ipcRenderer.invoke("queue-groups:save", group),
+  queueGroupsDelete: (id: string) => ipcRenderer.invoke("queue-groups:delete", id),
+  queueStart: (groupId: string, device: string) => ipcRenderer.invoke("queue:start", groupId, device),
+  queueStop: (groupId: string) => ipcRenderer.invoke("queue:stop", groupId),
+  queueStates: () => ipcRenderer.invoke("queue:states"),
+  onQueueEvent: (listener: (event: unknown) => void) => {
+    const callback = (_: Electron.IpcRendererEvent, event: unknown) => listener(event);
+    ipcRenderer.on("queue:event", callback);
+    return () => ipcRenderer.removeListener("queue:event", callback);
+  },
   templatesList: () => ipcRenderer.invoke("templates:list"),
   templatesOpenFolder: () => ipcRenderer.invoke("templates:open-folder"),
   templatesImport: () => ipcRenderer.invoke("templates:import"),
