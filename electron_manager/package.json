@@ -11,6 +11,7 @@
     "dev": "node scripts/dev.mjs",
     "dev:renderer": "vite",
     "dev:electron": "electron .",
+    "build:electron": "tsc -p tsconfig.electron.json",
     "build": "tsc -p tsconfig.electron.json && node scripts/copy_legacy_entry.mjs && vite build",
     "package": "npm run build && electron-builder",
     "package:mac": "npm run build && electron-builder --mac --publish never",

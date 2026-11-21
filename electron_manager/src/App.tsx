@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import type { AppSettings, LicenseStatus, TaskEvent, UpdatePolicyState, UpdatePromptState, UpdateState } from "./types";
 import { appendPlanAction, type Page, type PickedCoordinate, type SharedProps } from "./app/shared";
-import { LicenseActivationDialog, UpdateCheckingDialog, UpdateRequiredDialog } from "./components/layout";
+import { LicenseActivationDialog, PromptDialog, UpdateCheckingDialog, UpdateRequiredDialog } from "./components/layout";
 import { ScriptsPage, RunnerPage } from "./pages/ScriptsRunnerPage";
 import { QueueGroupPage } from "./pages/QueueGroupPage";
 import { CalibrationPage, DiagnosticsPage, RecorderPage, SettingsPage } from "./pages/DevicePages";
@@ -182,9 +182,9 @@ export function App() {
     setPage(nextPage);
   };
 
-  const createPlan = async () => {
-    const name = window.prompt("脚本名称", "new_plan");
-    if (!name) return;
+  const [planNameDraft, setPlanNameDraft] = useState<string | null>(null);
+  const createPlan = () => setPlanNameDraft("new_plan");
+  const confirmCreatePlan = async (name: string) => {
     try {
       const created = await window.bsManager.plansCreate(name);
       await refreshPlans();
@@ -393,6 +393,7 @@ export function App() {
   return (
     <>
       {body}
+      {planNameDraft !== null && <PromptDialog title="新建脚本" defaultValue={planNameDraft} confirmLabel="创建" onConfirm={(name) => void confirmCreatePlan(name)} onClose={() => setPlanNameDraft(null)} />}
       {updateCheckingVisible && updatePolicy && (
         <UpdateCheckingDialog
           policy={updatePolicy}

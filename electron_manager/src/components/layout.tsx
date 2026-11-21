@@ -22,6 +22,24 @@ export function LogPanel({ title, text, actions }: { title: string; text: string
   return <section className="panel log-panel"><div className="panel-title"><span>{title}</span><span className="panel-title-actions">{actions}<TerminalSquare size={16} /></span></div><pre className="log-output">{text || "等待任务输出..."}</pre></section>;
 }
 
+export function PromptDialog({ title, defaultValue, placeholder, confirmLabel = "确定", onConfirm, onClose }: { title: string; defaultValue?: string; placeholder?: string; confirmLabel?: string; onConfirm: (value: string) => void; onClose: () => void }) {
+  const [value, setValue] = useState(defaultValue ?? "");
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    const next = value.trim();
+    if (!next) return;
+    onConfirm(next);
+    onClose();
+  };
+  return <form className="chest-label-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }} onSubmit={submit}>
+    <section className="chest-label-modal prompt-dialog-modal" role="dialog" aria-modal="true" aria-label={title}>
+      <header><strong>{title}</strong><button type="button" className="icon-button" title="关闭" onClick={onClose}><X size={16} /></button></header>
+      <div className="prompt-dialog-body"><input autoFocus placeholder={placeholder} value={value} onChange={(event) => setValue(event.target.value)} /></div>
+      <footer><button type="button" className="button secondary" onClick={onClose}>取消</button><button type="submit" className="button primary" disabled={!value.trim()}>{confirmLabel}</button></footer>
+    </section>
+  </form>;
+}
+
 export function LicenseActivationDialog({ onActivate, onClose, error }: { onActivate: (code: string) => Promise<boolean>; onClose: () => void; error?: string }) {
   const [code, setCode] = useState("");
   const [submitting, setSubmitting] = useState(false);

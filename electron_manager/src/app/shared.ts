@@ -32,7 +32,7 @@ export type SharedProps = {
   loadPlan: (name: string) => Promise<void>;
   savePlan: () => Promise<void>;
   deletePlan: () => Promise<void>;
-  createPlan: () => Promise<void>;
+  createPlan: () => void;
   refreshPlans: () => Promise<string[]>;
   startTask: (id: string, args: string[]) => Promise<void>;
   pickedCoordinates: PickedCoordinate[];
