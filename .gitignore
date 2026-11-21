@@ -1,3 +1,8 @@
 /归档.zip
 outputs/
 *.bak-*
+/dist/
+debug_baoxiang/
+edited_items/
+extracted_item_icons/
+electron_manager/preload.cjs
