@@ -3,12 +3,34 @@
     {
       "type": "loop",
       "count": -1,
-      "remark": "抢红包+开宝箱主循环：爆发期抢红包，间歇检查宝箱；开宝箱期间抢红包自动暂停，结束后自动恢复",
+      "remark": "抢红包+开宝箱主循环：后台线程持续识别放大镜(抢红包全程不停)→命中后轮间中断抢红包→立即点击→0.5秒后验证弹框→开箱/战斗重试",
       "actions": [
         {
-          "type": "loop",
-          "count": 4,
-          "remark": "抢红包爆发期（4轮约3-6秒，轮数可调：越大抢红包越连贯，宝箱响应越慢）",
+          "type": "background_check",
+          "command": "start",
+          "remark": "启动后台识别线程：持续截图匹配放大镜(每轮约2-2.5秒)，命中即置标志并退出；幂等。scales限0.95-1.05(真机误报均为0.75x缩放变体)+阈值0.94(真实0.962-0.990 vs 误报最高0.895)",
+          "templates": [
+            "../image_templates/bl_baoxiaoxing_1080x1920.png"
+          ],
+          "region": {
+            "x": 137,
+            "y": 378,
+            "width": 828,
+            "height": 1191
+          },
+          "threshold": 0.94,
+          "interval_sec": 0.2,
+          "scales": [
+            0.95,
+            1.0,
+            1.05
+          ]
+        },
+        {
+          "type": "grab_loop",
+          "count": 10,
+          "watch_hit": true,
+          "remark": "抢红包爆发期(10轮约9秒)，全程不被识别打断；后台命中则在轮间立即中断(轮边界中断保证红包弹窗已完整关闭)。",
           "actions": [
             {
               "remark": "点击左下角红包",
@@ -57,82 +79,154 @@
           ]
         },
         {
-          "type": "if_image",
-          "remark": "爆发期结束快速检查宝箱图标（查不到立即返回抢红包）",
-          "templates": [
-            "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
-            "../image_templates/bl_baoxiaoxing_1080x1920.png",
-            "../image_templates/bl_baoxiaoxing.png"
-          ],
-          "region": {
-            "x": 137,
-            "y": 378,
-            "width": 828,
-            "height": 1191
-          },
-          "threshold": 0.88,
-          "timeout_sec": 0.5,
-          "interval_sec": 0.3,
+          "type": "if_background_hit",
+          "remark": "后台命中→点击放大镜并验证弹框；未命中→回到顶部(后台线程继续识别)",
           "then_actions": [
             {
-              "remark": "识别到宝箱，暂停抢红包，稍等图标稳定",
-              "seconds": 0.5,
-              "type": "wait"
-            },
-            {
-              "interval_sec": 0.6,
-              "region": {
-                "height": 1191,
-                "width": 828,
-                "x": 137,
-                "y": 378
-              },
-              "remark": "识别图标bl_baoxiaoxing.png并点击",
-              "threshold": 0.88,
-              "timeout_sec": 8,
               "type": "find_image_click",
+              "remark": "识别到放大镜立即点击(同时停止抢红包)；点击前重新截图二次确认(0.94+scales限0.95-1.05防误点)，若战斗已开始图标消失则不点",
               "templates": [
-                "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
                 "../image_templates/bl_baoxiaoxing_1080x1920.png",
+                "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
                 "../image_templates/bl_baoxiaoxing.png"
+              ],
+              "region": {
+                "x": 137,
+                "y": 378,
+                "width": 828,
+                "height": 1191
+              },
+              "threshold": 0.94,
+              "timeout_sec": 3,
+              "interval_sec": 0.3,
+              "save_debug": true,
+              "debug_dir": "/Users/shaoyouzhou/Documents/Playground/Bluestacks-automation-standalone/debug_baoxiang",
+              "scales": [
+                0.95,
+                1.0,
+                1.05
               ]
             },
             {
-              "remark": "等待1秒",
-              "seconds": 1,
-              "type": "wait"
+              "type": "wait",
+              "remark": "0.5秒后验证宝箱弹框是否正常弹出",
+              "seconds": 0.5
             },
             {
-              "interval_sec": 0.6,
+              "type": "if_image",
+              "remark": "验证领取图标(两种弹框皮肤：大按钮claim=0.998/紧凑按钮claim_small=1.000/done动画帧/video_confirm看广告)，timeout=8保证至少两帧防弹出动画；两帧都没看到=战斗中断，抢红包约10秒后回顶部重试",
+              "templates": [
+                "../image_templates/baoxiang_claim.png",
+                "../image_templates/baoxiang_claim_small.png",
+                "../image_templates/bl_baoxiaoxing-done.png",
+                "../image_templates/baoxiang_video_confirm.png"
+              ],
               "region": {
-                "height": 1191,
-                "width": 828,
                 "x": 137,
-                "y": 378
+                "y": 378,
+                "width": 828,
+                "height": 1191
               },
-              "remark": "识别图标bl_baoxiaoxing-done.png并点击",
-              "template": "../image_templates/bl_baoxiaoxing-done.png",
               "threshold": 0.88,
               "timeout_sec": 8,
-              "type": "find_image_click"
-            },
-            {
-              "remark": "等待2秒",
-              "seconds": 2,
-              "type": "wait"
-            },
-            {
-              "remark": "关闭领取页面",
-              "type": "click",
-              "x": 530,
-              "y": 1450
-            },
-            {
-              "remark": "宝箱开启完成，稍候片刻即恢复抢红包",
-              "seconds": 3,
-              "type": "wait"
+              "interval_sec": 0.3,
+              "confirm_attempts": 1,
+              "evaluate_all_templates": false,
+              "save_debug": true,
+              "debug_dir": "/Users/shaoyouzhou/Documents/Playground/Bluestacks-automation-standalone/debug_baoxiang",
+              "then_actions": [
+                {
+                  "type": "find_image_click",
+                  "remark": "弹框正常：识别领取/看广告按钮并点击(约2-3秒)",
+                  "templates": [
+                    "../image_templates/baoxiang_claim.png",
+                    "../image_templates/baoxiang_claim_small.png",
+                    "../image_templates/bl_baoxiaoxing-done.png",
+                    "../image_templates/baoxiang_video_confirm.png"
+                  ],
+                  "region": {
+                    "x": 137,
+                    "y": 378,
+                    "width": 828,
+                    "height": 1191
+                  },
+                  "threshold": 0.88,
+                  "timeout_sec": 5,
+                  "interval_sec": 0.6
+                },
+                {
+                  "remark": "等待2秒",
+                  "seconds": 2,
+                  "type": "wait"
+                },
+                {
+                  "remark": "关闭领取页面",
+                  "type": "click",
+                  "x": 530,
+                  "y": 1450
+                },
+                {
+                  "remark": "宝箱开启完成，稍候片刻即恢复抢红包",
+                  "seconds": 3,
+                  "type": "wait"
+                }
+              ],
+              "else_actions": [
+                {
+                  "type": "loop",
+                  "count": 8,
+                  "remark": "战斗状态中断：重新开启抢红包(8轮约7-8秒，加上回顶部后约10秒再次识别)，循环直至弹框正常。此段后台线程已退出，开箱成功/放弃后回顶部自动重启",
+                  "actions": [
+                    {
+                      "remark": "点击左下角红包",
+                      "type": "click",
+                      "x": 92,
+                      "y": 1329
+                    },
+                    {
+                      "remark": "等待0.31秒",
+                      "seconds": 0.31,
+                      "type": "wait"
+                    },
+                    {
+                      "remark": "点击开",
+                      "type": "click",
+                      "x": 550,
+                      "y": 900
+                    },
+                    {
+                      "remark": "等待0.1秒",
+                      "seconds": 0.1,
+                      "type": "wait"
+                    },
+                    {
+                      "remark": "点击开",
+                      "type": "click",
+                      "x": 550,
+                      "y": 900
+                    },
+                    {
+                      "remark": "等待0.1秒",
+                      "seconds": 0.1,
+                      "type": "wait"
+                    },
+                    {
+                      "remark": "点击开",
+                      "type": "click",
+                      "x": 550,
+                      "y": 900
+                    },
+                    {
+                      "remark": "等待0.1秒",
+                      "seconds": 0.1,
+                      "type": "wait"
+                    }
+                  ]
+                }
+              ]
             }
-          ]
+          ],
+          "else_actions": []
         }
       ]
     }

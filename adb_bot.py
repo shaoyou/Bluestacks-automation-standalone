@@ -47,6 +47,9 @@ LAST_SCREENSHOT_PAIR_KEY = "_latest_screenshot_pair"
 BACKGROUND_TASKS_KEY = "_background_tasks"
 CHEST_ANALYSIS_TASK_KEY = "_chest_analysis_task"
 CHEST_ANALYSIS_QUEUE_KEY = "_chest_analysis_queue"
+BG_CHECK_THREAD_KEY = "_bg_check_thread"
+BG_CHECK_HIT_KEY = "_bg_check_hit"
+BG_CHECK_STOP_KEY = "_bg_check_stop"
 
 
 class BotError(RuntimeError):
@@ -3424,6 +3427,156 @@ def execute_if_image(ctx: RunContext, action: Dict[str, Any]) -> None:
         execute_actions(ctx, else_actions)
 
 
+def background_check_worker(
+    ctx: RunContext,
+    action: Dict[str, Any],
+    template_paths: List[Path],
+    stop_event: threading.Event,
+) -> None:
+    """Continuously screenshot+match in a daemon thread so the main plan can
+    keep tapping while a template (e.g. the chest magnifier) is being watched.
+
+    Single-shot semantics: exits after the first hit (result stored in
+    BG_CHECK_HIT_KEY) or when stop_event/ctx.stop_at fires. Never raises:
+    transient screenshot failures are logged and retried."""
+    threshold = float(action.get("threshold", 0.88))
+    interval_sec = max(0.2, float(action.get("interval_sec", 0.5)))
+    index = int(action.get("index", 0))
+    match_action = prepare_image_match_profile(dict(action), "background_check", threshold, interval_sec)
+    search_action = image_search_action(match_action, template_paths)
+    minimum_template_size = required_template_search_size(ctx, template_paths, search_action)
+    remark = action_remark_text(action)
+    remark_suffix = f" | remark: {remark}" if remark else ""
+    attempt = 0
+    while not stop_event.is_set():
+        if ctx.stop_at is not None and time.time() >= ctx.stop_at:
+            return
+        attempt += 1
+        try:
+            screenshot = capture_device_screenshot(ctx)
+        except Exception as exc:  # noqa: BLE001 - worker must survive transient device errors
+            log(f"background_check screenshot failed (attempt {attempt}): {exc}")
+            if stop_event.wait(1.5):
+                return
+            continue
+        try:
+            search = prepare_search_image(ctx, screenshot, search_action, minimum_size=minimum_template_size)
+            search_size = (search.gray.shape[1], search.gray.shape[0])
+            for template_path in template_paths:
+                prepared_variants = get_prepared_template_variants(ctx, template_path, search_action, search_size)
+                match, _candidate_best = find_image_match(
+                    search=search,
+                    template_variants=prepared_variants,
+                    threshold=threshold,
+                    index=index,
+                    action=search_action,
+                )
+                if match is None:
+                    continue
+                hit = {
+                    "template": template_path.name,
+                    "similarity": float(match["similarity"]),
+                    "x": int(round(match["x"])),
+                    "y": int(round(match["y"])),
+                    "width": int(round(match["width"])),
+                    "height": int(round(match["height"])),
+                    "center_x": int(round(match["x"] + match["width"] / 2.0)),
+                    "center_y": int(round(match["y"] + match["height"] / 2.0)),
+                }
+                ctx.runtime_values[BG_CHECK_HIT_KEY] = hit
+                log(
+                    f"background_check HIT '{template_path.name}' "
+                    f"box=({hit['x']},{hit['y']})-({hit['x'] + hit['width']},{hit['y'] + hit['height']}) "
+                    f"similarity={hit['similarity']:.3f} (attempt {attempt}){remark_suffix}"
+                )
+                return
+        except Exception as exc:  # noqa: BLE001 - matching must never kill the worker
+            log(f"background_check matching failed (attempt {attempt}): {exc}")
+        if stop_event.wait(interval_sec):
+            return
+
+
+def start_background_check(ctx: RunContext, action: Dict[str, Any]) -> None:
+    if ctx.dry_run:
+        log(with_action_remark("[DRY-RUN] background_check start skipped (no device in preview)", action))
+        return
+    thread = ctx.runtime_values.get(BG_CHECK_THREAD_KEY)
+    if isinstance(thread, threading.Thread) and thread.is_alive():
+        return  # idempotent: the watcher keeps running across plan cycles
+    template_paths = resolve_action_template_paths(ctx, action, "background_check")
+    if not template_paths:
+        raise BotError("background_check requires at least one template")
+    stop_event = threading.Event()
+    ctx.runtime_values[BG_CHECK_STOP_KEY] = stop_event
+    worker = threading.Thread(
+        target=background_check_worker,
+        args=(ctx, dict(action), template_paths, stop_event),
+        name="background-check",
+        daemon=True,
+    )
+    ctx.runtime_values[BG_CHECK_THREAD_KEY] = worker
+    worker.start()
+    log(with_action_remark(
+        f"background_check worker started ({len(template_paths)} template(s), "
+        f"threshold={float(action.get('threshold', 0.88)):.3f}, "
+        f"interval={max(0.2, float(action.get('interval_sec', 0.5))):.1f}s)",
+        action,
+    ))
+
+
+def execute_background_check(ctx: RunContext, action: Dict[str, Any]) -> None:
+    command = str(action.get("command", "start")).strip().lower()
+    if command == "stop":
+        stop_event = ctx.runtime_values.get(BG_CHECK_STOP_KEY)
+        if isinstance(stop_event, threading.Event):
+            stop_event.set()
+        log(with_action_remark("background_check worker stop requested", action))
+    else:
+        start_background_check(ctx, action)
+
+
+def execute_grab_loop(ctx: RunContext, action: Dict[str, Any]) -> None:
+    loop_count = int(action.get("count", 1))
+    if loop_count == 0:
+        return
+    watch_hit = bool_value(action.get("watch_hit"), default=False)
+    nested_actions = action.get("actions", [])
+    if not isinstance(nested_actions, list):
+        raise BotError("grab_loop 'actions' must be an array")
+    log(with_action_remark(
+        f"Grab loop start count={'infinite' if loop_count < 0 else str(loop_count)} watch_hit={watch_hit}",
+        action,
+    ))
+    rounds = 0
+    while loop_count < 0 or rounds < loop_count:
+        check_stop(ctx)
+        if watch_hit and ctx.runtime_values.get(BG_CHECK_HIT_KEY) is not None:
+            log(with_action_remark("background_check hit detected; abort grab loop early", action))
+            return
+        execute_actions(ctx, nested_actions)
+        rounds += 1
+
+
+def execute_if_background_hit(ctx: RunContext, action: Dict[str, Any]) -> None:
+    hit = ctx.runtime_values.pop(BG_CHECK_HIT_KEY, None)
+    then_actions = action.get("then_actions", [])
+    else_actions = action.get("else_actions", [])
+    if not isinstance(then_actions, list):
+        raise BotError("if_background_hit 'then_actions' must be an array")
+    if not isinstance(else_actions, list):
+        raise BotError("if_background_hit 'else_actions' must be an array")
+    if hit is not None:
+        log(with_action_remark(
+            f"background_check hit consumed: '{hit.get('template')}' "
+            f"similarity={float(hit.get('similarity', 0.0)):.3f} -> then_actions",
+            action,
+        ))
+        execute_actions(ctx, then_actions)
+    else:
+        log(with_action_remark("no background_check hit -> else_actions", action))
+        execute_actions(ctx, else_actions)
+
+
 def remember_if_red_light_match(
     ctx: RunContext,
     screenshot: Image.Image,
@@ -4107,6 +4260,10 @@ def do_swipe(ctx: RunContext, action: Dict[str, Any]) -> None:
     log(with_action_remark(f"Swipe ({x1}, {y1}) -> ({x2}, {y2}), {duration}ms", action))
 
 
+TRACE_EMIT_GAP_MS = 35
+TRACE_CORNER_MIN_GAP_MS = 30
+
+
 def trace_corner_flags(points: List[Dict[str, Any]], min_turn_deg: float = 25.0) -> List[bool]:
     """Mark points that define the shape of a trace (turns / reversals).
 
@@ -4246,16 +4403,35 @@ def do_trace(ctx: RunContext, action: Dict[str, Any]) -> None:
         script_lines = [f"input motionevent DOWN {x0} {y0}"]
         # Time base starts once DOWN has been delivered, matching the
         # recorded gesture whose first sample is the touch-down event.
+        # Uptime in ms fits a 32-bit signed int for any realistic uptime
+        # (< 2.1M seconds), so no modulo dance is needed here. The decimal
+        # part of /proc/uptime is centiseconds, hence the x10; 10# forces
+        # decimal parsing for values like 08/09.
         script_lines += [
             "read up _ < /proc/uptime",
-            "t0=$(( (${up%.*} % 100000) * 1000 + ${up#*.} * 10 ))",
+            "t0=$(( ${up%.*} * 1000 + 10#${up#*.} * 10 ))",
         ]
+        critical_flags = trace_corner_flags(points)
+        # The guest spends roughly 50ms of wall time per emitted point (one
+        # `input motionevent` spawn plus /proc/uptime reads), while recorded
+        # traces sample every 15-25ms. Emitting every sample therefore
+        # stretches the whole gesture 1.5-2x; joystick-style games walk at a
+        # constant speed while the finger is down, so the character overshoots
+        # the recorded route and gets stuck on obstacles. Emit on a
+        # TRACE_EMIT_GAP_MS grid and keep corners only when they fit within
+        # TRACE_CORNER_MIN_GAP_MS, so the schedule keeps up with the recorded
+        # timing.
+        emit_points = [first]
+        for i in range(1, len(points)):
+            gap_ms = int(points[i].get("t_ms", 0)) - int(emit_points[-1].get("t_ms", 0))
+            if i == len(points) - 1:
+                emit_points.append(points[i])
+            elif gap_ms >= TRACE_EMIT_GAP_MS or (critical_flags[i] and gap_ms >= TRACE_CORNER_MIN_GAP_MS):
+                emit_points.append(points[i])
         prev_t = int(first.get("t_ms", 0))
         target_ms = 0.0
-        last_index = len(points) - 1
-        critical_flags = trace_corner_flags(points)
-        for i in range(1, len(points)):
-            p = points[i]
+        for i in range(1, len(emit_points)):
+            p = emit_points[i]
             t_now = int(p.get("t_ms", prev_t))
             delta_raw = t_now - prev_t
             delta_ms = min_segment_ms if delta_raw <= 0 else max(min_segment_ms, min(max_segment_ms, delta_raw))
@@ -4263,11 +4439,7 @@ def do_trace(ctx: RunContext, action: Dict[str, Any]) -> None:
             x, y = map_trace_point(int(p["x"]), int(p["y"]))
             script_lines += [
                 "read up _ < /proc/uptime",
-                "now=$(( (${up%.*} % 100000) * 1000 + ${up#*.} * 10 ))",
-                # mksh arithmetic is 32-bit; the 100000s modulo above keeps
-                # sec*1000 in range, and this adds one block back if uptime
-                # wrapped while the gesture was playing.
-                "if [ $now -lt $t0 ]; then now=$(( now + 100000000 )); fi",
+                "now=$(( ${up%.*} * 1000 + 10#${up#*.} * 10 ))",
                 f"remain=$(( {int(round(target_ms))} - (now - t0) ))",
                 # Do not sleep unless ahead of schedule.
                 "if [ $remain -gt 0 ]; then",
@@ -4275,26 +4447,14 @@ def do_trace(ctx: RunContext, action: Dict[str, Any]) -> None:
                 "  if [ $msec -lt 10 ]; then ms=00$msec; elif [ $msec -lt 100 ]; then ms=0$msec; else ms=$msec; fi",
                 "  read -t $sec.$ms _ </dev/zero",
                 "fi",
+                f"input motionevent MOVE {x} {y}",
             ]
-            if i < last_index and not critical_flags[i]:
-                # When the guest cannot dispatch every sample in time, drop
-                # intermediate samples instead of stretching the gesture. The
-                # final sample and every corner are always sent so the route
-                # shape stays exact.
-                skip_late_ms = max(15, min(80, int(round(delta_ms * 0.6))))
-                script_lines += [
-                    f"if [ $remain -gt -{skip_late_ms} ]; then",
-                    f"  input motionevent MOVE {x} {y}",
-                    "fi",
-                ]
-            else:
-                script_lines.append(f"input motionevent MOVE {x} {y}")
             prev_t = t_now
         last = points[-1]
         xl, yl = map_trace_point(int(last["x"]), int(last["y"]))
         script_lines.append(f"input motionevent UP {xl} {yl}")
         adb_shell_script(ctx, "\n".join(script_lines) + "\n", timeout=180.0)
-        log(with_action_remark(f"Trace replayed continuously with {len(points)} points", action))
+        log(with_action_remark(f"Trace replayed continuously with {len(emit_points)} points (sampled from {len(points)})", action))
         return
 
     # Fallback for devices without motionevent support, or forced swipe mode.
@@ -4432,6 +4592,12 @@ def execute_action(ctx: RunContext, action: Dict[str, Any]) -> None:
         while loop_count < 0 or i < loop_count:
             execute_actions(ctx, action.get("actions", []))
             i += 1
+    elif action_type == "background_check":
+        execute_background_check(ctx, action)
+    elif action_type == "grab_loop":
+        execute_grab_loop(ctx, action)
+    elif action_type == "if_background_hit":
+        execute_if_background_hit(ctx, action)
     elif action_type == "patrol":
         execute_patrol(ctx, action)
     else:
