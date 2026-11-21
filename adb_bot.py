@@ -747,6 +747,39 @@ def adb_shell(ctx: RunContext, shell_args: List[str]) -> None:
         raise DeviceError(f"ADB shell failed: adb shell {pretty}\n{details}") from exc
 
 
+def adb_shell_script(ctx: RunContext, script: str, timeout: float = 120.0) -> subprocess.CompletedProcess[str]:
+    """Run a multi-line shell script on the device through a single adb session.
+
+    Feeding the script on stdin avoids one adb round-trip per command, which is
+    what makes timed trace replay feasible: `input motionevent` commands and
+    shell-builtin waits then run back-to-back inside the guest shell.
+    """
+    if ctx.device_backend == "hdc":
+        raise BotError("Shell scripts are only supported on the ADB backend.")
+    line_count = len(script.splitlines())
+    if ctx.dry_run:
+        log(f"[DRY-RUN] {ctx.device_backend} shell sh -s ({line_count} lines)")
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+    log(f"CMD {ctx.device_backend} shell sh -s ({line_count} lines)")
+    cmd = build_adb_cmd(ctx, ["shell", "sh", "-s"])
+    try:
+        result = subprocess.run(
+            cmd,
+            input=script,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise DeviceError(f"ADB shell script timed out after {timeout:.0f}s") from exc
+    if result.returncode != 0:
+        text = f"{result.stdout}\n{result.stderr}".strip()
+        raise DeviceError(f"ADB shell script failed (exit {result.returncode}):\n{text}")
+    return result
+
+
 def adb_shell_result(ctx: RunContext, shell_args: List[str]) -> subprocess.CompletedProcess[str]:
     if ctx.dry_run:
         return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
@@ -884,8 +917,30 @@ def do_click(ctx: RunContext, action: Dict[str, Any]) -> None:
     x, y = map_input_point(ctx, x, y)
     x = apply_jitter(x, ctx.jitter)
     y = apply_jitter(y, ctx.jitter)
+    duration_ms = int(action.get("duration_ms", 0) or 0)
+    if duration_ms >= 150 and ctx.device_backend != "hdc":
+        # Preserve a recorded slow tap: a plain `input tap` releases almost
+        # immediately, which some game buttons distinguish from a short hold.
+        adb_shell(ctx, ["input", "swipe", str(x), str(y), str(x), str(y), str(duration_ms)])
+        log(with_action_remark(f"Click ({x}, {y}), hold {duration_ms}ms", action))
+        return
     adb_shell(ctx, ["input", "tap", str(x), str(y)])
     log(with_action_remark(f"Click ({x}, {y})", action))
+
+
+def do_long_press(ctx: RunContext, action: Dict[str, Any]) -> None:
+    x = int(action["x"])
+    y = int(action["y"])
+    duration_ms = max(1, int(action.get("duration_ms", 700) or 700))
+    x, y = map_input_point(ctx, x, y)
+    x = apply_jitter(x, ctx.jitter)
+    y = apply_jitter(y, ctx.jitter)
+    if ctx.device_backend == "hdc":
+        adb_shell(ctx, ["input", "longclick", str(x), str(y)])
+    else:
+        # Zero-length swipe = press, hold, release at the same coordinate.
+        adb_shell(ctx, ["input", "swipe", str(x), str(y), str(x), str(y), str(duration_ms)])
+    log(with_action_remark(f"Long press ({x}, {y}), {duration_ms}ms", action))
 
 
 def tap_absolute(ctx: RunContext, x: int, y: int) -> Tuple[int, int]:
@@ -4052,6 +4107,55 @@ def do_swipe(ctx: RunContext, action: Dict[str, Any]) -> None:
     log(with_action_remark(f"Swipe ({x1}, {y1}) -> ({x2}, {y2}), {duration}ms", action))
 
 
+def trace_corner_flags(points: List[Dict[str, Any]], min_turn_deg: float = 25.0) -> List[bool]:
+    """Mark points that define the shape of a trace (turns / reversals).
+
+    During replay the adaptive scheduler may drop intermediate samples when the
+    guest cannot keep up. Dropping a corner would cut the route short, so those
+    points (and their neighbours) are kept unconditionally.
+    """
+    flags = [False] * len(points)
+    if len(points) < 3:
+        return flags
+
+    def coords(index: int) -> Tuple[float, float]:
+        return float(points[index].get("x", 0.0)), float(points[index].get("y", 0.0))
+
+    for i in range(1, len(points) - 1):
+        prev_index = i - 1
+        while prev_index > 0:
+            x0, y0 = coords(prev_index)
+            xi, yi = coords(i)
+            if math.hypot(xi - x0, yi - y0) >= 1.0:
+                break
+            prev_index -= 1
+        next_index = i + 1
+        while next_index < len(points) - 1:
+            x1, y1 = coords(next_index)
+            xi, yi = coords(i)
+            if math.hypot(x1 - xi, y1 - yi) >= 1.0:
+                break
+            next_index += 1
+
+        x0, y0 = coords(prev_index)
+        xi, yi = coords(i)
+        x1, y1 = coords(next_index)
+        v1x, v1y = xi - x0, yi - y0
+        v2x, v2y = x1 - xi, y1 - yi
+        n1 = math.hypot(v1x, v1y)
+        n2 = math.hypot(v2x, v2y)
+        if n1 < 1.0 or n2 < 1.0:
+            continue
+        cosine = max(-1.0, min(1.0, (v1x * v2x + v1y * v2y) / (n1 * n2)))
+        if math.degrees(math.acos(cosine)) >= min_turn_deg:
+            flags[i] = True
+            if i - 1 > 0:
+                flags[i - 1] = True
+            if i + 1 < len(points) - 1:
+                flags[i + 1] = True
+    return flags
+
+
 def do_trace(ctx: RunContext, action: Dict[str, Any]) -> None:
     points = action.get("points", [])
     if not isinstance(points, list) or len(points) < 2:
@@ -4131,33 +4235,65 @@ def do_trace(ctx: RunContext, action: Dict[str, Any]) -> None:
     else:
         use_motion = supports_motionevent(ctx)
     if use_motion:
+        # One adb round-trip for the whole gesture. Every `input motionevent`
+        # is a synchronous process launch inside the guest and can cost tens
+        # of milliseconds depending on app load, so blind sleeps overshoot.
+        # The script below keeps reading /proc/uptime (shell builtins only)
+        # and waits for each point's target time: fast when the device keeps
+        # up, and compressed instead of stretched when it cannot.
         first = points[0]
-        replay_start = time.perf_counter()
         x0, y0 = map_trace_point(int(first["x"]), int(first["y"]))
-        adb_shell(ctx, ["input", "motionevent", "DOWN", str(x0), str(y0)])
-        first_t = int(first.get("t_ms", 0))
-        prev_t = first_t
+        script_lines = [f"input motionevent DOWN {x0} {y0}"]
+        # Time base starts once DOWN has been delivered, matching the
+        # recorded gesture whose first sample is the touch-down event.
+        script_lines += [
+            "read up _ < /proc/uptime",
+            "t0=$(( (${up%.*} % 100000) * 1000 + ${up#*.} * 10 ))",
+        ]
+        prev_t = int(first.get("t_ms", 0))
+        target_ms = 0.0
+        last_index = len(points) - 1
+        critical_flags = trace_corner_flags(points)
         for i in range(1, len(points)):
             p = points[i]
             t_now = int(p.get("t_ms", prev_t))
             delta_raw = t_now - prev_t
-            _delta = min_segment_ms if delta_raw <= 0 else max(min_segment_ms, min(max_segment_ms, delta_raw))
-            # Use absolute scheduling to compensate adb command overhead.
-            target_elapsed = max(0.0, (t_now - first_t) / 1000.0) * trace_time_scale
-            remain = target_elapsed - (time.perf_counter() - replay_start)
-            if remain > 0:
-                time.sleep(remain)
+            delta_ms = min_segment_ms if delta_raw <= 0 else max(min_segment_ms, min(max_segment_ms, delta_raw))
+            target_ms += delta_ms * trace_time_scale
             x, y = map_trace_point(int(p["x"]), int(p["y"]))
-            adb_shell(ctx, ["input", "motionevent", "MOVE", str(x), str(y)])
+            script_lines += [
+                "read up _ < /proc/uptime",
+                "now=$(( (${up%.*} % 100000) * 1000 + ${up#*.} * 10 ))",
+                # mksh arithmetic is 32-bit; the 100000s modulo above keeps
+                # sec*1000 in range, and this adds one block back if uptime
+                # wrapped while the gesture was playing.
+                "if [ $now -lt $t0 ]; then now=$(( now + 100000000 )); fi",
+                f"remain=$(( {int(round(target_ms))} - (now - t0) ))",
+                # Do not sleep unless ahead of schedule.
+                "if [ $remain -gt 0 ]; then",
+                "  sec=$((remain/1000)); msec=$((remain%1000))",
+                "  if [ $msec -lt 10 ]; then ms=00$msec; elif [ $msec -lt 100 ]; then ms=0$msec; else ms=$msec; fi",
+                "  read -t $sec.$ms _ </dev/zero",
+                "fi",
+            ]
+            if i < last_index and not critical_flags[i]:
+                # When the guest cannot dispatch every sample in time, drop
+                # intermediate samples instead of stretching the gesture. The
+                # final sample and every corner are always sent so the route
+                # shape stays exact.
+                skip_late_ms = max(15, min(80, int(round(delta_ms * 0.6))))
+                script_lines += [
+                    f"if [ $remain -gt -{skip_late_ms} ]; then",
+                    f"  input motionevent MOVE {x} {y}",
+                    "fi",
+                ]
+            else:
+                script_lines.append(f"input motionevent MOVE {x} {y}")
             prev_t = t_now
-        last_t = int(points[-1].get("t_ms", prev_t))
-        final_elapsed = max(0.0, (last_t - first_t) / 1000.0) * trace_time_scale
-        final_remain = final_elapsed - (time.perf_counter() - replay_start)
-        if final_remain > 0:
-            time.sleep(final_remain)
         last = points[-1]
         xl, yl = map_trace_point(int(last["x"]), int(last["y"]))
-        adb_shell(ctx, ["input", "motionevent", "UP", str(xl), str(yl)])
+        script_lines.append(f"input motionevent UP {xl} {yl}")
+        adb_shell_script(ctx, "\n".join(script_lines) + "\n", timeout=180.0)
         log(with_action_remark(f"Trace replayed continuously with {len(points)} points", action))
         return
 
@@ -4241,6 +4377,8 @@ def execute_action(ctx: RunContext, action: Dict[str, Any]) -> None:
     action_type = action.get("type")
     if action_type == "click":
         do_click(ctx, action)
+    elif action_type == "long_press":
+        do_long_press(ctx, action)
     elif action_type == "click_match":
         do_click_match(ctx, action)
     elif action_type == "record_draw_event":

@@ -87,6 +87,11 @@ DEFAULT_RECORDING_PROFILE: Dict[str, float] = {
     "continuation_distance_px": 12.0,
     "continuation_span_px": 40.0,
     "continuation_duration_ms": 700.0,
+    # A gesture that stays inside this radius for at least the minimum duration
+    # is a press-and-hold, not a drag. Replaying it as a zero-length swipe keeps
+    # the hold time instead of relying on a trace with a synthetic move.
+    "long_press_max_move_px": 12.0,
+    "long_press_min_duration_sec": 0.55,
 }
 
 SPARSE_ABS_IDLE_SPLIT_SEC = 0.55
@@ -112,6 +117,8 @@ def normalize_profile(raw: Optional[Dict[str, object]]) -> Dict[str, float]:
     profile["continuation_distance_px"] = max(profile["merge_distance_px"], profile["continuation_distance_px"])
     profile["continuation_span_px"] = max(1.0, profile["continuation_span_px"])
     profile["continuation_duration_ms"] = max(1.0, profile["continuation_duration_ms"])
+    profile["long_press_max_move_px"] = max(2.0, profile["long_press_max_move_px"])
+    profile["long_press_min_duration_sec"] = max(0.2, profile["long_press_min_duration_sec"])
     return profile
 
 
@@ -351,30 +358,40 @@ def build_actions_from_gestures(
                 actions.append({"type": "wait", "seconds": round(gap, 3)})
         prev_end = g.end_t
 
-        first = g.points[0]
-        last = g.points[-1]
-        x1s, y1s = map_raw_point_to_screen(
-            first.x_raw, first.y_raw, x_raw_max, y_raw_max, screen_w, screen_h, invert_x, invert_y, swap_xy
-        )
-        x2s, y2s = map_raw_point_to_screen(
-            last.x_raw, last.y_raw, x_raw_max, y_raw_max, screen_w, screen_h, invert_x, invert_y, swap_xy
-        )
+        mapped_points = [
+            map_raw_point_to_screen(
+                p.x_raw, p.y_raw, x_raw_max, y_raw_max, screen_w, screen_h, invert_x, invert_y, swap_xy
+            )
+            for p in g.points
+        ]
+        x1s, y1s = mapped_points[0]
+        x2s, y2s = mapped_points[-1]
         click = gesture_to_click(x1s, y1s, x2s, y2s, g, resolved_profile)
         x2, y2 = x2s, y2s
         duration = max(0.0, g.end_t - g.start_t)
+        duration_ms = max(0, int(round(duration * 1000)))
+        # Largest distance from the down point. A hold that never leaves this
+        # radius is a long press even if the driver emitted a few jitter frames.
+        press_span = max(math.hypot(px - x1s, py - y1s) for px, py in mapped_points)
 
         if click is not None:
+            click["duration_ms"] = duration_ms
             actions.append(click)
+        elif press_span <= resolved_profile["long_press_max_move_px"] and duration >= resolved_profile["long_press_min_duration_sec"]:
+            actions.append(
+                {
+                    "type": "long_press",
+                    "x": x1s,
+                    "y": y1s,
+                    "duration_ms": duration_ms,
+                }
+            )
         else:
             px_points: List[Dict] = []
             last_px: Optional[Tuple[int, int]] = None
             start_t = g.start_t
             # Keep significant points only; this preserves trajectory and controls JSON size.
-            for p in g.points:
-                pxs, pys = map_raw_point_to_screen(
-                    p.x_raw, p.y_raw, x_raw_max, y_raw_max, screen_w, screen_h, invert_x, invert_y, swap_xy
-                )
-                px, py = pxs, pys
+            for p, (px, py) in zip(g.points, mapped_points):
                 if last_px is not None:
                     if math.hypot(px - last_px[0], py - last_px[1]) < 2.0:
                         continue
@@ -391,8 +408,8 @@ def build_actions_from_gestures(
                 last_t_ms = int(px_points[-1].get("t_ms", 0))
                 if end_t_ms > last_t_ms:
                     px_points.append({"x": x2, "y": y2, "t_ms": end_t_ms})
-            if len(px_points) > 180:
-                step = max(1, len(px_points) // 180)
+            if len(px_points) > 300:
+                step = max(1, len(px_points) // 300)
                 sampled = px_points[::step]
                 if sampled[-1] != px_points[-1]:
                     sampled.append(px_points[-1])
@@ -407,7 +424,7 @@ def build_actions_from_gestures(
                         "points": px_points,
                         "mode": "motion",
                         "min_segment_ms": 1,
-                        "max_segment_ms": 1000,
+                        "max_segment_ms": 10000,
                     }
                 )
     return actions
@@ -607,6 +624,7 @@ def record_gestures(
     stop_after_gestures: Optional[int] = None,
     on_gesture_captured: Optional[Callable[[Gesture, str], None]] = None,
     on_gesture_raw_captured: Optional[Callable[[Gesture, str, List[str]], None]] = None,
+    stdin_stop: bool = False,
 ) -> Tuple[List[Gesture], str]:
     cmd = adb_cmd(adb, device, ["shell", "getevent", "-lt"])
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1)
@@ -641,6 +659,27 @@ def record_gestures(
     else:
         print("[Recorder] Listening on all input events. Touch BlueStacks to auto-detect touch device.")
         print("[Recorder] Press Ctrl+C to stop and save.")
+    if stdin_stop:
+        print("[Recorder] Waiting for 'stop' command on stdin to stop and save.")
+
+    def watch_stdin_stop() -> None:
+        # Cross-platform graceful stop: terminating the getevent child makes the
+        # stdout loop below hit EOF, so recording ends exactly like Ctrl+C and
+        # the caller can still build and write the plan JSON.
+        try:
+            for stdin_line in sys.stdin:
+                if stdin_line.strip().lower() == "stop":
+                    print("[Recorder] Stop command received, saving recording...")
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                    return
+        except Exception:
+            pass
+
+    if stdin_stop:
+        threading.Thread(target=watch_stdin_stop, name="recorder-stdin-stop", daemon=True).start()
 
     def append_point_if_possible(ts: float) -> None:
         nonlocal cur_points, x_raw, y_raw
@@ -768,12 +807,24 @@ def record_gestures(
                         cur_points = []
                         cur_raw_lines = [line_s]
                         current_explicit_touch = True
+                        # Drop coordinates from the previous gesture. Drivers such
+                        # as BlueStacks Virtual Touch emit TRACKING_ID before
+                        # POSITION_X/Y, so keeping the old values would prepend a
+                        # bogus jump from the last touch point to this gesture.
+                        x_raw = None
+                        y_raw = None
                         # Some devices emit coordinates before TRACKING_ID down.
                         append_point_if_possible(t)
             # EV_KEY BTN_TOUCH
             elif etype == "0001" and ecode == "014a":
                 saw_touch_flag = True
                 if evalue == 1:
+                    if not touching:
+                        # Same stale-coordinate guard as TRACKING_ID down, but
+                        # do not wipe coordinates that already arrived for this
+                        # frame (BlueStacks sends TRACKING_ID, X, Y, BTN_TOUCH).
+                        x_raw = None
+                        y_raw = None
                     touching = True
                     cur_start_t = t
                     cur_points = []
@@ -1410,6 +1461,11 @@ def main() -> int:
     parser.add_argument("--calibrate-mapping", action="store_true", help="Record one stroke and print best mapping")
     parser.add_argument("--print-clicks-only", action="store_true", help="Listen to touches and print click coordinates only")
     parser.add_argument("--profile", help="Recording profile JSON path")
+    parser.add_argument(
+        "--stdin-stop",
+        action="store_true",
+        help="Stop recording and save when the line 'stop' arrives on stdin",
+    )
     parser.add_argument("--diagnose-self-heal", action="store_true", help="Run diagnostic capture, propose repair, and save better profile")
     args = parser.parse_args()
     profile = load_recording_profile(args.profile)
@@ -1476,6 +1532,7 @@ def main() -> int:
         min_points=max(1, args.min_points),
         forced_event_dev=args.event_dev,
         stop_after_gestures=1 if args.calibrate_mapping else None,
+        stdin_stop=bool(args.stdin_stop),
     )
     x_max, y_max = touch_caps[selected_dev]
     print(f"[Recorder] Using touch device: {selected_dev}, raw max: x={x_max}, y={y_max}")

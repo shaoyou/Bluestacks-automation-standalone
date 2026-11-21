@@ -45,6 +45,7 @@ adb devices
 - `ui_manager.py`: 本地脚本管理 UI（新建/编辑/保存/切换/双实例运行）
 - `swiftui_manager/`: SwiftUI 管理 UI（推荐）
 - `record_touch.py`: 录制 BlueStacks 触摸并导出脚本
+- `tools/recorder_selftest.py`: 录制/回放端到端自检（离线 + 真机）
 - `CONFIG_REFERENCE.md`: 关键字/type 列表/操作实例手册
 
 ## 3.1 启动管理 UI
@@ -116,6 +117,12 @@ python3 /Users/admins/Documents/QuickJSOn/bluestacks-automation-standalone/recor
 - `--loop-count -1` 表示生成无限循环；`1` 表示只执行一次；`N` 表示循环 N 次。
 - 默认开启温和清洗（删除明显误触 click 噪声），可通过 `--no-clean-noise` 关闭。
 - 坐标轴翻转：`--invert-y`（常用于修正上下方向反转），`--invert-x`（左右反转）。
+- 录制结果的动作类型：
+  - 短按 → `click`，并保留实际按压时长 `duration_ms`
+  - 位置基本不动、持续 `>=0.55s` → `long_press`
+  - 拖动 → `trace`（保留采样点和相对时间）
+  - 两次触摸之间的停顿 → `wait`
+- 回放轨迹时使用单次 guest shell 会话，按 `/proc/uptime` 对齐每个采样点；设备处理不过来时丢弃中间点，保证总时长与录制一致，而不是把滑动拖慢数倍。
 - 若出现 `No actions captured`，可强制指定触摸设备：
 
 ```bash
@@ -125,6 +132,29 @@ python3 /Users/admins/Documents/QuickJSOn/bluestacks-automation-standalone/recor
   --event-dev /dev/input/event2 \
   --loop-count -1
 ```
+
+### 3.3.1 录制/回放自检
+
+```bash
+python3 tools/recorder_selftest.py --device emulator-5554
+```
+
+自检会：
+
+1. 校验手势分类（点击/拖动/长按）、等待间隔和轨迹生成是否没有“上一笔坐标串到下一笔”的问题。
+2. 在系统相册里打开一张纯色图片作为安全画布，注入一条已知复杂路线：**同一笔内多次变向的折线、对角线折返、独立点击、独立短滑、长按**，共 5 个手势、4 次松手。用 `record_touch.py` 正常录制，再与独立解析的原始 `getevent` 事件逐项比对（类型、起终点、时长、等待、每个拐点）。
+3. 用 `adb_bot` 按顺序回放所有轨迹，校验实际耗时与录制时间线一致；并确认每个拐点在回放脚本里都是“不可丢弃”的点（设备忙时只允许压缩直线上的采样点，不能切角）。
+4. 回放时临时开启系统「指针位置」叠加层，把每条轨迹截图保存到 `diagnostics/recorder_selftest/complex_route/`，并计算回放轨迹像素相对计划折线的覆盖误差（均值/最大值）；截图和数值都会写进自检报告。
+5. 最后执行录到的点击/长按，确认回放链路可用。
+
+常用参数：
+
+- `--offline`：只跑离线单元校验，不连接设备
+- `--no-sandbox`：不打开相册画布，直接在当前画面注入（在游戏里测试时使用，注意会真实点击/滑动）
+- `--skip-replay`：只校验录制结果，不回放
+- `--event-dev /dev/input/event2`：触摸事件设备，默认自动选择唯一触摸设备
+
+报告写入 `diagnostics/recorder_selftest/selftest_report.json`。
 
 ## 4. 快速运行
 

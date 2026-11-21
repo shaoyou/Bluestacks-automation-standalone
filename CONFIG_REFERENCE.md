@@ -88,6 +88,7 @@
 
 支持的 `type`：
 - `click`
+- `long_press`
 - `click_match`
 - `save_screenshot`
 - `find_image`
@@ -109,6 +110,7 @@
 
 - `x` (number, 必填): X 坐标
 - `y` (number, 必填): Y 坐标
+- `duration_ms` (number, 可选): 按住时长；录制生成的点击会带上实际按压时长，`>=150ms` 时回放改用零位移滑动以保留按压时间
 
 ### 3.2 click_match
 
@@ -325,6 +327,17 @@
 - `min_segment_ms` (number, 可选，默认 `16`): 每段最小时长
 - `max_segment_ms` (number, 可选，默认 `80`): 每段最大时长
 - 用途：精细回放手写轨迹（如画 `123`）
+- 回放实现：`mode: "motion"` 时整条轨迹通过一次 guest shell 脚本连续注入；脚本读取 `/proc/uptime` 对齐每个点的目标时间，设备处理事件偏慢时会自动丢弃中间采样点而不是把整条轨迹拉长。`t_ms` 不填时按 `min_segment_ms` 匀速回放。
+
+### 3.10.1 long_press
+
+```json
+{ "type": "long_press", "x": 600, "y": 900, "duration_ms": 900 }
+```
+
+- `x` `y` (number, 必填): 按压坐标
+- `duration_ms` (number, 可选，默认 `700`): 按住时长
+- 录制时，位置几乎不动且持续时间超过 `long_press_min_duration_sec` 的手势会生成该动作，而不是一条首尾相同的 trace
 
 ### 3.11 sequence
 
