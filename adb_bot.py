@@ -1650,24 +1650,30 @@ def sanitize_file_component(value: str) -> str:
     return cleaned or "image"
 
 
-def image_match_debug_dir(ctx: RunContext, action: Dict[str, Any]) -> Path:
+def debug_output_dir(ctx: RunContext, action: Dict[str, Any], default_subdir: str) -> Path:
+    """Resolve a debug output directory without letting a bad custom path
+    (e.g. a plan authored on another machine) abort the automation run."""
+    fallback = persistent_runtime_root(ctx) / "diagnostics" / default_subdir
     raw_dir = str(action.get("debug_dir", "")).strip()
     if raw_dir:
         path = resolve_action_file_path(ctx, raw_dir)
-    else:
-        path = persistent_runtime_root(ctx) / "diagnostics" / "image_match_debug"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            if os.access(path, os.W_OK):
+                return path
+            log(f"Debug directory {path} is not writable; using {fallback}")
+        except OSError as exc:
+            log(f"Debug directory {path} is unavailable ({exc}); using {fallback}")
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback
+
+
+def image_match_debug_dir(ctx: RunContext, action: Dict[str, Any]) -> Path:
+    return debug_output_dir(ctx, action, "image_match_debug")
 
 
 def red_light_debug_dir(ctx: RunContext, action: Dict[str, Any]) -> Path:
-    raw_dir = str(action.get("debug_dir", "")).strip()
-    if raw_dir:
-        path = resolve_action_file_path(ctx, raw_dir)
-    else:
-        path = persistent_runtime_root(ctx) / "diagnostics" / "red_light_debug"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return debug_output_dir(ctx, action, "red_light_debug")
 
 
 def resolve_red_light_regions(ctx: RunContext, action: Dict[str, Any], image_size: Tuple[int, int]) -> List[Dict[str, int]]:

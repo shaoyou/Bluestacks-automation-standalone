@@ -100,7 +100,6 @@
               "timeout_sec": 3,
               "interval_sec": 0.3,
               "save_debug": true,
-              "debug_dir": "/Users/shaoyouzhou/Documents/Playground/Bluestacks-automation-standalone/debug_baoxiang",
               "scales": [
                 0.95,
                 1.0,
@@ -133,7 +132,6 @@
               "confirm_attempts": 1,
               "evaluate_all_templates": false,
               "save_debug": true,
-              "debug_dir": "/Users/shaoyouzhou/Documents/Playground/Bluestacks-automation-standalone/debug_baoxiang",
               "then_actions": [
                 {
                   "type": "find_image_click",
