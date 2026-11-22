@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Activity, Check, CircleStop, Copy, Crosshair, Download, FolderOpen, KeyRound, MonitorSmartphone, Play, Radio, RefreshCw, Save, SlidersHorizontal, SquareDashedMousePointer, Trash2 } from "lucide-react";
-import { LogPanel, PageHeading, Toggle } from "../components/layout";
+import { LogPanel, PageHeading, PromptDialog, Toggle } from "../components/layout";
 import type { SharedProps } from "../app/shared";
 
 const hdcDeviceSuffix = " [HarmonyOS/HDC]";
@@ -20,27 +20,58 @@ export function RecorderPage(props: SharedProps) {
   const [invertY, setInvertY] = useState(false);
   const [swapXY, setSwapXY] = useState(false);
   const [cleanNoise, setCleanNoise] = useState(true);
+  const [createOpen, setCreateOpen] = useState(false);
   const running = !!props.running.recorder;
   const debugTaskId = "recorder-debug";
   const debugRunning = !!props.running[debugTaskId];
-  const wasRecording = useRef(false);
+  const wasRunning = useRef(props.running.recorder);
+  const adbDevices = props.devices.filter((item) => !item.endsWith(hdcDeviceSuffix) && !item.startsWith("hdc:"));
+  const gestureCount = (props.logs.recorder?.match(/Gesture captured/g) ?? []).length;
+  const outputNameFromLog = () => /--output\s+\S*[/\\]([^/\\\s]+\.json)/.exec(props.logs.recorder ?? "")?.[1] ?? null;
+  useEffect(() => { if (!device && adbDevices.length === 1) setDevice(adbDevices[0]); }, [device, adbDevices]);
   useEffect(() => {
-    if (wasRecording.current && !running) void props.refreshPlans().catch(() => undefined);
-    wasRecording.current = running;
-  }, [running]);
-  const start = async () => {
+    if (wasRunning.current && !running) {
+      const savedName = outputNameFromLog() ?? name;
+      void (async () => {
+        try { await props.refreshPlans(); } catch { /* 计划列表刷新失败不阻塞保存确认 */ }
+        try {
+          await window.bsManager.plansRead(savedName);
+          await props.loadPlan(savedName);
+          props.setNotice(`录制完成，脚本已自动保存为 ${savedName}，可在“脚本”页继续编辑`);
+        } catch {
+          props.setNotice(`录制已停止，但未能保存 ${savedName}（可能没有捕捉到触摸动作）`);
+        }
+      })();
+    }
+    wasRunning.current = running;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running, name]);
+  const start = (filename: string) => {
     if (!props.runtime) return;
-    const planName = `${name.replace(/\.json$/i, "")}.json`;
-    let available = props.plans;
-    if (!available.includes(planName)) available = await props.refreshPlans().catch(() => props.plans);
-    if (available.includes(planName) && !window.confirm(`${planName} 已存在，覆盖录制？`)) return;
-    const args = [`${props.runtime.root}/record_touch.py`, "--output", `${props.runtime.plansDir}/${planName}`, "--adb", props.settings.adbPath, "--loop-count", loop];
+    const args = [`${props.runtime.root}/record_touch.py`, "--output", `${props.runtime.plansDir}/${filename}`, "--adb", props.settings.adbPath, "--loop-count", loop];
     if (device) args.push("--device", device, "--profile", `${props.runtime.root}/recording_profiles/${device.replace(/[^a-zA-Z0-9._-]/g, "_")}.json`);
     if (invertX) args.push("--invert-x");
     if (invertY) args.push("--invert-y");
     if (swapXY) args.push("--swap-xy");
     if (!cleanNoise) args.push("--no-clean-noise");
     void props.startTask("recorder", args);
+  };
+  const submitCreate = async (value: string) => {
+    if (!props.runtime) {
+      props.setNotice("运行环境尚未加载完成");
+      return;
+    }
+    const filename = `${value.replace(/\.json$/i, "")}.json`;
+    let available = props.plans;
+    if (!available.includes(filename)) available = await props.refreshPlans().catch(() => props.plans);
+    if (available.includes(filename) && !window.confirm(`${filename} 已存在，覆盖录制？`)) return;
+    if (!available.includes(filename)) {
+      try { await window.bsManager.plansCreate(filename); } catch { /* 同名脚本已存在时直接复用，停止录制时会覆盖保存 */ }
+      try { await props.refreshPlans(); } catch { /* ignore */ }
+    }
+    setName(filename);
+    setCreateOpen(false);
+    start(filename);
   };
   const debugRun = async () => {
     if (!props.runtime) return props.setNotice("运行环境尚未加载完成");
@@ -63,7 +94,7 @@ export function RecorderPage(props: SharedProps) {
       props.setNotice(`复制日志失败: ${String(error)}`);
     }
   };
-  return <div className="page"><PageHeading title="触摸录制" detail="从设备原始触摸事件生成可编辑、可循环的 JSON 计划，录制完成后可直接调试运行验证回放效果。"><button className="button secondary" onClick={() => void props.refreshDevices()}><RefreshCw size={16} />刷新设备</button></PageHeading><div className="two-column"><section className="panel form-panel"><label>输出文件<input value={name} onChange={(event) => setName(event.target.value)} /></label><label>设备序列号<select value={device} onChange={(event) => setDevice(event.target.value)}><option value="">自动选择健康设备</option>{props.devices.map((item) => <option key={item}>{item}</option>)}</select></label><label>循环次数<input value={loop} onChange={(event) => setLoop(event.target.value)} /></label><Toggle label="清理明显误触点击" checked={cleanNoise} onChange={setCleanNoise} /><Toggle label="反转 X 轴" checked={invertX} onChange={setInvertX} /><Toggle label="反转 Y 轴" checked={invertY} onChange={setInvertY} /><Toggle label="交换 X/Y 轴" checked={swapXY} onChange={setSwapXY} />{!running ? <button className="button primary full" disabled={debugRunning} onClick={() => void start()}><Radio size={16} />开始录制</button> : <button className="button danger full" onClick={() => void window.bsManager.stopTask("recorder")}><CircleStop size={16} />停止并保存</button>}{!debugRunning ? <button className="button secondary full" disabled={running || !name.trim()} onClick={() => void debugRun()}><Play size={16} />调试运行</button> : <button className="button danger full" onClick={() => void window.bsManager.stopTask(debugTaskId)}><CircleStop size={16} />停止调试</button>}</section><div className="recorder-logs"><LogPanel title="录制日志" text={props.logs.recorder ?? ""} actions={<button className="icon-button" title="复制日志" aria-label="复制日志" disabled={!props.logs.recorder} onClick={() => void copyLog("recorder")}><Copy size={15} /></button>} /><LogPanel title="调试运行日志" text={props.logs[debugTaskId] ?? ""} actions={<button className="icon-button" title="复制日志" aria-label="复制日志" disabled={!props.logs[debugTaskId]} onClick={() => void copyLog(debugTaskId)}><Copy size={15} /></button>} /></div></div></div>;
+  return <div className="page"><PageHeading title="触摸录制" detail="点击开始录制并命名脚本；触摸屏幕生成点击/滑动动作，两次触摸之间的停顿生成等待；停止后自动保存，可直接调试运行验证回放效果。"><button className="button secondary" onClick={() => void props.refreshDevices()}><RefreshCw size={16} />刷新设备</button></PageHeading><div className="two-column"><section className="panel form-panel"><label>目标脚本<input readOnly value={name} /></label><label>设备序列号<select value={device} onChange={(event) => setDevice(event.target.value)}><option value="">自动选择健康设备</option>{adbDevices.map((item) => <option key={item}>{item}</option>)}</select></label><label>循环次数<input value={loop} onChange={(event) => setLoop(event.target.value)} /></label>{running && <p className="field-note">正在录制，已捕捉 {gestureCount} 个触摸动作。触摸屏幕录制操作，停顿会记录为等待。</p>}<Toggle label="清理明显误触点击" checked={cleanNoise} onChange={setCleanNoise} /><Toggle label="反转 X 轴" checked={invertX} onChange={setInvertX} /><Toggle label="反转 Y 轴" checked={invertY} onChange={setInvertY} /><Toggle label="交换 X/Y 轴" checked={swapXY} onChange={setSwapXY} />{!running ? <button className="button primary full" disabled={debugRunning} onClick={() => setCreateOpen(true)}><Radio size={16} />开始录制</button> : <button className="button danger full" onClick={() => void window.bsManager.stopTask("recorder")}><CircleStop size={16} />停止并保存</button>}{!debugRunning ? <button className="button secondary full" disabled={running || !name.trim()} onClick={() => void debugRun()}><Play size={16} />调试运行</button> : <button className="button danger full" onClick={() => void window.bsManager.stopTask(debugTaskId)}><CircleStop size={16} />停止调试</button>}</section><div className="recorder-logs"><LogPanel title="录制日志" text={props.logs.recorder ?? ""} actions={<button className="icon-button" title="复制日志" aria-label="复制日志" disabled={!props.logs.recorder} onClick={() => void copyLog("recorder")}><Copy size={15} /></button>} /><LogPanel title="调试运行日志" text={props.logs[debugTaskId] ?? ""} actions={<button className="icon-button" title="复制日志" aria-label="复制日志" disabled={!props.logs[debugTaskId]} onClick={() => void copyLog(debugTaskId)}><Copy size={15} /></button>} /></div></div>{createOpen && <PromptDialog title="新建录制脚本" defaultValue={name} placeholder="脚本名称" confirmLabel="开始录制" onConfirm={(value) => void submitCreate(value)} onClose={() => setCreateOpen(false)} />}</div>;
 }
 
 export function CalibrationPage(props: SharedProps) {

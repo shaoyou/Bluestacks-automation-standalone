@@ -115,7 +115,7 @@ export function UpdateRequiredDialog({
         <button type="button" className="button secondary" onClick={() => void onCheck()}><RefreshCw size={16} />重新检查</button>
         {canDownload ? <button type="button" className="button primary" onClick={() => void onDownload()}><Download size={16} />下载更新</button> : null}
         {canInstall ? <button type="button" className="button primary" onClick={() => void onInstall()}><RefreshCw size={16} />重启安装</button> : null}
-        <button type="button" className="button primary" disabled={!canContinue} onClick={() => void onAcknowledge()}><RefreshCw size={16} />{canContinue ? `继续使用 ${snoozeMinutes} 分钟` : countdownLabel}</button>
+        <button type="button" className="button primary" disabled={!canContinue} onClick={() => void onAcknowledge()}><RefreshCw size={16} />{canContinue ? `继续使用 ${Math.round(snoozeMs / 60_000)} 分钟` : countdownLabel}</button>
       </footer>
     </section>
   </div>;

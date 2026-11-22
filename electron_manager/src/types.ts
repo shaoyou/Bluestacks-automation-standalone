@@ -130,6 +130,7 @@ declare global {
       plansSave(name: string, text: string): Promise<void>;
       plansCreate(name: string): Promise<string>;
       plansDelete(name: string): Promise<void>;
+      plansOpenFolder(): Promise<void>;
       queueGroupsList(): Promise<QueueGroup[]>;
       queueGroupsSave(group: QueueGroup): Promise<QueueGroup>;
       queueGroupsDelete(id: string): Promise<void>;

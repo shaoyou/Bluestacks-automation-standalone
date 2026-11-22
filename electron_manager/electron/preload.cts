@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld("bsManager", {
   plansSave: (name: string, text: string) => ipcRenderer.invoke("plans:save", name, text),
   plansCreate: (name: string) => ipcRenderer.invoke("plans:create", name),
   plansDelete: (name: string) => ipcRenderer.invoke("plans:delete", name),
+  plansOpenFolder: () => ipcRenderer.invoke("plans:open-folder"),
   queueGroupsList: () => ipcRenderer.invoke("queue-groups:list"),
   queueGroupsSave: (group: unknown) => ipcRenderer.invoke("queue-groups:save", group),
   queueGroupsDelete: (id: string) => ipcRenderer.invoke("queue-groups:delete", id),

@@ -4819,11 +4819,26 @@ def load_plan(path: Path) -> Dict[str, Any]:
     return resolved
 
 
+SCREEN_PROBE_TRANSIENT_SEC = 120.0
+SCREEN_PROBE_INTERVAL_SEC = 2.0
+SCREEN_PROBE_SERVER_RESTART_SEC = 15.0
+
+
 def get_device_screen_size(adb_path: str, device: Optional[str]) -> Tuple[int, int]:
+    # Transient ADB states ("error: closed", offline, ...) at bot startup usually
+    # mean the emulator's adbd is still settling (BlueStacks booting/restarting).
+    # Retry patiently like the mid-run recovery instead of exiting after ~4s.
+    # Non-transient output (wm size answered but unparseable) still fails fast.
     active_device = device
     last_text = ""
-    recovered = False
-    for attempt in range(5):
+    attempt = 0
+    fast_attempts = 5
+    transient_deadline: Optional[float] = None
+    last_server_restart = 0.0
+    logged_failure = ""
+
+    while True:
+        attempt += 1
         cmd = [adb_path]
         if active_device:
             cmd += ["-s", active_device]
@@ -4833,15 +4848,36 @@ def get_device_screen_size(adb_path: str, device: Optional[str]) -> Tuple[int, i
         last_text = text
         match = WM_SIZE_RE.search(text)
         if match:
+            if attempt > 1:
+                log(f"Screen size probe succeeded after {attempt} attempt(s).")
             return int(match.group(1)), int(match.group(2))
 
-        if adb_output_is_transient(text) and not recovered:
+        now = time.monotonic()
+        if transient_deadline is None:
+            if not adb_output_is_transient(text):
+                if attempt >= fast_attempts:
+                    break
+                time.sleep(0.3)
+                continue
+            transient_deadline = now + SCREEN_PROBE_TRANSIENT_SEC
+
+        if now >= transient_deadline:
+            break
+
+        if now - last_server_restart >= SCREEN_PROBE_SERVER_RESTART_SEC:
             log("ADB screen size probe failed, restart adb server and retry ...")
             recover_adb_server(adb_path, active_device)
-            active_device = ensure_device_connected(adb_path, active_device)
-            recovered = True
-        elif attempt < 4:
-            time.sleep(0.3)
+            last_server_restart = now
+            try:
+                active_device = ensure_device_connected(adb_path, active_device)
+            except BotError as exc:
+                log(f"Device reconnect during screen probe failed: {exc}")
+        else:
+            brief = " ".join(text.split())[:80]
+            if brief != logged_failure:
+                log(f"Screen size probe failed ({brief}); retrying for up to {int(transient_deadline - now)}s ...")
+                logged_failure = brief
+        time.sleep(SCREEN_PROBE_INTERVAL_SEC)
 
     raise BotError(f"Cannot parse device screen size from adb output:\n{last_text.strip()}")
 

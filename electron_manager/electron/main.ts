@@ -19,9 +19,11 @@ type Settings = {
   imageMatchDebug: boolean;
 };
 
+type TaskKind = "runner" | "draw" | "chest" | "recorder" | "clickPicker" | "diagnostic";
+
 type TaskRequest = {
   id: string;
-  kind: "runner" | "draw" | "chest" | "recorder" | "clickPicker" | "diagnostic";
+  kind: TaskKind;
   args: string[];
   cwd?: string;
 };
@@ -84,6 +86,7 @@ const thisDir = path.dirname(fileURLToPath(import.meta.url));
 const isDevelopment = !app.isPackaged;
 const tasks = new Map<string, ChildProcess>();
 const taskOwners = new Map<string, number>();
+const taskKinds = new Map<string, TaskKind>();
 const runnerWindows = new Set<number>();
 let mainWindow: BrowserWindow | null = null;
 let isQuitting = false;
@@ -863,6 +866,7 @@ function sendTaskEvent(event: Record<string, unknown>) {
 function forgetTask(taskId: string) {
   tasks.delete(taskId);
   taskOwners.delete(taskId);
+  taskKinds.delete(taskId);
 }
 
 function trackTask(taskId: string, task: ChildProcess, ownerWebContentsId?: number, commandLine?: string) {
@@ -874,6 +878,7 @@ function trackTask(taskId: string, task: ChildProcess, ownerWebContentsId?: numb
   const onData = (data: Buffer) => {
     sendTaskEvent({ id: taskId, type: "log", text: data.toString("utf8") });
   };
+  task.stdin?.on("error", () => undefined);
   task.stdout?.on("data", onData);
   task.stderr?.on("data", onData);
   task.on("error", (error) => {
@@ -914,6 +919,30 @@ function stopAllTasks() {
   }
   tasks.clear();
   taskOwners.clear();
+  taskKinds.clear();
+}
+
+async function stopTaskGracefully(id: string) {
+  const task = tasks.get(id);
+  if (!task) return;
+  // The recorder needs to build and write its plan JSON before exiting, so ask
+  // it to stop via stdin and only force-kill if it fails to exit in time.
+  if (taskKinds.get(id) === "recorder" && task.stdin?.writable) {
+    const exited = await new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        task.off("exit", onExit);
+        resolve(false);
+      }, 15_000);
+      const onExit = () => {
+        clearTimeout(timer);
+        resolve(true);
+      };
+      task.once("exit", onExit);
+      task.stdin?.write("stop\n");
+    });
+    if (exited) return;
+  }
+  killTaskProcess(task);
 }
 
 function assertRunnerCapacity() {
@@ -938,6 +967,11 @@ function spawnTask(request: TaskRequest, ownerWebContentsId?: number): ChildProc
   const scriptPath = request.args[0];
   const bundledExecutable = typeof scriptPath === "string" ? bundledWindowsScriptExecutable(scriptPath) : null;
   const taskArgs = [...request.args];
+  if (request.kind === "recorder" && !taskArgs.includes("--stdin-stop")) {
+    // The recorder saves its plan on graceful stop; hard-killing the process
+    // tree (required for PyInstaller onefile on Windows) would lose the data.
+    taskArgs.push("--stdin-stop");
+  }
   if (settings.imageMatchDebug && typeof scriptPath === "string" && path.basename(scriptPath).toLowerCase() === "adb_bot.py") {
     taskArgs.push("--image-match-debug");
   }
@@ -951,6 +985,7 @@ function spawnTask(request: TaskRequest, ownerWebContentsId?: number): ChildProc
     },
     windowsHide: true,
   });
+  taskKinds.set(request.id, request.kind);
   trackTask(request.id, task, ownerWebContentsId, `${executable} ${args.join(" ")}`);
   return task;
 }
@@ -1528,6 +1563,11 @@ app.whenReady().then(() => {
     return name;
   });
   ipcMain.handle("plans:delete", (_, name: string) => rmSync(safePlanPath(name)));
+  ipcMain.handle("plans:open-folder", async () => {
+    const directory = path.join(runtimeRoot(), "plans");
+    const error = await shell.openPath(directory);
+    if (error) throw new Error(error);
+  });
 
   ipcMain.handle("queue-groups:list", () => readQueueGroups());
   ipcMain.handle("queue-groups:save", (_, raw: unknown) => {
@@ -1920,11 +1960,7 @@ app.whenReady().then(() => {
     createRunWindow(initialPlan, "chest", userId, sourceId, sourceName);
   });
   ipcMain.handle("task:start", (event, request: TaskRequest) => spawnTask(request, event.sender.id));
-  ipcMain.handle("task:stop", (_, id: string) => {
-    const task = tasks.get(id);
-    if (!task) return;
-    killTaskProcess(task);
-  });
+  ipcMain.handle("task:stop", (_, id: string) => stopTaskGracefully(String(id || "")));
 });
 
 type ChestUser = { id: string; name: string; createdAt: string };
