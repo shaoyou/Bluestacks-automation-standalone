@@ -22,6 +22,8 @@ contextBridge.exposeInMainWorld("bsManager", {
   plansRead: (name: string) => ipcRenderer.invoke("plans:read", name),
   plansSave: (name: string, text: string) => ipcRenderer.invoke("plans:save", name, text),
   plansCreate: (name: string) => ipcRenderer.invoke("plans:create", name),
+  plansRename: (name: string, newName: string) => ipcRenderer.invoke("plans:rename", name, newName),
+  plansCopy: (name: string, newName: string) => ipcRenderer.invoke("plans:copy", name, newName),
   plansDelete: (name: string) => ipcRenderer.invoke("plans:delete", name),
   plansOpenFolder: () => ipcRenderer.invoke("plans:open-folder"),
   queueGroupsList: () => ipcRenderer.invoke("queue-groups:list"),

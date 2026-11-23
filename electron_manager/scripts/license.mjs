@@ -113,10 +113,10 @@ function issueLegacy(values, installId, expiresAt, maxConcurrentRunners) {
 function issue(values) {
   const installId = required(values, "install-id");
   const expiresAt = values.get("expires");
-  const maxConcurrentRunners = Number(values.get("max-runners") ?? "3");
+  const maxConcurrentRunners = Number(values.get("max-runners") ?? "6");
   const format = values.get("format") ?? "compact";
-  if (!Number.isInteger(maxConcurrentRunners) || maxConcurrentRunners < 2 || maxConcurrentRunners > 10) {
-    throw new Error("--max-runners 必须是 2 到 10 的整数");
+  if (!Number.isInteger(maxConcurrentRunners) || maxConcurrentRunners < 2 || maxConcurrentRunners > 6) {
+    throw new Error("--max-runners 必须是 2 到 6 的整数");
   }
   if (format === "compact") issueCompact(values, installId, expiresAt, maxConcurrentRunners);
   else if (format === "legacy") issueLegacy(values, installId, expiresAt, maxConcurrentRunners);

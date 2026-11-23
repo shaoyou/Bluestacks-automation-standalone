@@ -93,7 +93,7 @@ Settings > Professional edition, then issue a code:
 npm run license:issue -- \
   --install-id "customer-installation-id" \
   --expires 2027-07-30 \
-  --max-runners 3
+  --max-runners 6
 ```
 
 The default is the compact `P2-xxxxx-xxxxx-...` format, typically around 140

@@ -5,6 +5,7 @@ export type AppSettings = {
   pythonPath: string;
   language: "zh" | "en";
   imageMatchDebug: boolean;
+  startupUpdateCheck: boolean;
 };
 
 export type TaskKind = "runner" | "draw" | "chest" | "recorder" | "clickPicker" | "diagnostic";
@@ -79,6 +80,7 @@ export type QueueGroup = {
   repeat: boolean;
   createdAt?: string;
   updatedAt?: string;
+  lastRunAt?: string;
 };
 
 export type QueueItemStatus = "pending" | "running" | "ok" | "failed" | "skipped" | "stopped";
@@ -129,6 +131,8 @@ declare global {
       plansRead(name: string): Promise<string>;
       plansSave(name: string, text: string): Promise<void>;
       plansCreate(name: string): Promise<string>;
+      plansRename(name: string, newName: string): Promise<string>;
+      plansCopy(name: string, newName: string): Promise<string>;
       plansDelete(name: string): Promise<void>;
       plansOpenFolder(): Promise<void>;
       queueGroupsList(): Promise<QueueGroup[]>;

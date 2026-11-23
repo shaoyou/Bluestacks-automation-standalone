@@ -1,0 +1,109 @@
+{
+  "actions": [
+    {
+      "actions": [
+{
+          "remark": "点击传送阵",
+          "type": "click",
+          "x": 649,
+          "y": 831
+        },
+        {
+          "seconds": 1,
+          "type": "wait"
+        },
+        {
+          "remark": "-》黑石堡垒",
+          "type": "click",
+          "x": 296,
+          "y": 1309
+        },
+
+{ "type": "wait", "seconds": 1.0 },
+{
+  "type": "swipe",
+  "x1": 719,
+  "y1": 1390,
+  "x2": 719,
+  "y2": 723,
+  "duration_ms": 200,
+  "remark": "上滑传送列表"
+},
+{
+          "seconds": 1.5,
+          "type": "wait"
+        },
+
+
+{
+          "remark": "-》无尽牢笼",
+          "type": "click",
+          "x": 719,
+          "y": 1390
+        },
+{
+          "seconds": 0.3,
+          "type": "wait"
+        },
+
+        {
+          "remark": "识别放大镜图标后继续下一步",
+          "type": "if_image",
+          "templates": [
+            "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
+            "../image_templates/bl_baoxiaoxing_1080x1920.png",
+            "../image_templates/bl_baoxiaoxing.png"
+          ],
+          "max_candidates": 32,
+          "threshold": 0.7,
+          "min_color_similarity": 0.75,
+          "scales": [
+            1.0
+          ],
+          "timeout_sec": 10,
+          "interval_sec": 5,
+          "then_actions": [
+            {
+              "type": "log",
+              "message": "已识别到放大镜图标，继续下一步"
+            }
+          ],
+          "else_actions": [
+            {
+              "type": "log",
+              "message": "15秒内未识别到放大镜图标，继续下一步"
+            }
+          ]
+        },
+        
+        
+        
+        {
+          "type": "joystick",
+          "x": 540,
+          "y": 1720,
+          "angle": -160,
+          "seconds": 5,
+          "distance": 180,
+          "remark": "-160度3秒"
+        }     
+        ,{
+          "type": "joystick",
+          "x": 540,
+          "y": 1720,
+          "angle": -90,
+          "seconds": 1,
+          "distance": 180,
+          "remark": "-90度1秒"
+        }     
+        
+       
+      ],
+      "count": 1,
+      "type": "loop"
+    }
+  ],
+  "device": "127.0.0.1:5555",
+  "jitter_px": 3,
+  "max_runtime_sec": 0
+}

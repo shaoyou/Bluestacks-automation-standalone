@@ -28,13 +28,13 @@
             "../image_templates/bl_baoxiaoxing.png"
           ],
           "max_candidates": 32,
-          "threshold": 0.8,
+          "threshold": 0.7,
           "min_color_similarity": 0.75,
           "scales": [
             1.0
           ],
           "timeout_sec": 10,
-          "interval_sec": 3,
+          "interval_sec": 5,
           "then_actions": [
             {
               "type": "log",
@@ -44,7 +44,7 @@
           "else_actions": [
             {
               "type": "log",
-              "message": "10秒内未识别到放大镜图标，继续下一步"
+              "message": "15秒内未识别到放大镜图标，继续下一步"
             }
           ]
         },
@@ -102,8 +102,8 @@
           "type": "trace"
         },
         {
-          "remark": "等待1秒",
-          "seconds": 1,
+          "remark": "等待0.1秒",
+          "seconds": 0.1,
           "type": "wait"
         },
         {
@@ -131,8 +131,8 @@
           "type": "trace"
         },
         {
-          "remark": "等待2秒,打2个boss",
-          "seconds": 2,
+          "remark": "等待1秒,打2个boss",
+          "seconds": 1,
           "type": "wait"
         },
         {
@@ -160,13 +160,13 @@
             "../image_templates/bl_baoxiaoxing.png"
           ],
           "max_candidates": 32,
-          "threshold": 0.8,
+          "threshold": 0.7,
           "min_color_similarity": 0.75,
           "scales": [
             1.0
           ],
-          "timeout_sec": 10,
-          "interval_sec": 3,
+          "timeout_sec": 15,
+          "interval_sec": 5,
           "then_actions": [
             {
               "type": "log",
@@ -176,7 +176,7 @@
           "else_actions": [
             {
               "type": "log",
-              "message": "10秒内未识别到放大镜图标，继续下一步"
+              "message": "15秒内未识别到放大镜图标，继续下一步"
             }
           ]
         },

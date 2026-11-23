@@ -48,6 +48,11 @@ export type SharedProps = {
   chestSourceName?: string;
 };
 
+export function newestFirstLog(text: string) {
+  if (!text) return "";
+  return text.replace(/(\r?\n)+$/, "").split(/\r?\n/).reverse().join("\n");
+}
+
 export function updateVariables(source: string, variables: ScriptVariable[]) {
   const plan = JSON.parse(source) as Record<string, unknown>;
   plan.variables = variables;

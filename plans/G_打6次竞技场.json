@@ -1,0 +1,216 @@
+{
+  "actions": [
+    {
+      "actions": [
+        {
+          "type": "joystick",
+          "x": 540,
+          "y": 1720,
+          "angle": 135,
+          "seconds": 3,
+          "distance": 180,
+          "remark": "135度3秒"
+        },
+        {
+          "type": "joystick",
+          "x": 540,
+          "y": 1720,
+          "angle": -160,
+          "seconds": 2,
+          "distance": 180,
+          "remark": "-160度2秒"
+        },
+        {
+          "remark": "识别放大镜图标后继续下一步",
+          "type": "if_image",
+          "templates": [
+            "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
+            "../image_templates/bl_baoxiaoxing_1080x1920.png",
+            "../image_templates/bl_baoxiaoxing.png"
+          ],
+          "max_candidates": 32,
+          "threshold": 0.7,
+          "min_color_similarity": 0.75,
+          "scales": [
+            1.0
+          ],
+          "timeout_sec": 10,
+          "interval_sec": 5,
+          "then_actions": [
+            {
+              "type": "click_match",
+              "remark": "点击竞技场放大镜"
+            },
+            {
+              "type": "wait",
+              "seconds": 2,
+              "remark": "等待2秒"
+            },
+            {
+              "type": "loop",
+              "count": "${ARENA_TIMES}",
+              "remark": "按变量重复竞技场进攻",
+              "actions": [
+                {
+                  "type": "click",
+                  "x": 853,
+                  "y": 1422,
+                  "remark": "点击进攻"
+                },
+                {
+                  "type": "find_image_click",
+                  "template": "../image_templates/jjc_victory_1216x2688.png",
+                  "threshold": 0.92,
+                  "timeout_sec": 15,
+                  "interval_sec": 0.6,
+                  "region": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 1080,
+                    "height": 1920
+                  },
+                  "remark": "find_image_click: jjc_victory_1216x2688.png"
+                },
+                {
+                  "type": "wait",
+                  "seconds": 6,
+                  "remark": "等待6秒"
+                }
+              ]
+            },
+            {
+              "type": "click",
+              "x": 211,
+              "y": 1776,
+              "remark": "点击返回"
+            },
+            {
+              "type": "wait",
+              "seconds": 2,
+              "remark": "等待2秒"
+            },
+            {
+              "type": "click",
+              "x": 990,
+              "y": 1672,
+              "remark": "点击地图"
+            },
+            {
+              "type": "wait",
+              "seconds": 2,
+              "remark": "等待2秒"
+            },
+            {
+              "type": "click",
+              "x": 429,
+              "y": 1608,
+              "remark": "点击虎啸平原"
+            },
+            {
+              "type": "wait",
+              "seconds": 1,
+              "remark": "等待1秒"
+            },
+            {
+              "type": "click",
+              "x": 181,
+              "y": 1595,
+              "remark": "点击主城，去掉箭头"
+            },
+            {
+              "type": "wait",
+              "seconds": 1,
+              "remark": "等待0.3秒"
+            },
+            {
+              "type": "click",
+              "x": 181,
+              "y": 1595,
+              "remark": "点击主城"
+            },
+            {
+              "type": "wait",
+              "seconds": 1,
+              "remark": "等待1秒"
+            },
+            {
+              "type": "click",
+              "x": 542,
+              "y": 808,
+              "remark": "点击传送点、去掉箭头"
+            },
+            {
+              "type": "wait",
+              "seconds": 0.1,
+              "remark": "等待0.1秒"
+            },
+            {
+              "type": "click",
+              "x": 542,
+              "y": 808,
+              "remark": "点击传送点，弹出气泡"
+            },
+            {
+              "type": "wait",
+              "seconds": 0.35,
+              "remark": "等待0.35秒"
+            },
+            {
+              "type": "click",
+              "x": 537,
+              "y": 699,
+              "remark": "点击 传送"
+            },
+            {
+              "remark": "识别放大镜图标后继续下一步",
+              "type": "if_image",
+              "templates": [
+                "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
+                "../image_templates/bl_baoxiaoxing_1080x1920.png",
+                "../image_templates/bl_baoxiaoxing.png"
+              ],
+              "max_candidates": 32,
+              "threshold": 0.7,
+              "min_color_similarity": 0.75,
+              "scales": [
+                1.0
+              ],
+              "timeout_sec": 15,
+              "interval_sec": 5,
+              "then_actions": [
+                {
+                  "type": "log",
+                  "message": "已识别到放大镜图标，继续下一步"
+                }
+              ],
+              "else_actions": [
+                {
+                  "type": "log",
+                  "message": "15秒内未识别到放大镜图标，继续下一步"
+                }
+              ]
+            }
+          ],
+          "else_actions": [
+            {
+              "type": "log",
+              "message": "10秒内未识别到竞技场放大镜图标，继续下一步"
+            }
+          ]
+        }
+      ],
+      "count": 1,
+      "type": "loop"
+    }
+  ],
+  "device": "127.0.0.1:5555",
+  "jitter_px": 3,
+  "max_runtime_sec": 0,
+  "variables": [
+    {
+      "name": "ARENA_TIMES",
+      "value": "6",
+      "note": "竞技场进攻次数，默认6次"
+    }
+  ]
+}

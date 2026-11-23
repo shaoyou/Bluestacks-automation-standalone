@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
@@ -38,6 +38,43 @@ function spawnProcess(command, args, extraEnv = {}) {
   });
 }
 
+function listChildPids(pid) {
+  try {
+    const output = execFileSync("pgrep", ["-P", String(pid)], { encoding: "utf8" });
+    return output.split(/\s+/).filter(Boolean).map(Number).filter((value) => Number.isInteger(value) && value > 0);
+  } catch {
+    return [];
+  }
+}
+
+function killTree(child) {
+  if (!child || typeof child.pid !== "number") return;
+  if (process.platform === "win32") {
+    try {
+      spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+    } catch {
+      // Ignore and try the direct kill below.
+    }
+    try { child.kill(); } catch { /* ignore */ }
+    return;
+  }
+  // npm scripts wrap the real processes (vite / tsc / electron); collect
+  // descendants so no child survives after shutdown.
+  const descendants = [];
+  const queue = [child.pid];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    for (const pid of listChildPids(current)) {
+      descendants.push(pid);
+      queue.push(pid);
+    }
+  }
+  for (const pid of descendants.reverse()) {
+    try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ }
+  }
+  try { child.kill("SIGTERM"); } catch { /* already gone */ }
+}
+
 const port = await pickPort();
 const startedAt = Date.now();
 
@@ -57,7 +94,7 @@ const waitForFreshElectronBuild = async (timeoutMs = 60000) => {
 };
 if (!(await waitForFreshElectronBuild())) {
   console.error("[dev] electron 主进程编译失败，请检查上方 tsc 报错后重试");
-  electronWatch.kill("SIGTERM");
+  killTree(electronWatch);
   process.exit(1);
 }
 
@@ -83,12 +120,22 @@ const waitForRenderer = async () => {
   throw new Error(`Vite 未能在端口 ${port} 启动`);
 };
 
+let outputWatcher = null;
+
 const shutdown = () => {
+  if (shuttingDown) return;
   shuttingDown = true;
   if (restartTimer) clearTimeout(restartTimer);
-  renderer.kill("SIGTERM");
-  electronWatch.kill("SIGTERM");
-  if (electron) electron.kill("SIGTERM");
+  if (outputWatcher) {
+    try { outputWatcher.close(); } catch { /* ignore */ }
+    outputWatcher = null;
+  }
+  killTree(renderer);
+  killTree(electronWatch);
+  killTree(electron);
+  // The dist-electron watcher or a lingering child would otherwise keep the
+  // Node event loop alive after the app window is closed.
+  setTimeout(() => process.exit(0), 400);
 };
 
 process.on("SIGINT", shutdown);
@@ -120,7 +167,7 @@ const restartElectron = async () => {
   console.log("[dev] electron 代码已重新编译，正在重启 electron...");
   const previous = electron;
   electron = null;
-  previous.kill("SIGTERM");
+  killTree(previous);
   await Promise.race([new Promise((resolve) => previous.once("exit", resolve)), sleep(1500)]);
   restartInFlight = false;
   if (shuttingDown) return;
@@ -131,7 +178,7 @@ startElectron();
 
 // dist-electron 出现新产物时自动重启 electron；watch 的首次编译在启动前已完成，不会误触发
 try {
-  const outputWatcher = fs.watch(distElectronDir, () => {
+  outputWatcher = fs.watch(distElectronDir, () => {
     if (shuttingDown || !electron) return;
     if (restartTimer) clearTimeout(restartTimer);
     restartTimer = setTimeout(() => void restartElectron(), 500);

@@ -4324,8 +4324,8 @@ def do_trace(ctx: RunContext, action: Dict[str, Any]) -> None:
     if not isinstance(points, list) or len(points) < 2:
         return
 
-    min_segment_ms = int(action.get("min_segment_ms", 1))
-    max_segment_ms = int(action.get("max_segment_ms", 1000))
+    min_segment_ms = max(1, int(action.get("min_segment_ms", 1)))
+    max_segment_ms = max(min_segment_ms, int(action.get("max_segment_ms", 1000)))
     trace_mode = str(action.get("mode", "auto")).lower()
     trace_time_scale = float(action.get("time_scale", ctx.trace_time_scale))
     trace_jitter_px = int(action.get("trace_jitter_px", 0))
@@ -4339,11 +4339,14 @@ def do_trace(ctx: RunContext, action: Dict[str, Any]) -> None:
         return clamp_input_point(ctx, x, y)
 
     def map_trace_vector_point(origin_raw: Dict[str, Any], target_raw: Dict[str, Any]) -> Tuple[int, int]:
-        if ctx.device_backend != "hdc" or ctx.src_screen_w <= 0 or ctx.src_screen_h <= 0:
+        if ctx.src_screen_w <= 0 or ctx.src_screen_h <= 0:
             return map_trace_point(int(target_raw["x"]), int(target_raw["y"]))
         if ctx.dst_screen_w <= 0 or ctx.dst_screen_h <= 0:
             return map_trace_point(int(target_raw["x"]), int(target_raw["y"]))
 
+        # Trace/joystick vectors must keep their screen angle when the device
+        # aspect ratio differs from the plan's source screen. Scaling x and y
+        # independently would tilt the path (e.g. 50° becomes 56°).
         origin_x = int(origin_raw["x"])
         origin_y = int(origin_raw["y"])
         target_x = int(target_raw["x"])
@@ -4434,6 +4437,29 @@ def do_trace(ctx: RunContext, action: Dict[str, Any]) -> None:
                 emit_points.append(points[i])
             elif gap_ms >= TRACE_EMIT_GAP_MS or (critical_flags[i] and gap_ms >= TRACE_CORNER_MIN_GAP_MS):
                 emit_points.append(points[i])
+        sampled_count = len(emit_points)
+        # max_segment_ms is a per-chunk cap, not a total cap: split long gaps
+        # into interpolated points so the gesture keeps its recorded duration.
+        split_points: List[Dict[str, Any]] = [emit_points[0]]
+        for i in range(1, len(emit_points)):
+            p_prev = emit_points[i - 1]
+            p_next = emit_points[i]
+            t_prev = int(p_prev.get("t_ms", 0))
+            t_next = int(p_next.get("t_ms", t_prev))
+            delta = t_next - t_prev
+            if delta > max_segment_ms:
+                chunks = max(1, min(1000, math.ceil(delta / max_segment_ms)))
+                x_prev, y_prev = int(p_prev["x"]), int(p_prev["y"])
+                x_next, y_next = int(p_next["x"]), int(p_next["y"])
+                for chunk in range(1, chunks):
+                    ratio = chunk / chunks
+                    split_points.append({
+                        "x": int(round(x_prev + (x_next - x_prev) * ratio)),
+                        "y": int(round(y_prev + (y_next - y_prev) * ratio)),
+                        "t_ms": t_prev + int(round(delta * ratio)),
+                    })
+            split_points.append(p_next)
+        emit_points = split_points
         prev_t = int(first.get("t_ms", 0))
         target_ms = 0.0
         for i in range(1, len(emit_points)):
@@ -4442,7 +4468,7 @@ def do_trace(ctx: RunContext, action: Dict[str, Any]) -> None:
             delta_raw = t_now - prev_t
             delta_ms = min_segment_ms if delta_raw <= 0 else max(min_segment_ms, min(max_segment_ms, delta_raw))
             target_ms += delta_ms * trace_time_scale
-            x, y = map_trace_point(int(p["x"]), int(p["y"]))
+            x, y = map_trace_vector_point(first, p)
             script_lines += [
                 "read up _ < /proc/uptime",
                 "now=$(( ${up%.*} * 1000 + 10#${up#*.} * 10 ))",
@@ -4457,27 +4483,77 @@ def do_trace(ctx: RunContext, action: Dict[str, Any]) -> None:
             ]
             prev_t = t_now
         last = points[-1]
-        xl, yl = map_trace_point(int(last["x"]), int(last["y"]))
+        xl, yl = map_trace_vector_point(first, last)
         script_lines.append(f"input motionevent UP {xl} {yl}")
         adb_shell_script(ctx, "\n".join(script_lines) + "\n", timeout=180.0)
-        log(with_action_remark(f"Trace replayed continuously with {len(emit_points)} points (sampled from {len(points)})", action))
+        log(with_action_remark(f"Trace replayed continuously with {len(emit_points)} points ({sampled_count} sampled from {len(points)})", action))
         return
 
     # Fallback for devices without motionevent support, or forced swipe mode.
+    first = points[0]
     for i in range(len(points) - 1):
         p1 = points[i]
         p2 = points[i + 1]
-        x1, y1 = map_trace_point(int(p1["x"]), int(p1["y"]))
-        x2, y2 = map_trace_point(int(p2["x"]), int(p2["y"]))
+        x1, y1 = map_trace_vector_point(first, p1)
+        x2, y2 = map_trace_vector_point(first, p2)
         seg_ms = min_segment_ms
         if "t_ms" in p1 and "t_ms" in p2:
             try:
                 delta = int(p2["t_ms"]) - int(p1["t_ms"])
-                seg_ms = max(min_segment_ms, min(max_segment_ms, delta))
+                # Splitting a swipe would lift the finger between chunks, so
+                # honor the recorded segment duration instead of clamping it.
+                seg_ms = max(min_segment_ms, delta)
             except (TypeError, ValueError):
                 seg_ms = min_segment_ms
         adb_shell(ctx, ["input", "swipe", str(x1), str(y1), str(x2), str(y2), str(seg_ms)])
     log(with_action_remark(f"Trace replayed by segmented swipe with {len(points)} points", action))
+
+
+def do_joystick(ctx: RunContext, action: Dict[str, Any]) -> None:
+    """Drag from a start point in a direction and hold for a duration.
+
+    Editable shorthand for the common joystick trace: reach the edge in
+    `flick_ms`, then keep the finger there until `duration_ms`.
+    Angle uses screen coordinates: 0=right, 90=up, -90=down, 180=left.
+    """
+    if "x" not in action or "y" not in action:
+        raise BotError("joystick action requires x and y")
+    try:
+        x = int(action["x"])
+        y = int(action["y"])
+        angle = float(action.get("angle", 0))
+        distance = max(1, int(action.get("distance", 180)))
+        if action.get("duration_ms") is not None:
+            duration_ms = max(1, int(round(float(action["duration_ms"]))))
+        else:
+            duration_ms = max(1, int(round(float(action.get("seconds", 1.0)) * 1000)))
+        flick_ms = max(1, min(duration_ms, int(round(float(action.get("flick_ms", 100))))))
+    except (TypeError, ValueError) as exc:
+        raise BotError(f"Invalid joystick action: {exc}") from exc
+
+    radians = math.radians(angle)
+    end_x = int(round(x + math.cos(radians) * distance))
+    end_y = int(round(y - math.sin(radians) * distance))
+    trace_action: Dict[str, Any] = {
+        "type": "trace",
+        "remark": action.get("remark") or f"{angle:g}度{duration_ms / 1000:g}秒",
+        "points": [
+            {"x": x, "y": y, "t_ms": 0},
+            {"x": end_x, "y": end_y, "t_ms": flick_ms},
+            {"x": end_x, "y": end_y, "t_ms": duration_ms},
+        ],
+        "mode": action.get("mode", "motion"),
+        "min_segment_ms": max(1, int(action.get("min_segment_ms", 1))),
+        "max_segment_ms": max(1, duration_ms),
+    }
+    for key in ("trace_jitter_px", "time_scale"):
+        if key in action:
+            trace_action[key] = action[key]
+    log(with_action_remark(
+        f"Joystick ({x}, {y}) -> ({end_x}, {end_y}) angle={angle:g} duration={duration_ms}ms",
+        action,
+    ))
+    do_trace(ctx, trace_action)
 
 
 def do_wait(action: Dict[str, Any]) -> None:
@@ -4541,6 +4617,11 @@ def execute_patrol(ctx: RunContext, action: Dict[str, Any]) -> None:
 def execute_action(ctx: RunContext, action: Dict[str, Any]) -> None:
     check_stop(ctx)
     action_type = action.get("type")
+    if action_type in {"find_image", "find_image_click"} and (action.get("then_actions") or action.get("else_actions")):
+        log(with_action_remark(
+            f"{action_type} ignores then_actions/else_actions; use if_image with click_match for branches",
+            action,
+        ))
     if action_type == "click":
         do_click(ctx, action)
     elif action_type == "long_press":
@@ -4573,6 +4654,8 @@ def execute_action(ctx: RunContext, action: Dict[str, Any]) -> None:
         do_swipe(ctx, action)
     elif action_type == "trace":
         do_trace(ctx, action)
+    elif action_type == "joystick":
+        do_joystick(ctx, action)
     elif action_type == "input":
         do_input(ctx, action)
     elif action_type in {"back", "home"}:
@@ -5060,6 +5143,8 @@ def main() -> int:
         if not actions:
             raise BotError("Plan does not contain a chest_result save_screenshot action")
         log("Temporary override enabled: save current chest items immediately")
+    if not actions:
+        raise BotError(f"Plan contains no actions: {plan_path}")
 
     log("Bot start")
     log(f"Device backend={ctx.device_backend} device={ctx.device or 'default'}")

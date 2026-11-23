@@ -1,0 +1,394 @@
+{
+    "actions": [
+        {
+            "actions": [
+                {
+                    "type": "joystick",
+                    "x": 540,
+                    "y": 1720,
+                    "angle": 0,
+                    "seconds": 1.5,
+                    "distance": 180,
+                    "remark": "0度1.5秒"
+                },
+                {
+                    "remark": "识别放大镜图标后继续下一步",
+                    "type": "if_image",
+                    "templates": [
+                        "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
+                        "../image_templates/bl_baoxiaoxing_1080x1920.png",
+                        "../image_templates/bl_baoxiaoxing.png"
+                    ],
+                    "max_candidates": 32,
+                    "threshold": 0.7,
+                    "min_color_similarity": 0.75,
+                    "scales": [
+                        1
+                    ],
+                    "timeout_sec": 10,
+                    "interval_sec": 5,
+                    "then_actions": [
+                        {
+                            "type": "click_match",
+                            "remark": "打开宠物抽取页面"
+                        },
+                        {
+                            "type": "wait",
+                            "seconds": 2,
+                            "remark": "等待2秒"
+                        },
+                        {
+                            "type": "click",
+                            "x": 147,
+                            "y": 1405,
+                            "remark": "点击看广告按钮"
+                        },
+                        {
+                            "type": "wait",
+                            "seconds": 1,
+                            "remark": "等待1秒"
+                        },
+                        {
+                            "type": "click",
+                            "x": 147,
+                            "y": 1405,
+                            "remark": "再次点击关闭"
+                        },
+                        {
+                            "type": "wait",
+                            "seconds": 0.5,
+                            "remark": "等待0.5秒"
+                        },
+                        {
+                            "type": "click",
+                            "x": 181,
+                            "y": 1789,
+                            "remark": "点击返回"
+                        },
+                        {
+                            "type": "wait",
+                            "seconds": 0.5,
+                            "remark": "等待0.5秒"
+                        }
+                    ]
+                },
+                {
+                    "type": "joystick",
+                    "x": 147,
+                    "y": 1405,
+                    "angle": 140,
+                    "seconds": 4,
+                    "distance": 180,
+                    "remark": "140度4秒"
+                },
+                {
+                    "remark": "识别放大镜图标后继续下一步",
+                    "type": "if_image",
+                    "templates": [
+                        "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
+                        "../image_templates/bl_baoxiaoxing_1080x1920.png",
+                        "../image_templates/bl_baoxiaoxing.png"
+                    ],
+                    "max_candidates": 32,
+                    "threshold": 0.7,
+                    "min_color_similarity": 0.75,
+                    "scales": [
+                        1
+                    ],
+                    "timeout_sec": 10,
+                    "interval_sec": 5,
+                    "then_actions": [
+                        {
+                            "type": "click_match",
+                            "remark": "打开爬塔页面"
+                        },
+                        {
+                            "type": "wait",
+                            "seconds": 2,
+                            "remark": "等待2秒"
+                        },
+                        {
+                            "type": "click",
+                            "x": 139,
+                            "y": 1326,
+                            "remark": "点击看广告按钮"
+                        },
+                        {
+                            "type": "wait",
+                            "seconds": 1,
+                            "remark": "等待1秒"
+                        },
+                        {
+                            "type": "click",
+                            "x": 139,
+                            "y": 1326,
+                            "remark": "再次点击关闭"
+                        },
+                        {
+                            "type": "wait",
+                            "seconds": 0.5,
+                            "remark": "等待0.5秒"
+                        },
+                        {
+                          "type": "click",
+                          "x": 772,
+                          "y": 1785,
+                          "remark": "点击元素塔"
+                        },
+                        {
+                            "type": "wait",
+                            "seconds": 1,
+                            "remark": "等待1秒"
+                        },
+                        {
+                            "type": "click",
+                            "x": 139,
+                            "y": 1326,
+                            "remark": "点击看广告按钮"
+                        },
+                        {
+                            "type": "wait",
+                            "seconds": 1,
+                            "remark": "等待1秒"
+                        },
+                        {
+                            "type": "click",
+                            "x": 139,
+                            "y": 1326,
+                            "remark": "再次点击关闭"
+                        },
+                        {
+                            "type": "wait",
+                            "seconds": 0.5,
+                            "remark": "等待0.5秒"
+                        },
+                        {
+                          "type": "click",
+                          "x": 923,
+                          "y": 1785,
+                          "remark": "点击万相塔"
+                        },
+                        {
+                            "type": "wait",
+                            "seconds": 1,
+                            "remark": "等待1秒"
+                        },
+                        {
+                            "type": "click",
+                            "x": 139,
+                            "y": 1326,
+                            "remark": "点击看广告按钮"
+                        },
+                        {
+                            "type": "wait",
+                            "seconds": 1,
+                            "remark": "等待1秒"
+                        },
+                        {
+                            "type": "click",
+                            "x": 139,
+                            "y": 1326,
+                            "remark": "再次点击关闭"
+                        },
+                        {
+                            "type": "wait",
+                            "seconds": 0.5,
+                            "remark": "等待0.5秒"
+                        },
+                        {
+                            "type": "click",
+                            "x": 181,
+                            "y": 1789,
+                            "remark": "点击返回"
+                        },
+                        {
+                            "type": "wait",
+                            "seconds": 0.5,
+                            "remark": "等待0.5秒"
+                        }
+                    ]
+                },
+
+{
+  "type": "joystick",
+  "x": 540,
+  "y": 1720,
+  "angle": -170,
+  "seconds": 3,
+  "distance": 180,
+  "remark": "-170度3秒"
+},
+                {
+                    "remark": "识别放大镜图标后继续下一步",
+                    "type": "if_image",
+                    "templates": [
+                        "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
+                        "../image_templates/bl_baoxiaoxing_1080x1920.png",
+                        "../image_templates/bl_baoxiaoxing.png"
+                    ],
+                    "max_candidates": 32,
+                    "threshold": 0.7,
+                    "min_color_similarity": 0.75,
+                    "scales": [
+                        1
+                    ],
+                    "timeout_sec": 10,
+                    "interval_sec": 5,
+                    "then_actions": [
+                        {
+                            "type": "click_match",
+                            "remark": "打开竞技场页面"
+                        },
+                        {
+                            "type": "wait",
+                            "seconds": 2,
+                            "remark": "等待2秒"
+                        },
+                        {
+                            "type": "click",
+                            "x": 930,
+                            "y": 676,
+                            "remark": "点击看广告按钮"
+                        },
+                        {
+                            "type": "wait",
+                            "seconds": 1,
+                            "remark": "等待1秒"
+                        },
+                        {
+                            "type": "click",
+                            "x": 930,
+                            "y": 676,
+                            "remark": "再次点击关闭"
+                        },
+                        {
+                            "type": "wait",
+                            "seconds": 0.5,
+                            "remark": "等待0.5秒"
+                        },
+                        {
+                            "type": "click",
+                            "x": 181,
+                            "y": 1789,
+                            "remark": "点击返回"
+                        },
+                        {
+                            "type": "wait",
+                            "seconds": 0.5,
+                            "remark": "等待0.5秒"
+                        }
+                    ]
+                },
+ {
+                    "type": "click",
+                    "x": 990,
+                    "y": 1672,
+                    "remark": "点击地图"
+                },
+                {
+                    "type": "wait",
+                    "seconds": 2.5,
+                    "remark": "等待2.5秒"
+                },
+                {
+                    "type": "click",
+                    "x": 429,
+                    "y": 1608,
+                    "remark": "点击虎啸平原"
+                },
+                {
+                    "type": "wait",
+                    "seconds": 1,
+                    "remark": "等待1秒"
+                },
+                {
+                    "type": "click",
+                    "x": 181,
+                    "y": 1595,
+                    "remark": "点击主城，去掉箭头"
+                },
+                {
+                    "type": "wait",
+                    "seconds": 1,
+                    "remark": "等待0.3秒"
+                },
+                {
+                    "type": "click",
+                    "x": 181,
+                    "y": 1595,
+                    "remark": "点击主城"
+                },
+                {
+                    "type": "wait",
+                    "seconds": 1,
+                    "remark": "等待1秒"
+                },
+                {
+                    "type": "click",
+                    "x": 542,
+                    "y": 808,
+                    "remark": "点击传送点、去掉箭头"
+                },
+                {
+                    "type": "wait",
+                    "seconds": 0.1,
+                    "remark": "等待0.1秒"
+                },
+                {
+                    "type": "click",
+                    "x": 542,
+                    "y": 808,
+                    "remark": "点击传送点，弹出气泡"
+                },
+                {
+                    "type": "wait",
+                    "seconds": 0.35,
+                    "remark": "等待0.35秒"
+                },
+                {
+                    "type": "click",
+                    "x": 537,
+                    "y": 699,
+                    "remark": "点击 传送"
+                },
+                {
+                    "remark": "识别放大镜图标后继续下一步",
+                    "type": "if_image",
+                    "templates": [
+                        "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
+                        "../image_templates/bl_baoxiaoxing_1080x1920.png",
+                        "../image_templates/bl_baoxiaoxing.png"
+                    ],
+                    "max_candidates": 32,
+                    "threshold": 0.7,
+                    "min_color_similarity": 0.75,
+                    "scales": [
+                        1
+                    ],
+                    "timeout_sec": 15,
+                    "interval_sec": 5,
+                    "then_actions": [
+                        {
+                            "type": "log",
+                            "message": "已识别到放大镜图标，继续下一步"
+                        }
+                    ],
+                    "else_actions": [
+                        {
+                            "type": "log",
+                            "message": "15秒内未识别到放大镜图标，继续下一步"
+                        }
+                    ]
+                }
+            ],
+            "count": 1,
+            "type": "loop"
+        }
+    ],
+    "device": "127.0.0.1:5555",
+    "jitter_px": 3,
+    "max_runtime_sec": 0,
+    "variables": [
+
+    ]
+}

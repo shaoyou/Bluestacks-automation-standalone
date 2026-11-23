@@ -31,10 +31,10 @@ if (!window.bsManager) {
   const notify = (event: { id: string; type: "started" | "log" | "exit"; code?: number; text?: string }) => listeners.forEach((listener) => listener(event));
   window.bsManager = {
     runtimeState: async () => ({ root: "/preview/runtime", plansDir: "/preview/runtime/plans", internalPlansDir: "/preview/runtime/internal_plans", templatesDir: "/preview/runtime/image_templates" }),
-    settingsGet: async () => ({ adbPath: "adb", hdcPath: "hdc", hdcToolsDir: "", pythonPath: "python3", language: "zh", imageMatchDebug: false }),
+    settingsGet: async () => ({ adbPath: "adb", hdcPath: "hdc", hdcToolsDir: "", pythonPath: "python3", language: "zh", imageMatchDebug: false, startupUpdateCheck: true }),
     settingsSave: async (settings) => settings,
     hdcChooseToolsDirectory: async () => null,
-    hdcConfigureTools: async (directory) => ({ adbPath: "adb", hdcPath: directory, hdcToolsDir: directory, pythonPath: "python3", language: "zh", imageMatchDebug: false }),
+    hdcConfigureTools: async (directory) => ({ adbPath: "adb", hdcPath: directory, hdcToolsDir: directory, pythonPath: "python3", language: "zh", imageMatchDebug: false, startupUpdateCheck: true }),
     updateState: async () => ({ currentVersion: "1.2.14", supported: false, phase: "unsupported", message: "预览环境不检查更新" }),
     updatePolicyState: async () => ({ supported: false, currentVersion: "1.2.14", channel: "stable", sourceUrl: "", loaded: false, checking: false, blocked: false, message: "预览环境不检查更新" }),
     updatePolicyCheck: async () => ({ supported: false, currentVersion: "1.2.14", channel: "stable", sourceUrl: "", loaded: false, checking: false, blocked: false, message: "预览环境不检查更新" }),
@@ -44,13 +44,30 @@ if (!window.bsManager) {
     updateDownload: async () => ({ currentVersion: "1.2.14", supported: false, phase: "unsupported", message: "预览环境不检查更新" }),
     updateInstall: async () => {},
     appQuit: async () => {},
-    licenseGet: async () => ({ installId: "preview", tier: "pro", valid: true, maxConcurrentRunners: 3, message: "预览授权" }),
+    licenseGet: async () => ({ installId: "preview", tier: "pro", valid: true, maxConcurrentRunners: 6, message: "预览授权" }),
     licenseActivate: async () => ({ installId: "preview", tier: "pro", valid: true, maxConcurrentRunners: 3, message: "预览授权" }),
     licenseClear: async () => ({ installId: "preview", tier: "free", valid: true, maxConcurrentRunners: 1, message: "已清除预览授权" }),
     plansList: async () => [...previewPlans.keys()],
     plansRead: async (name) => previewPlans.get(name) ?? "",
     plansSave: async (name, text) => { JSON.parse(text); previewPlans.set(name, text); },
     plansCreate: async (name) => { const filename = `${name.replace(/\.json$/i, "")}.json`; previewPlans.set(filename, "{\n  \"actions\": []\n}\n"); return filename; },
+    plansRename: async (name, newName) => {
+      const text = previewPlans.get(name);
+      if (text === undefined) throw new Error("未找到要重命名的脚本");
+      const filename = `${newName.replace(/\.json$/i, "")}.json`;
+      if (previewPlans.has(filename) && filename !== name) throw new Error("A plan with that name already exists");
+      previewPlans.delete(name);
+      previewPlans.set(filename, text);
+      return filename;
+    },
+    plansCopy: async (name, newName) => {
+      const text = previewPlans.get(name);
+      if (text === undefined) throw new Error("未找到要复制的脚本");
+      const filename = `${newName.replace(/\.json$/i, "")}.json`;
+      if (previewPlans.has(filename)) throw new Error("A plan with that name already exists");
+      previewPlans.set(filename, text);
+      return filename;
+    },
     plansDelete: async (name) => { previewPlans.delete(name); },
     plansOpenFolder: async () => {},
     historyMigrate: async () => ({}),

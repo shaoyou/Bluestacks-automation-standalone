@@ -1,0 +1,32 @@
+{
+  "jitter_px": 0,
+  "max_runtime_sec": 0,
+  "actions": [
+    {
+      "type": "click",
+      "x": 1108,
+      "y": 1940
+    }
+  ],
+  "screen_size": {
+    "width": 1216,
+    "height": 2688
+  },
+  "mapping_profile": {
+    "invert_x": false,
+    "invert_y": false,
+    "swap_xy": false
+  },
+  "recording_profile": {
+    "tap_distance_px": 24.0,
+    "tap_duration_sec": 0.45,
+    "min_swipe_duration_sec": 0.18,
+    "merge_gap_sec": 0.35,
+    "merge_distance_px": 10.0,
+    "continuation_gap_sec": 1.2,
+    "continuation_distance_px": 12.0,
+    "continuation_span_px": 40.0,
+    "continuation_duration_ms": 700.0
+  },
+  "device": "3AQ0225109000663"
+}

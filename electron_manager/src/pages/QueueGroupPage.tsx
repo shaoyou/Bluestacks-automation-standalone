@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArrowDown, ArrowUp, CircleStop, Layers, Pencil, Play, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
-import { PageHeading, Toggle } from "../components/layout";
+import { ArrowDown, ArrowUp, CircleStop, Copy, CopyPlus, Layers, Pencil, PencilLine, Play, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
+import { PageHeading, PromptDialog, Toggle } from "../components/layout";
 import type { QueueGroup, QueueGroupItem, QueueItemResult, QueueItemStatus, QueueRunSnapshot } from "../types";
-import type { SharedProps } from "../app/shared";
+import { newestFirstLog, type SharedProps } from "../app/shared";
 
 type DraftItem = { plan: string; minutesText: string };
 type QueueGroupDraft = {
@@ -24,6 +24,13 @@ const ITEM_STATUS_META: Record<QueueItemStatus, { text: string; className: strin
 
 function planLabel(plan: string) {
   return plan.replace(/\.json$/i, "");
+}
+
+function formatLastRun(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const pad = (number: number) => String(number).padStart(2, "0");
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 function formatMinutes(seconds: number) {
@@ -67,11 +74,35 @@ export function QueueGroupPage(props: SharedProps) {
   const [groups, setGroups] = useState<QueueGroup[]>([]);
   const [states, setStates] = useState<Record<string, QueueRunSnapshot>>({});
   const [planMeta, setPlanMeta] = useState<Record<string, PlanMeta>>({});
-  const [device, setDevice] = useState(() => window.localStorage.getItem("queue-device") ?? "");
+  const [groupDevices, setGroupDevices] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState<QueueGroupDraft | null>(null);
   const [editorError, setEditorError] = useState("");
+  const [renameTarget, setRenameTarget] = useState<QueueGroup | null>(null);
 
-  useEffect(() => { window.localStorage.setItem("queue-device", device); }, [device]);
+  useEffect(() => {
+    setGroupDevices((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const group of groups) {
+        if (group.id in next) continue;
+        next[group.id] = window.localStorage.getItem(`queue-device-${group.id}`) ?? window.localStorage.getItem("queue-device") ?? "";
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+  }, [groups]);
+
+  const updateGroupDevice = (groupId: string, value: string) => {
+    setGroupDevices((current) => ({ ...current, [groupId]: value }));
+    window.localStorage.setItem(`queue-device-${groupId}`, value);
+  };
+
+  const capacity = props.license?.maxConcurrentRunners ?? 1;
+  const runningCount = groups.filter((group) => {
+    const status = states[group.id]?.status;
+    return status === "running" || status === "stopping";
+  }).length;
+  const licenseFree = props.license?.tier !== "pro" || !props.license?.valid;
 
   useEffect(() => {
     void window.bsManager.queueGroupsList().then(setGroups).catch((error) => props.setNotice(`读取计划组失败: ${String(error)}`));
@@ -176,11 +207,13 @@ export function QueueGroupPage(props: SharedProps) {
 
   const startGroup = async (group: QueueGroup) => {
     if (!props.runtime) return props.setNotice("运行环境尚未加载完成");
-    if (!device.trim()) return props.setNotice("请先选择设备");
+    const device = (groupDevices[group.id] ?? "").trim();
+    if (!device) return props.setNotice("请先在卡片中选择该计划组的执行设备");
     const taskId = `runner-queue-${group.id}`;
     props.clearTaskLog(taskId);
     try {
-      await window.bsManager.queueStart(group.id, device.trim());
+      await window.bsManager.queueStart(group.id, device);
+      await refresh();
       props.setNotice(`计划组「${group.name}」开始执行`);
     } catch (error) {
       props.setNotice(`启动失败: ${String(error)}`);
@@ -196,14 +229,46 @@ export function QueueGroupPage(props: SharedProps) {
     }
   };
 
-  const removeGroup = async (group: QueueGroup) => {
-    if (!window.confirm(`删除计划组「${group.name}」？`)) return;
+  const duplicateGroup = async (group: QueueGroup) => {
+    const baseName = `${group.name}（副本）`;
+    const names = new Set(groups.map((item) => item.name));
+    let name = baseName;
+    let index = 2;
+    while (names.has(name)) {
+      name = `${group.name}（副本 ${index}）`;
+      index += 1;
+    }
     try {
-      await window.bsManager.queueGroupsDelete(group.id);
+      await window.bsManager.queueGroupsSave({ id: "", name, items: group.items.map((item) => ({ ...item })), onError: group.onError, repeat: group.repeat });
+      await refresh();
+      props.setNotice(`已复制为「${name}」`);
+    } catch (error) {
+      props.setNotice(`复制失败: ${String(error)}`);
+    }
+  };
+
+  const renameGroup = async (group: QueueGroup, name: string) => {
+    try {
+      await window.bsManager.queueGroupsSave({ id: group.id, name, items: group.items, onError: group.onError, repeat: group.repeat });
+      await refresh();
+      props.setNotice(`已改名为「${name}」`);
+    } catch (error) {
+      props.setNotice(`改名失败: ${String(error)}`);
+    }
+  };
+
+  const deleteGroup = async (groupId: string, groupName: string) => {
+    if (!window.confirm(`删除计划组「${groupName}」？`)) return;
+    try {
+      await window.bsManager.queueGroupsDelete(groupId);
+      setDraft(null);
+      setEditorError("");
       await refresh();
       props.setNotice("计划组已删除");
     } catch (error) {
-      props.setNotice(`删除失败: ${String(error)}`);
+      const message = `删除失败: ${String(error)}`;
+      setEditorError(message);
+      props.setNotice(message);
     }
   };
 
@@ -219,18 +284,15 @@ export function QueueGroupPage(props: SharedProps) {
   };
 
   return <div className="page queue-page">
-    <PageHeading title="计划组" detail="把多个脚本组成串行队列：按顺序自动执行，可调整顺序、限制每项时长、失败跳过或整队循环。">
+    <PageHeading title="计划组" detail="把多个脚本组成串行队列：按顺序自动执行，可调整顺序、限制每项时长；多个计划组可同时运行（受授权并发数限制），每组单独选择设备。">
       <button className="button secondary" onClick={() => void props.refreshDevices()}><RefreshCw size={16} />刷新设备</button>
       <button className="button primary" onClick={() => openEditor(null)}><Plus size={16} />新建计划组</button>
     </PageHeading>
     <section className="device-strip panel">
       <Layers size={18} />
-      <strong>执行设备</strong>
-      <select aria-label="计划组执行设备" value={device} onChange={(event) => setDevice(event.target.value)}>
-        <option value="">选择设备</option>
-        {props.devices.map((name) => <option key={name} value={name}>{name}</option>)}
-      </select>
+      <strong>已发现 {props.devices.length} 个设备</strong>
       <span>{props.devices.join("  ·  ") || "请检查 ADB 路径、模拟器或 USB 调试连接"}</span>
+      <span className="queue-concurrency">同时运行上限 {capacity} 个（当前运行 {runningCount} 个）{licenseFree ? " · 免费版仅支持 1 个，多开需专业版" : ""}</span>
     </section>
     {draft && <section className="panel queue-editor">
       <div className="panel-title"><span>{draft.id ? "编辑计划组" : "新建计划组"}</span></div>
@@ -239,6 +301,7 @@ export function QueueGroupPage(props: SharedProps) {
         <div className="queue-selected">
           <div className="panel-title"><span>已选脚本（按此顺序执行）</span><span className="counter">{draft.items.length}</span></div>
           <p className="empty-note queue-duration-note">时长留空 = 跑完为止（会自己结束的脚本）；标 ∞ 的脚本会无限运行，必须填时长，或放在最后并关闭整队循环。</p>
+          <p className="empty-note queue-duration-note">主城出发的脚本建议把“G_主城校准出发点”放到第一位置。</p>
           {draft.items.length === 0 && <p className="empty-note">还没有选择脚本，请从右侧列表添加。</p>}
           {draft.items.map((item, index) => {
             const meta = planMeta[item.plan];
@@ -275,6 +338,7 @@ export function QueueGroupPage(props: SharedProps) {
       </div>
       {editorError && <p className="queue-editor-error" role="alert">{editorError}</p>}
       <div className="queue-editor-actions">
+        {draft.id && <button className="button quiet danger queue-delete-button" onClick={() => { if (draft.id) void deleteGroup(draft.id, draft.name); }}><Trash2 size={15} />删除计划组</button>}
         <button className="button secondary" onClick={() => { setDraft(null); setEditorError(""); }}>取消</button>
         <button className="button primary" onClick={() => void saveDraft()}><Save size={15} />保存计划组</button>
       </div>
@@ -286,14 +350,17 @@ export function QueueGroupPage(props: SharedProps) {
         const running = snapshot?.status === "running" || snapshot?.status === "stopping";
         const taskId = `runner-queue-${group.id}`;
         const rawLog = props.logs[taskId] ?? "";
-        const tail = rawLog.split(/\r?\n/).filter(Boolean).slice(-8).join("\n");
+        const tail = rawLog.split(/\r?\n/).filter(Boolean).slice(-8).reverse().join("\n");
         return <section className="panel queue-card" key={group.id}>
           <header className="queue-card-header">
             <div className="queue-card-title">
               <strong>{group.name}</strong>
               <span>{group.items.map((item) => planLabel(item.plan)).join(" → ") || "（空）"}</span>
             </div>
-            <span className={`run-state ${running ? "live" : ""}`}>{statusLabel(group)}</span>
+            <div className="queue-card-side">
+              <span className={`run-state ${running ? "live" : ""}`}>{statusLabel(group)}</span>
+              <span className="queue-last-run" title={group.lastRunAt ?? ""}>{group.lastRunAt ? `上次执行 ${formatLastRun(group.lastRunAt)}` : "从未执行"}</span>
+            </div>
           </header>
           {snapshot && <div className="queue-card-progress">
             {snapshot.results.map((result: QueueItemResult, index: number) => {
@@ -302,16 +369,23 @@ export function QueueGroupPage(props: SharedProps) {
             })}
           </div>}
           {snapshot?.error && <p className="queue-error-line">最后错误：{snapshot.error}</p>}
-          {running && tail && <pre className="queue-log-preview">{tail}</pre>}
+          {tail && <div className="queue-log-bar"><span>最近输出（最新在上）</span><button className="icon-button" title="复制完整日志" aria-label="复制完整日志" disabled={!rawLog} onClick={() => void navigator.clipboard.writeText(newestFirstLog(rawLog))}><Copy size={14} /></button></div>}
+          {tail && <pre className="queue-log-preview">{tail}</pre>}
           <footer className="queue-card-actions">
+            <select className="queue-device-select" aria-label={`${group.name} 执行设备`} value={groupDevices[group.id] ?? ""} onChange={(event) => updateGroupDevice(group.id, event.target.value)} disabled={running}>
+              <option value="">选择设备</option>
+              {props.devices.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
             {running
               ? <button className="button danger" onClick={() => void stopGroup(group)}><CircleStop size={15} />停止</button>
               : <button className="button primary" disabled={group.items.length === 0} onClick={() => void startGroup(group)}><Play size={15} />启动</button>}
             <button className="button secondary" onClick={() => openEditor(group)}><Pencil size={15} />编辑</button>
-            <button className="button quiet danger" onClick={() => void removeGroup(group)}><Trash2 size={15} />删除</button>
+            <button className="icon-button" title="复制计划组" aria-label={`复制 ${group.name}`} onClick={() => void duplicateGroup(group)}><CopyPlus size={15} /></button>
+            <button className="icon-button" title="改名" aria-label={`改名 ${group.name}`} onClick={() => setRenameTarget(group)}><PencilLine size={15} /></button>
           </footer>
         </section>;
       })}
     </div>
+    {renameTarget && <PromptDialog title="计划组改名" defaultValue={renameTarget.name} confirmLabel="保存" onConfirm={(value) => void renameGroup(renameTarget, value)} onClose={() => setRenameTarget(null)} />}
   </div>;
 }

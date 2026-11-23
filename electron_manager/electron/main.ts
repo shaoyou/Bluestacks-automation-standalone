@@ -17,6 +17,7 @@ type Settings = {
   pythonPath: string;
   language: "zh" | "en";
   imageMatchDebug: boolean;
+  startupUpdateCheck: boolean;
 };
 
 type TaskKind = "runner" | "draw" | "chest" | "recorder" | "clickPicker" | "diagnostic";
@@ -533,6 +534,130 @@ function migrateDrawPlanImageOnly() {
   } catch { /* Invalid internal plans are reported when the service starts. */ }
 }
 
+type PlanSyncManifest = { version: 1; files: Record<string, string>; deleted: string[] };
+
+function fileDigest(file: string): string {
+  return createHash("sha256").update(readFileSync(file)).digest("hex");
+}
+
+function listPlanFiles(root: string, prefix = ""): string[] {
+  const files: string[] = [];
+  for (const entry of readdirSync(path.join(root, prefix), { withFileTypes: true })) {
+    if (entry.name === ".DS_Store") continue;
+    const relative = prefix ? path.join(prefix, entry.name) : entry.name;
+    if (entry.isDirectory()) files.push(...listPlanFiles(root, relative));
+    else if (entry.isFile()) files.push(relative);
+  }
+  return files;
+}
+
+function readPlanSyncManifest(): { file: string; data: PlanSyncManifest } {
+  const file = path.join(app.getPath("userData"), "runtime", "plan-sync.json");
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<PlanSyncManifest>;
+    if (parsed.version === 1 && parsed.files && typeof parsed.files === "object") {
+      return {
+        file,
+        data: {
+          version: 1,
+          files: { ...parsed.files },
+          deleted: Array.isArray(parsed.deleted) ? parsed.deleted.filter((name): name is string => typeof name === "string") : [],
+        },
+      };
+    }
+  } catch { /* First run or unreadable manifest: keep every existing plan. */ }
+  return { file, data: { version: 1, files: {}, deleted: [] } };
+}
+
+function writePlanSyncManifest(file: string, data: PlanSyncManifest) {
+  try {
+    writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+  } catch (error) {
+    console.warn(`[plans] skip manifest write ${file}: ${String(error)}`);
+  }
+}
+
+function markPlanDeleted(name: string) {
+  const base = path.basename(name);
+  if (!base.endsWith(".json")) return;
+  const { file, data } = readPlanSyncManifest();
+  delete data.files[base];
+  if (!data.deleted.includes(base)) data.deleted.push(base);
+  writePlanSyncManifest(file, data);
+}
+
+function clearPlanTombstone(name: string) {
+  const base = path.basename(name);
+  if (!base.endsWith(".json")) return;
+  const { file, data } = readPlanSyncManifest();
+  const deleted = data.deleted.filter((item) => item !== base);
+  if (deleted.length === data.deleted.length) return;
+  data.deleted = deleted;
+  writePlanSyncManifest(file, data);
+}
+
+function renamePlanInSyncManifest(oldName: string, newName: string) {
+  const oldBase = path.basename(oldName);
+  const newBase = path.basename(newName);
+  if (!oldBase.endsWith(".json") || !newBase.endsWith(".json") || oldBase === newBase) return;
+  const { file, data } = readPlanSyncManifest();
+  delete data.files[oldBase];
+  delete data.files[newBase];
+  if (!data.deleted.includes(oldBase)) data.deleted.push(oldBase);
+  data.deleted = data.deleted.filter((item) => item !== newBase);
+  writePlanSyncManifest(file, data);
+}
+
+// Plans in the runtime directory are user data: the app editor writes there.
+// Only replace a plan with its bundled default when the user has not edited it
+// since the last sync; new bundled plans are still seeded on first run.
+function syncPlanResources(sourceDir: string, targetDir: string) {
+  if (!existsSync(sourceDir)) return;
+  mkdirSync(targetDir, { recursive: true });
+  const { file: manifestFile, data: manifest } = readPlanSyncManifest();
+  const deletedPlans = new Set(manifest.deleted);
+  let manifestChanged = false;
+  for (const relative of listPlanFiles(sourceDir)) {
+    const source = path.join(sourceDir, relative);
+    const target = path.join(targetDir, relative);
+    const key = relative.split(path.sep).join("/");
+    if (deletedPlans.has(key)) continue;
+    try {
+      const sourceDigest = fileDigest(source);
+      if (!existsSync(target)) {
+        mkdirSync(path.dirname(target), { recursive: true });
+        copyFileSync(source, target);
+        manifest.files[key] = sourceDigest;
+        manifestChanged = true;
+        continue;
+      }
+      const targetDigest = fileDigest(target);
+      const lastSyncedDigest = manifest.files[key];
+      if (lastSyncedDigest && targetDigest === lastSyncedDigest && sourceDigest !== targetDigest) {
+        copyFileSync(source, target);
+        manifest.files[key] = sourceDigest;
+        manifestChanged = true;
+      } else if (!lastSyncedDigest && targetDigest === sourceDigest) {
+        manifest.files[key] = sourceDigest;
+        manifestChanged = true;
+      }
+      // Otherwise the runtime plan differs from the last bundled version:
+      // it was edited by the user and must not be overwritten.
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EBUSY" && code !== "EACCES" && code !== "EPERM") {
+        recordStartupWarning(`[runtime] skip plan sync ${source} -> ${target}: ${String(error)}`);
+      }
+    }
+  }
+  if (!manifestChanged) return;
+  try {
+    writePlanSyncManifest(manifestFile, manifest);
+  } catch (error) {
+    recordStartupWarning(`[runtime] skip plan manifest write ${manifestFile}: ${String(error)}`);
+  }
+}
+
 function migrateRuntimeResources(source: string, target: string) {
   const files = ["adb_bot.py", "record_touch.py", "device_discovery_diagnostic.py", "hdc_device_diagnostic.py", "chest_analyzer.py", "data_store.py"];
   for (const file of files) {
@@ -547,7 +672,8 @@ function migrateRuntimeResources(source: string, target: string) {
   for (const dir of ["plans", "internal_plans", "internal_plan_defaults", "internal_template_defaults", "image_templates"]) {
     const sourceDir = dir === "plans" ? bundledPlansRoot() : dir === "internal_plans" ? bundledInternalPlansRoot() : dir === "internal_plan_defaults" ? bundledInternalPlanDefaultsRoot() : dir === "internal_template_defaults" ? bundledInternalTemplateDefaultsRoot() : path.join(source, dir);
     const targetDir = path.join(target, dir);
-    safeCopyResources(sourceDir, targetDir, dir === "plans");
+    if (dir === "plans") syncPlanResources(sourceDir, targetDir);
+    else safeCopyResources(sourceDir, targetDir, false);
   }
   for (const dir of ["diagnostics", "recording_profiles"]) {
     try {
@@ -705,6 +831,7 @@ function getSettings(): Settings {
     pythonPath: process.platform === "win32" ? "python.exe" : "python3",
     language: "zh",
     imageMatchDebug: false,
+    startupUpdateCheck: true,
   };
   try {
     return { ...defaults, ...JSON.parse(readFileSync(settingsFile, "utf8")) };
@@ -791,6 +918,7 @@ function resolveHdcExecutableFromDirectory(rawPath: string): string {
 function saveSettings(settings: Settings): Settings {
   const normalized = { ...getSettings(), ...settings };
   normalized.imageMatchDebug = Boolean(normalized.imageMatchDebug);
+  normalized.startupUpdateCheck = normalized.startupUpdateCheck !== false;
   writeFileSync(
     path.join(app.getPath("userData"), "settings.json"),
     JSON.stringify(normalized, null, 2),
@@ -803,6 +931,12 @@ function safePlanPath(name: string): string {
   const base = path.basename(name);
   if (!base.endsWith(".json")) throw new Error("Plan file must end in .json");
   return path.join(runtimeRoot(), "plans", base);
+}
+
+function normalizePlanName(rawName: string): string {
+  const base = path.basename(String(rawName ?? "").trim()).replace(/\.json$/i, "");
+  if (!base) throw new Error("脚本名称不能为空");
+  return `${base}.json`;
 }
 
 function internalPlanPath(name: string): string {
@@ -1004,6 +1138,7 @@ type QueueGroup = {
   repeat: boolean;
   createdAt?: string;
   updatedAt?: string;
+  lastRunAt?: string;
 };
 
 type QueueRunStatus = "running" | "stopping" | "completed" | "stopped";
@@ -1066,6 +1201,7 @@ function normalizeQueueGroup(raw: unknown): QueueGroup {
     repeat: Boolean(value.repeat),
     createdAt: typeof value.createdAt === "string" ? value.createdAt : undefined,
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : undefined,
+    lastRunAt: typeof value.lastRunAt === "string" ? value.lastRunAt : undefined,
   };
 }
 
@@ -1087,6 +1223,34 @@ function readQueueGroups(): QueueGroup[] {
 function writeQueueGroup(group: QueueGroup) {
   mkdirSync(queueGroupsDir(), { recursive: true });
   writeFileSync(queueGroupFilePath(group.id), `${JSON.stringify(group, null, 2)}\n`, "utf8");
+}
+
+function assertPlanNotRunning(name: string) {
+  for (const run of queueRuns.values()) {
+    if ((run.status === "running" || run.status === "stopping") && run.items.some((item) => item.plan === name)) {
+      throw new Error(`计划 ${name} 正在计划组「${run.groupName}」中运行，请先停止`);
+    }
+  }
+}
+
+function renamePlanInQueueGroups(oldName: string, newName: string) {
+  for (const group of readQueueGroups()) {
+    let changed = false;
+    for (const item of group.items) {
+      if (item.plan === oldName) {
+        item.plan = newName;
+        changed = true;
+      }
+    }
+    if (changed) {
+      group.updatedAt = new Date().toISOString();
+      try {
+        writeQueueGroup(group);
+      } catch (error) {
+        console.warn(`[plans] skip queue group rename ${group.id}: ${String(error)}`);
+      }
+    }
+  }
 }
 
 function queueRunSnapshot(run: QueueRun): QueueRunSnapshot {
@@ -1193,6 +1357,7 @@ function startQueueRun(group: QueueGroup, device: string, ownerWebContentsId?: n
   if (existing && (existing.status === "running" || existing.status === "stopping")) {
     throw new Error(`计划组「${group.name}」正在运行`);
   }
+  assertRunnerCapacity();
   const lastEnabledIndex = enabledItems.length - 1;
   const runItems: QueueRunItem[] = enabledItems.map((item, index) => {
     let planMaxRuntimeSec = 0;
@@ -1210,6 +1375,8 @@ function startQueueRun(group: QueueGroup, device: string, ownerWebContentsId?: n
     }
     return { plan: item.plan, runtimeSec };
   });
+  group.lastRunAt = new Date().toISOString();
+  writeQueueGroup(group);
   const run: QueueRun = {
     groupId: group.id,
     groupName: group.name,
@@ -1495,6 +1662,9 @@ app.whenReady().then(() => {
   void (async () => {
     try {
       runtimeRoot();
+      if (getSettings().startupUpdateCheck === false) {
+        updatePolicyState = { ...updatePolicyState, loaded: true, message: "启动更新检测已在设置中关闭，可在设置中重新开启" };
+      }
       migrateLegacyChestSources();
       createWindow();
       await showStartupWarningsIfAny();
@@ -1513,7 +1683,7 @@ app.whenReady().then(() => {
       throw error;
     }
   })();
-  if (updateState.supported) {
+  if (updateState.supported && getSettings().startupUpdateCheck !== false) {
     setTimeout(() => void checkForUpdates(), 5_000);
   }
 
@@ -1553,16 +1723,50 @@ app.whenReady().then(() => {
   ipcMain.handle("plans:read", (_, name: string) => readFileSync(safePlanPath(name), "utf8"));
   ipcMain.handle("plans:save", (_, name: string, text: string) => {
     JSON.parse(text);
-    writeFileSync(safePlanPath(name), `${text.trim()}\n`, "utf8");
+    const base = path.basename(name);
+    writeFileSync(safePlanPath(base), `${text.trim()}\n`, "utf8");
+    clearPlanTombstone(base);
   });
   ipcMain.handle("plans:create", (_, rawName: string) => {
-    const name = `${path.basename(rawName).replace(/\.json$/i, "")}.json`;
+    const name = normalizePlanName(rawName);
     const file = safePlanPath(name);
     if (existsSync(file)) throw new Error("A plan with that name already exists");
     writeFileSync(file, `${JSON.stringify({ device: "", jitter_px: 0, max_runtime_sec: 0, variables: [], actions: [] }, null, 2)}\n`);
+    clearPlanTombstone(name);
     return name;
   });
-  ipcMain.handle("plans:delete", (_, name: string) => rmSync(safePlanPath(name)));
+  ipcMain.handle("plans:rename", (_, sourceName: string, rawNewName: string) => {
+    const oldName = path.basename(String(sourceName || ""));
+    if (!oldName.endsWith(".json")) throw new Error("Plan file must end in .json");
+    const oldFile = safePlanPath(oldName);
+    if (!existsSync(oldFile)) throw new Error("未找到要重命名的脚本");
+    const newName = normalizePlanName(rawNewName);
+    if (newName === oldName) return oldName;
+    const newFile = safePlanPath(newName);
+    if (existsSync(newFile)) throw new Error("A plan with that name already exists");
+    assertPlanNotRunning(oldName);
+    renameSync(oldFile, newFile);
+    renamePlanInSyncManifest(oldName, newName);
+    renamePlanInQueueGroups(oldName, newName);
+    return newName;
+  });
+  ipcMain.handle("plans:copy", (_, sourceName: string, rawNewName: string) => {
+    const source = path.basename(String(sourceName || ""));
+    if (!source.endsWith(".json")) throw new Error("Plan file must end in .json");
+    const sourceFile = safePlanPath(source);
+    if (!existsSync(sourceFile)) throw new Error("未找到要复制的脚本");
+    const newName = normalizePlanName(rawNewName);
+    const newFile = safePlanPath(newName);
+    if (existsSync(newFile)) throw new Error("A plan with that name already exists");
+    copyFileSync(sourceFile, newFile);
+    clearPlanTombstone(newName);
+    return newName;
+  });
+  ipcMain.handle("plans:delete", (_, name: string) => {
+    const base = path.basename(name);
+    rmSync(safePlanPath(base));
+    markPlanDeleted(base);
+  });
   ipcMain.handle("plans:open-folder", async () => {
     const directory = path.join(runtimeRoot(), "plans");
     const error = await shell.openPath(directory);
@@ -1573,8 +1777,15 @@ app.whenReady().then(() => {
   ipcMain.handle("queue-groups:save", (_, raw: unknown) => {
     const group = normalizeQueueGroup(raw);
     const timestamp = new Date().toISOString();
+    let existing: QueueGroup | null = null;
+    try {
+      existing = normalizeQueueGroup(JSON.parse(readFileSync(queueGroupFilePath(group.id), "utf8")));
+    } catch {
+      // New group or unreadable file: nothing to preserve.
+    }
     group.updatedAt = timestamp;
-    group.createdAt = group.createdAt ?? timestamp;
+    group.createdAt = group.createdAt ?? existing?.createdAt ?? timestamp;
+    group.lastRunAt = group.lastRunAt ?? existing?.lastRunAt;
     writeQueueGroup(group);
     return group;
   });
@@ -1959,7 +2170,10 @@ app.whenReady().then(() => {
     if (runnerWindows.size >= maxAdditionalWindows) throw new Error(`专业版当前最多可额外打开 ${maxAdditionalWindows} 个开宝箱窗口`);
     createRunWindow(initialPlan, "chest", userId, sourceId, sourceName);
   });
-  ipcMain.handle("task:start", (event, request: TaskRequest) => spawnTask(request, event.sender.id));
+  ipcMain.handle("task:start", (event, request: TaskRequest) => {
+    // Spawn only; never return the ChildProcess to the renderer (structured clone fails).
+    spawnTask(request, event.sender.id);
+  });
   ipcMain.handle("task:stop", (_, id: string) => stopTaskGracefully(String(id || "")));
 });
 

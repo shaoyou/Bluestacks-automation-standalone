@@ -1,0 +1,59 @@
+{
+  "actions": [
+    {
+      "actions": [
+  
+        {
+          "remark": "点击回城",
+          "type": "click",
+          "x": 989,
+          "y": 1709
+        },
+        {
+          "seconds": 1,
+          "type": "wait"
+        },
+        {
+          "remark": "点击(OK)",
+          "type": "click",
+          "x": 744,
+          "y": 1123
+        },
+        {
+          "remark": "识别放大镜图标后继续下一步",
+          "type": "if_image",
+          "templates": [
+            "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
+            "../image_templates/bl_baoxiaoxing_1080x1920.png",
+            "../image_templates/bl_baoxiaoxing.png"
+          ],
+          "max_candidates": 32,
+          "threshold": 0.7,
+          "min_color_similarity": 0.75,
+          "scales": [
+            1.0
+          ],
+          "timeout_sec": 15,
+          "interval_sec": 5,
+          "then_actions": [
+            {
+              "type": "log",
+              "message": "已识别到放大镜图标，继续下一步"
+            }
+          ],
+          "else_actions": [
+            {
+              "type": "log",
+              "message": "15秒内未识别到放大镜图标，继续下一步"
+            }
+          ]
+        }
+      ],
+      "count": 1,
+      "type": "loop"
+    }
+  ],
+  "device": "127.0.0.1:5555",
+  "jitter_px": 3,
+  "max_runtime_sec": 0
+}

@@ -107,7 +107,7 @@ function decodePayload(encoded: string): LicensePayload {
   }
   if (
     raw.maxConcurrentRunners !== undefined
-    && (!Number.isInteger(raw.maxConcurrentRunners) || raw.maxConcurrentRunners < 2 || raw.maxConcurrentRunners > 10)
+    && (!Number.isInteger(raw.maxConcurrentRunners) || raw.maxConcurrentRunners < 2 || raw.maxConcurrentRunners > 6)
   ) {
     throw new Error("授权码并发配额无效");
   }
@@ -129,7 +129,7 @@ function validateLegacyCode(code: string, installId: string): LicenseStatus {
   const payload = decodePayload(encodedPayload);
   if (payload.installId !== installId) throw new Error("授权码不属于当前安装，请确认安装 ID");
   if (payload.expiresAt && expiryTimestamp(payload.expiresAt) < Date.now()) throw new Error("专业版授权已到期");
-  return statusForPro(installId, payload.maxConcurrentRunners ?? 3, payload.expiresAt);
+  return statusForPro(installId, payload.maxConcurrentRunners ?? 6, payload.expiresAt);
 }
 
 function compactCodeBytes(code: string) {
@@ -156,7 +156,7 @@ function validateCompactCode(code: string, installId: string): LicenseStatus {
   const expiryDay = payload.readUInt32BE(18);
   if ((!expires && expiryDay !== 0) || (expires && expiryDay === 0)) throw new Error("授权码到期信息无效");
   const maxConcurrentRunners = payload[22];
-  if (maxConcurrentRunners < 2 || maxConcurrentRunners > 10) throw new Error("授权码并发配额无效");
+  if (maxConcurrentRunners < 2 || maxConcurrentRunners > 6) throw new Error("授权码并发配额无效");
   const expiresAt = expires ? isoDateFromDay(expiryDay) : undefined;
   if (expiresAt && expiryTimestamp(expiresAt) < Date.now()) throw new Error("专业版授权已到期");
   return statusForPro(installId, maxConcurrentRunners, expiresAt);

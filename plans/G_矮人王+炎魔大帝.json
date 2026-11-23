@@ -1,0 +1,281 @@
+{
+  "actions": [
+    {
+      "actions": [
+{
+          "remark": "点击传送阵",
+          "type": "click",
+          "x": 649,
+          "y": 831
+        },
+        {
+          "seconds": 1,
+          "type": "wait"
+        },
+        
+        {
+          "type": "click",
+          "x": 333,
+          "y": 1303,
+          "remark": "点击黑石堡垒"
+        },
+        
+        
+        {
+          "seconds": 0.5,
+          "type": "wait"
+        },
+
+
+{
+  "type": "click",
+  "x": 550,
+  "y": 900,
+  "remark": "点击中庭回廊"
+},
+
+
+       
+        {
+          "seconds": 0.5,
+          "type": "wait"
+        },
+        {
+          "remark": "识别放大镜图标后继续下一步",
+          "type": "if_image",
+          "templates": [
+            "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
+            "../image_templates/bl_baoxiaoxing_1080x1920.png",
+            "../image_templates/bl_baoxiaoxing.png"
+          ],
+          "max_candidates": 32,
+          "threshold": 0.7,
+          "min_color_similarity": 0.75,
+          "scales": [
+            1.0
+          ],
+          "timeout_sec": 10,
+          "interval_sec": 5,
+          "then_actions": [
+            {
+              "type": "log",
+              "message": "已识别到放大镜图标，继续下一步"
+            }
+          ],
+          "else_actions": [
+            {
+              "type": "log",
+              "message": "15秒内未识别到放大镜图标，继续下一步"
+            }
+          ]
+        },
+        
+        
+ 
+      {
+  "type": "joystick",
+  "x": 540,
+  "y": 1720,
+  "angle": -105,
+  "seconds": 6,
+  "distance": 180,
+  "remark": "-105度6秒"
+},
+{
+  "type": "joystick",
+  "x": 540,
+  "y": 1720,
+  "angle": -170,
+  "seconds": 3,
+  "distance": 180,
+  "remark": "到达矮人王"
+},
+  
+        
+        {
+          "type": "wait",
+          "seconds": 5,
+          "remark": "等待5秒"
+        },
+
+
+{
+  "type": "click",
+  "x": 994,
+  "y": 1503,
+  "remark": "点击地图"
+},
+        {
+          "type": "wait",
+          "seconds": 2,
+          "remark": "等待2秒"
+        },
+{
+  "type": "click",
+  "x": 911,
+  "y": 1571,
+  "remark": "点击会议后门"
+},
+        {
+          "type": "wait",
+          "seconds": 1,
+          "remark": "等待1秒"
+        },
+
+{
+  "type": "click",
+  "x": 535,
+  "y": 808,
+  "remark": "点击传送点、去掉箭头"
+},
+        {
+          "type": "wait",
+          "seconds": 0.1,
+          "remark": "等待0.1秒"
+        },        
+{
+  "type": "click",
+  "x": 535,
+  "y": 808,
+  "remark": "点击传送点，弹出气泡"
+},
+        {
+          "type": "wait",
+          "seconds": 0.35,
+          "remark": "等待0.35秒"
+        },      
+
+
+{
+  "type": "click",
+  "x": 537,
+  "y": 684,
+  "remark": "点击 传送"
+},
+
+ {
+          "remark": "识别放大镜图标后继续下一步",
+          "type": "if_image",
+          "templates": [
+            "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
+            "../image_templates/bl_baoxiaoxing_1080x1920.png",
+            "../image_templates/bl_baoxiaoxing.png"
+          ],
+          "max_candidates": 32,
+          "threshold": 0.7,
+          "min_color_similarity": 0.75,
+          "scales": [
+            1.0
+          ],
+          "timeout_sec": 15,
+          "interval_sec": 5,
+          "then_actions": [
+            {
+              "type": "log",
+              "message": "已识别到放大镜图标，继续下一步"
+            }
+          ],
+          "else_actions": [
+            {
+              "type": "log",
+              "message": "15秒内未识别到放大镜图标，继续下一步"
+            }
+          ]
+        },
+
+
+{
+  "type": "joystick",
+  "x": 540,
+  "y": 1720,
+  "angle": 150,
+  "seconds": 1.8,
+  "distance": 180,
+  "remark": "150度1.8秒"
+},
+{
+  "type": "joystick",
+  "x": 540,
+  "y": 1720,
+  "angle": 45,
+  "seconds": 10,
+  "distance": 180,
+  "remark": "45度10秒"
+},
+{
+  "type": "joystick",
+  "x": 540,
+  "y": 1720,
+  "angle": 60,
+  "seconds": 5,
+  "distance": 180,
+  "remark": "60度5秒"
+},
+{
+  "type": "joystick",
+  "x": 540,
+  "y": 1720,
+  "angle": 30,
+  "seconds": 9,
+  "distance": 180,
+  "remark": "40度9秒"
+},
+{
+          "seconds": 5,
+          "type": "wait"
+        },
+
+        {
+          "remark": "点击回城",
+          "type": "click",
+          "x": 989,
+          "y": 1709
+        },
+        {
+          "seconds": 1,
+          "type": "wait"
+        },
+        {
+          "remark": "点击(OK)",
+          "type": "click",
+          "x": 744,
+          "y": 1123
+        },
+        {
+          "remark": "识别放大镜图标后继续下一步",
+          "type": "if_image",
+          "templates": [
+            "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
+            "../image_templates/bl_baoxiaoxing_1080x1920.png",
+            "../image_templates/bl_baoxiaoxing.png"
+          ],
+          "max_candidates": 32,
+          "threshold": 0.7,
+          "min_color_similarity": 0.75,
+          "scales": [
+            1.0
+          ],
+          "timeout_sec": 15,
+          "interval_sec": 5,
+          "then_actions": [
+            {
+              "type": "log",
+              "message": "已识别到放大镜图标，继续下一步"
+            }
+          ],
+          "else_actions": [
+            {
+              "type": "log",
+              "message": "15秒内未识别到放大镜图标，继续下一步"
+            }
+          ]
+        }
+      ],
+      "count": 1,
+      "type": "loop"
+    }
+  ],
+  "device": "127.0.0.1:5555",
+  "jitter_px": 3,
+  "max_runtime_sec": 0
+}

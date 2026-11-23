@@ -97,6 +97,7 @@
 - `find_text_click`
 - `swipe`
 - `trace`
+- `joystick`
 - `wait`
 - `sequence`
 - `loop`
@@ -168,6 +169,7 @@
 - 只做图标识别，不执行点击
 - 日志会输出是否识别到图标，以及命中框和相似度
 - 可用于先验证模板是否稳定
+- 不支持 `then_actions` / `else_actions`；需要按识别结果分支时请用 `if_image`
 - 参数与 `find_image_click` 基本一致
 
 ### 3.5 find_image_click
@@ -199,6 +201,7 @@
 - `preview_only` (bool, 可选，默认 `false`): 命中后只保存高亮预览，不点击
 - `save_debug` (bool, 可选，默认跟随全局设置): 是否自动保存最佳候选调试图；应用设置中的“保存图像匹配调试图”开关控制全局默认（默认关闭，对应命令行 `--image-match-debug`），动作里显式设置 `true`/`false` 可覆盖全局
 - `debug_dir` (string, 可选): 自定义调试图输出目录
+- 不支持 `then_actions` / `else_actions`；需要命中后继续执行其他动作时，请用 `if_image`，并在 `then_actions` 里用 `click_match` 点击命中图标
 - 说明：推荐使用裁剪紧凑、背景干净的 PNG 图标；透明区域会自动忽略；若在 `timeout_sec` 内未命中，会记录日志并跳过当前动作，继续执行下一个动作
 - 性能建议：尽量缩小 `region`；如果图标大小稳定，优先用 `scales: [1.0]` 或很窄的缩放范围；`templates` 中把最常出现的图标放前面；只做存在性判断时可配 `max_candidates: 1`
 - 多目标示例：
@@ -327,7 +330,8 @@
 - `min_segment_ms` (number, 可选，默认 `16`): 每段最小时长
 - `max_segment_ms` (number, 可选，默认 `80`): 每段最大时长
 - 用途：精细回放手写轨迹（如画 `123`）
-- 回放实现：`mode: "motion"` 时整条轨迹通过一次 guest shell 脚本连续注入；脚本读取 `/proc/uptime` 对齐每个点的目标时间，设备处理事件偏慢时会自动丢弃中间采样点而不是把整条轨迹拉长。`t_ms` 不填时按 `min_segment_ms` 匀速回放。
+- 回放实现：`mode: "motion"` 时整条轨迹通过一次 guest shell 脚本连续注入；脚本读取 `/proc/uptime` 对齐每个点的目标时间，设备处理事件偏慢时会自动丢弃中间采样点而不是把整条轨迹拉长。超过 `max_segment_ms` 的长间隔会按比例拆成多个中间点，总时长保持不变。`t_ms` 不填时按 `min_segment_ms` 匀速回放。
+- 分辨率适配：轨迹点相对起点按统一比例缩放，换到不同宽高比的设备时路径角度不会变形。
 
 ### 3.10.1 long_press
 
@@ -338,6 +342,32 @@
 - `x` `y` (number, 必填): 按压坐标
 - `duration_ms` (number, 可选，默认 `700`): 按住时长
 - 录制时，位置几乎不动且持续时间超过 `long_press_min_duration_sec` 的手势会生成该动作，而不是一条首尾相同的 trace
+
+### 3.10.2 joystick
+
+```json
+{
+  "type": "joystick",
+  "x": 540,
+  "y": 1720,
+  "angle": 30,
+  "seconds": 5,
+  "distance": 180
+}
+```
+
+- `x` `y` (number, 必填): 起点/摇杆中心坐标
+- `angle` (number, 可选，默认 `0`): 方向角度；屏幕坐标下 `0` 向右、`90` 向上、`-90` 向下、`180` 向左
+- `seconds` (number, 可选，默认 `1`): 总按住时长；也可以用 `duration_ms`
+- `duration_ms` (number, 可选): 总按住时长（毫秒），优先于 `seconds`
+- `distance` (number, 可选，默认 `180`): 从起点拖出的距离（像素）
+- `flick_ms` (number, 可选，默认 `100`): 到达边缘的时间；之后手指保持在边缘，直到总时长结束
+- `mode` (string, 可选，默认 `motion`): `motion` 或 `swipe`
+- 等价 trace：`(x,y)@0` → `(x+cos(angle)*distance, y-sin(angle)*distance)@flick_ms` → 同一点@duration_ms
+- 用途：摇杆方向拖动，比手写 trace 点更易编辑。上面例子等价于 `30度5秒`、距离 `180` 的三点 trace
+- 注意：`joystick` 是游戏摇杆手势（快速推到边缘后保持），不要用于 UI 列表滚动；滚动传送列表、背包列表等请用 `swipe`（连续拖动）
+- 分辨率适配：起点按屏幕比例映射，方向向量按宽度比例统一缩放，换到不同宽高比的设备时角度不会变形；如果感觉摇杆推动距离偏短，可适当加大 `distance`
+- `min_segment_ms` / `max_segment_ms` / `trace_jitter_px` / `time_scale` 可选，会原样传给 trace 回放
 
 ### 3.11 sequence
 

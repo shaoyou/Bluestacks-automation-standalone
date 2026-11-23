@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { AlertTriangle, Copy, Download, KeyRound, Power, RefreshCw, TerminalSquare, Trash2, X } from "lucide-react";
 import type { UpdatePolicyState, UpdateState } from "../types";
+import { newestFirstLog } from "../app/shared";
 
 export function PageHeading({ title, detail, children }: { title: string; detail: string; children?: ReactNode }) {
   return <header className="page-heading"><div><h1>{title}</h1><p>{detail}</p></div><div className="heading-actions">{children}</div></header>;
@@ -13,13 +14,13 @@ export function Toggle({ label, checked, onChange }: { label: string; checked: b
 export function LogActions({ text, showRealtimeLogs, onToggleRealtimeLogs, onCopy, onClear }: { text: string; showRealtimeLogs: boolean; onToggleRealtimeLogs: (next: boolean) => void; onCopy?: () => void; onClear?: () => void }) {
   return <span className="log-actions">
     <Toggle label="实时输出" checked={showRealtimeLogs} onChange={onToggleRealtimeLogs} />
-    <button className="icon-button" title="复制日志" aria-label="复制日志" disabled={!text} onClick={() => { if (onCopy) onCopy(); else void navigator.clipboard.writeText(text); }}><Copy size={15} /></button>
+    <button className="icon-button" title="复制日志" aria-label="复制日志" disabled={!text} onClick={() => { if (onCopy) onCopy(); else void navigator.clipboard.writeText(newestFirstLog(text)); }}><Copy size={15} /></button>
     <button className="icon-button" title="清空日志" aria-label="清空日志" disabled={!text} onClick={onClear}><Trash2 size={15} /></button>
   </span>;
 }
 
 export function LogPanel({ title, text, actions }: { title: string; text: string; actions?: ReactNode }) {
-  return <section className="panel log-panel"><div className="panel-title"><span>{title}</span><span className="panel-title-actions">{actions}<TerminalSquare size={16} /></span></div><pre className="log-output">{text || "等待任务输出..."}</pre></section>;
+  return <section className="panel log-panel"><div className="panel-title"><span>{title}</span><span className="panel-title-actions">{actions}<TerminalSquare size={16} /></span></div><pre className="log-output">{newestFirstLog(text) || "等待任务输出..."}</pre></section>;
 }
 
 export function PromptDialog({ title, defaultValue, placeholder, confirmLabel = "确定", onConfirm, onClose }: { title: string; defaultValue?: string; placeholder?: string; confirmLabel?: string; onConfirm: (value: string) => void; onClose: () => void }) {
