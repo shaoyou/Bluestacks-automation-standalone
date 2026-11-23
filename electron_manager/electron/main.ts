@@ -705,6 +705,47 @@ function runtimeRoot(): string {
   return target;
 }
 
+const APP_VERSION_MARKER_FILE = "last-app-version.json";
+// Versions released before this one only merged bundled plans over the user's
+// runtime copy, which left deleted/renamed legacy scripts behind. Starting with
+// this version, upgrading from an older build replaces the plan library with
+// the bundled set once; plans created after the upgrade are kept as usual.
+const PLAN_LIBRARY_RESET_VERSION = "1.2.47";
+
+function appVersionMarkerPath(): string {
+  return path.join(app.getPath("userData"), APP_VERSION_MARKER_FILE);
+}
+
+function readLastAppVersion(): string | null {
+  try {
+    const raw = JSON.parse(readFileSync(appVersionMarkerPath(), "utf8")) as { version?: unknown };
+    return typeof raw.version === "string" && raw.version.trim() ? raw.version.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLastAppVersion(version: string) {
+  try {
+    writeFileSync(appVersionMarkerPath(), `${JSON.stringify({ version, updatedAt: new Date().toISOString() }, null, 2)}\n`, "utf8");
+  } catch (error) {
+    recordStartupWarning(`[runtime] skip version marker write: ${String(error)}`);
+  }
+}
+
+function resetPlanLibraryToBundled(): boolean {
+  const plansDir = path.join(app.getPath("userData"), "runtime", "plans");
+  try {
+    rmSync(plansDir, { recursive: true, force: true });
+    copyResources(bundledPlansRoot(), plansDir, true);
+    console.log("[runtime] plan library replaced with bundled plans after upgrade");
+    return true;
+  } catch (error) {
+    recordStartupWarning(`[runtime] plan library reset failed: ${String(error)}`);
+    return false;
+  }
+}
+
 async function showStartupWarningsIfAny() {
   if (startupWarnings.length === 0) return;
   const details = startupWarnings.slice(0, 8).join("\n");
@@ -1661,7 +1702,17 @@ function createRunWindow(initialPlan?: string, mode: "runner" | "chest" = "runne
 app.whenReady().then(() => {
   void (async () => {
     try {
+      const previousVersion = readLastAppVersion();
+      const runtimePlansDir = path.join(app.getPath("userData"), "runtime", "plans");
+      const hadExistingPlans = existsSync(runtimePlansDir) && readdirSync(runtimePlansDir).some((name) => name.endsWith(".json"));
       runtimeRoot();
+      // Older builds did not write the marker file, so an existing plan library
+      // on first run of this version means "upgrade", not a fresh install.
+      const shouldResetPlans = previousVersion
+        ? compareVersions(previousVersion, PLAN_LIBRARY_RESET_VERSION) < 0
+        : hadExistingPlans;
+      const resetPlansOk = shouldResetPlans ? resetPlanLibraryToBundled() : true;
+      if (resetPlansOk) writeLastAppVersion(app.getVersion());
       if (getSettings().startupUpdateCheck === false) {
         updatePolicyState = { ...updatePolicyState, loaded: true, message: "启动更新检测已在设置中关闭，可在设置中重新开启" };
       }
