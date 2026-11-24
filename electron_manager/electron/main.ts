@@ -85,6 +85,9 @@ type UpdatePromptState = {
 
 const thisDir = path.dirname(fileURLToPath(import.meta.url));
 const isDevelopment = !app.isPackaged;
+// Unpackaged runs pick up the build icon for dock/taskbar; packaged builds get
+// it from the electron-builder icon set.
+const devIconPath = path.join(thisDir, "../assets/icon/icon.png");
 const tasks = new Map<string, ChildProcess>();
 const taskOwners = new Map<string, number>();
 const taskKinds = new Map<string, TaskKind>();
@@ -1635,6 +1638,7 @@ function createWindow() {
     width: 1440,
     height: 920,
     backgroundColor: "#101417",
+    icon: isDevelopment && existsSync(devIconPath) ? devIconPath : undefined,
     webPreferences: {
       // Electron executes preload scripts in CommonJS mode even when the app's
       // main process is ESM. Keep this file as .cjs so contextBridge is loaded.
@@ -1664,6 +1668,7 @@ function createRunWindow(initialPlan?: string, mode: "runner" | "chest" = "runne
     height: 780,
     title: mode === "chest" ? "开宝箱窗口" : "运行窗口",
     backgroundColor: "#101417",
+    icon: isDevelopment && existsSync(devIconPath) ? devIconPath : undefined,
     webPreferences: {
       preload: path.join(thisDir, "preload.cjs"),
       contextIsolation: true,
@@ -1700,6 +1705,7 @@ function createRunWindow(initialPlan?: string, mode: "runner" | "chest" = "runne
 }
 
 app.whenReady().then(() => {
+  if (isDevelopment && process.platform === "darwin" && existsSync(devIconPath)) app.dock?.setIcon(devIconPath);
   void (async () => {
     try {
       const previousVersion = readLastAppVersion();

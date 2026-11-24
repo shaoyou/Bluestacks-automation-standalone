@@ -125,6 +125,7 @@
       }
     ],
     "mac": {
+      "icon": "assets/icon/icon.icns",
       "target": [
         "dmg",
         "zip"
@@ -132,6 +133,7 @@
       "category": "public.app-category.utilities"
     },
     "win": {
+      "icon": "assets/icon/icon.ico",
       "target": [
         "nsis"
       ]

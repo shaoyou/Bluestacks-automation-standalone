@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="180" y1="120" x2="880" y2="930" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#D6F8EA"/>
+      <stop offset="0.55" stop-color="#93E5C6"/>
+      <stop offset="1" stop-color="#53BA95"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(512 500) rotate(90) scale(380)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.40"/>
+      <stop offset="1" stop-color="#6FE0B8" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="fur" x1="512" y1="300" x2="512" y2="800" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFDF6"/>
+      <stop offset="0.6" stop-color="#FFF4DE"/>
+      <stop offset="1" stop-color="#F5DFBA"/>
+    </linearGradient>
+    <linearGradient id="muzzle" x1="512" y1="580" x2="512" y2="770" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFBF0"/>
+      <stop offset="1" stop-color="#FFEDCE"/>
+    </linearGradient>
+    <linearGradient id="leafR" x1="560" y1="290" x2="640" y2="220" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8AEBC8"/>
+      <stop offset="1" stop-color="#2FA57E"/>
+    </linearGradient>
+    <linearGradient id="leafL" x1="545" y1="290" x2="475" y2="225" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7FE4BE"/>
+      <stop offset="1" stop-color="#26926D"/>
+    </linearGradient>
+    <filter id="blush" x="270" y="590" width="484" height="170" filterUnits="userSpaceOnUse">
+      <feGaussianBlur stdDeviation="15"/>
+    </filter>
+  </defs>
+
+  <!-- base -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#glow)"/>
+  <rect x="101.5" y="101.5" width="821" height="821" rx="183.5" stroke="#0F6B52" stroke-opacity="0.10" stroke-width="3"/>
+
+  <!-- sprout -->
+  <path d="M 540 360 C 548 330 556 300 574 274" stroke="#23886A" stroke-width="14" stroke-linecap="round"/>
+  <path d="M 574 274 C 552 230 518 210 494 220 C 480 254 512 276 574 274 Z" fill="url(#leafL)"/>
+  <path d="M 574 274 C 596 230 630 208 656 216 C 670 252 640 278 574 274 Z" fill="url(#leafR)"/>
+  <path d="M 574 274 C 596 230 630 208 656 216" stroke="#1B7357" stroke-opacity="0.38" stroke-width="6" stroke-linecap="round"/>
+
+  <!-- ears -->
+  <circle cx="340" cy="372" r="106" fill="url(#fur)"/>
+  <circle cx="684" cy="372" r="106" fill="url(#fur)"/>
+  <circle cx="347" cy="380" r="51" fill="#F4B0A4"/>
+  <circle cx="677" cy="380" r="51" fill="#F4B0A4"/>
+
+  <!-- head -->
+  <ellipse cx="512" cy="566" rx="244" ry="230" fill="url(#fur)"/>
+
+  <!-- blush -->
+  <g filter="url(#blush)" fill="#F79E91" fill-opacity="0.55">
+    <ellipse cx="352" cy="656" rx="46" ry="27"/>
+    <ellipse cx="672" cy="656" rx="46" ry="27"/>
+  </g>
+
+  <!-- eyes -->
+  <ellipse cx="428" cy="580" rx="31" ry="37" fill="#2A2A26"/>
+  <ellipse cx="596" cy="580" rx="31" ry="37" fill="#2A2A26"/>
+  <circle cx="417" cy="565" r="12" fill="#FFFFFF" fill-opacity="0.95"/>
+  <circle cx="585" cy="565" r="12" fill="#FFFFFF" fill-opacity="0.95"/>
+  <circle cx="440" cy="598" r="6" fill="#FFFFFF" fill-opacity="0.55"/>
+  <circle cx="608" cy="598" r="6" fill="#FFFFFF" fill-opacity="0.55"/>
+
+  <!-- muzzle -->
+  <ellipse cx="512" cy="672" rx="118" ry="92" fill="url(#muzzle)"/>
+
+  <!-- nose -->
+  <path d="M 482 632 C 488 618 536 618 542 632 C 548 646 532 676 512 676 C 492 676 476 646 482 632 Z" fill="#2A2A26"/>
+  <ellipse cx="498" cy="627" rx="9.5" ry="5.5" fill="#FFFFFF" fill-opacity="0.35"/>
+
+  <!-- mouth -->
+  <path d="M 512 678 V 690" stroke="#2A2A26" stroke-width="11" stroke-linecap="round"/>
+  <path d="M 512 690 C 508 706 491 710 481 697" stroke="#2A2A26" stroke-width="11" stroke-linecap="round"/>
+  <path d="M 512 690 C 516 706 533 710 543 697" stroke="#2A2A26" stroke-width="11" stroke-linecap="round"/>
+</svg>
