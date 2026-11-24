@@ -1,6 +1,6 @@
 import type { AppSettings, LicenseStatus, UpdatePolicyState, UpdateState } from "../types";
 
-export type Page = "scripts" | "runner" | "queue" | "draw" | "chest" | "recorder" | "calibration" | "diagnostics" | "settings";
+export type Page = "scripts" | "runner" | "devices" | "queue" | "draw" | "chest" | "recorder" | "calibration" | "diagnostics" | "settings";
 export type PickedCoordinate = { x: number; y: number; device: string; capturedAt: string };
 export type ScriptVariable = { name: string; value: string; note: string };
 export type RunnerSelection = { plan: string; device: string; profitPerCycle: string; showRealtimeLogs: boolean };

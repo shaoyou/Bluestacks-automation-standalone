@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArrowDown, ArrowUp, CircleStop, Copy, CopyPlus, Layers, Pencil, PencilLine, Play, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
+import { CircleStop, Copy, CopyPlus, GripVertical, Layers, Pencil, PencilLine, Play, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
 import { PageHeading, PromptDialog, Toggle } from "../components/layout";
 import type { QueueGroup, QueueGroupItem, QueueItemResult, QueueItemStatus, QueueRunSnapshot } from "../types";
 import { newestFirstLog, type SharedProps } from "../app/shared";
@@ -24,6 +24,12 @@ const ITEM_STATUS_META: Record<QueueItemStatus, { text: string; className: strin
 
 function planLabel(plan: string) {
   return plan.replace(/\.json$/i, "");
+}
+
+// Selected items and queue cards drop the "G_" sorting prefix for readability;
+// the real file name stays available in tooltips.
+function planShortLabel(plan: string) {
+  return planLabel(plan).replace(/^G_/, "");
 }
 
 function formatLastRun(value: string) {
@@ -93,12 +99,14 @@ function draftFromGroup(group: QueueGroup, planMeta: Record<string, PlanMeta>): 
     id: group.id,
     name: group.name,
     items: group.items.map((item) => {
-      const planDefault = planMeta[item.plan]?.maxRuntimeSec ?? 0;
-      const cycleDefault = planMeta[item.plan]?.cycleDays ?? 0;
+      const meta = planMeta[item.plan];
+      const planDefault = meta?.maxRuntimeSec ?? 0;
+      const cycleDefault = meta?.cycleDays ?? 0;
       const cycleDays = item.cycleDays && item.cycleDays > 0 ? item.cycleDays : cycleDefault;
       return {
         plan: item.plan,
-        minutesText: item.maxRuntimeSec > 0 ? formatMinutes(item.maxRuntimeSec) : planDefault > 0 ? formatMinutes(planDefault) : "",
+        // Only infinite-loop plans carry a per-run time limit.
+        minutesText: meta?.unbounded ? (item.maxRuntimeSec > 0 ? formatMinutes(item.maxRuntimeSec) : planDefault > 0 ? formatMinutes(planDefault) : "") : "",
         cycleDaysText: cycleDays > 0 ? String(cycleDays) : "",
       };
     }),
@@ -114,6 +122,8 @@ export function QueueGroupPage(props: SharedProps) {
   const [groupDevices, setGroupDevices] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState<QueueGroupDraft | null>(null);
   const [editorError, setEditorError] = useState("");
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dropSlot, setDropSlot] = useState<number | null>(null);
   const [renameTarget, setRenameTarget] = useState<QueueGroup | null>(null);
   const [cyclePrompt, setCyclePrompt] = useState<{ group: QueueGroup; device: string; notDue: QueueGroupItem[] } | null>(null);
 
@@ -186,13 +196,22 @@ export function QueueGroupPage(props: SharedProps) {
     setEditorError("");
   };
 
-  const moveDraftItem = (index: number, offset: number) => {
-    if (!draft) return;
+  const closeEditor = () => {
+    setDraft(null);
     setEditorError("");
-    const target = index + offset;
-    if (target < 0 || target >= draft.items.length) return;
+  };
+
+  const reorderDraftItem = (from: number, slot: number) => {
+    if (!draft) return;
+    if (from < 0 || from >= draft.items.length) return;
+    if (slot < 0 || slot > draft.items.length) return;
+    // `slot` is an insertion index in the pre-drag list (0..length).
+    const target = from < slot ? slot - 1 : slot;
+    if (target === from) return;
+    setEditorError("");
     const items = [...draft.items];
-    [items[index], items[target]] = [items[target], items[index]];
+    const [moved] = items.splice(from, 1);
+    items.splice(target, 0, moved);
     setDraft({ ...draft, items });
   };
 
@@ -203,9 +222,10 @@ export function QueueGroupPage(props: SharedProps) {
 
   const addDraftItem = (plan: string) => {
     setEditorError("");
-    const planDefault = planMeta[plan]?.maxRuntimeSec ?? 0;
-    const minutesText = planDefault > 0 ? formatMinutes(planDefault) : "";
-    const cycleDefault = planMeta[plan]?.cycleDays ?? 0;
+    const meta = planMeta[plan];
+    const planDefault = meta?.maxRuntimeSec ?? 0;
+    const minutesText = meta?.unbounded && planDefault > 0 ? formatMinutes(planDefault) : "";
+    const cycleDefault = meta?.cycleDays ?? 0;
     setDraft((current) => {
       if (!current || current.items.some((item) => item.plan === plan)) return current;
       return { ...current, items: [...current.items, { plan, minutesText, cycleDaysText: cycleDefault > 0 ? String(cycleDefault) : "" }] };
@@ -222,29 +242,29 @@ export function QueueGroupPage(props: SharedProps) {
     if (draft.items.length === 0) return fail("请至少选择一个脚本");
     const items: QueueGroupItem[] = [];
     for (const [index, item] of draft.items.entries()) {
-      const minutesText = item.minutesText.trim();
-      const minutes = Number(minutesText);
-      const seconds = Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes * 60) : 0;
       const meta = planMeta[item.plan];
       const planDefault = meta?.maxRuntimeSec ?? 0;
       const unbounded = meta?.unbounded ?? false;
+      // Finite plans always run to completion; only infinite loops carry a limit.
+      const minutesText = unbounded ? item.minutesText.trim() : "";
+      const minutes = Number(minutesText);
+      const seconds = unbounded && Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes * 60) : 0;
       const allowedForever = unbounded && index === draft.items.length - 1 && !draft.repeat;
-      if (seconds <= 0 && !(planDefault > 0) && unbounded && !allowedForever) {
-        return fail(`${planLabel(item.plan)} 会无限运行且未设置时长：请填写分钟数，或把它放在最后并关闭整队循环`);
+      if (unbounded && seconds <= 0 && !(planDefault > 0) && !allowedForever) {
+        return fail(`${planShortLabel(item.plan)} 会无限运行且未设置时长：请填写分钟数，或把它放在最后并关闭整队循环`);
       }
       const cycleText = item.cycleDaysText.trim();
       const cycleNumber = Number(cycleText);
       const cycleDays = Number.isFinite(cycleNumber) && cycleNumber > 0 ? Math.round(cycleNumber) : 0;
       if (cycleText && cycleDays <= 0) {
-        return fail(`${planLabel(item.plan)} 的执行周期需填写正整数天数（留空表示每次都执行）`);
+        return fail(`${planShortLabel(item.plan)} 的执行周期需填写正整数天数（留空表示每次都执行）`);
       }
       items.push({ plan: item.plan, maxRuntimeSec: seconds, enabled: true, cycleDays });
     }
     try {
       await window.bsManager.queueGroupsSave({ id: draft.id ?? "", name: draft.name.trim(), items, onError: draft.onError, repeat: draft.repeat });
       const savedName = draft.name.trim();
-      setDraft(null);
-      setEditorError("");
+      closeEditor();
       await refresh();
       props.setNotice(`计划组「${savedName}」已保存`);
     } catch (error) {
@@ -322,8 +342,7 @@ export function QueueGroupPage(props: SharedProps) {
     if (!window.confirm(`删除计划组「${groupName}」？`)) return;
     try {
       await window.bsManager.queueGroupsDelete(groupId);
-      setDraft(null);
-      setEditorError("");
+      closeEditor();
       await refresh();
       props.setNotice("计划组已删除");
     } catch (error) {
@@ -355,58 +374,93 @@ export function QueueGroupPage(props: SharedProps) {
       <span>{props.devices.join("  ·  ") || "请检查 ADB 路径、模拟器或 USB 调试连接"}</span>
       <span className="queue-concurrency">同时运行上限 {capacity} 个（当前运行 {runningCount} 个）{licenseFree ? " · 免费版仅支持 1 个，多开需专业版" : ""}</span>
     </section>
-    {draft && <section className="panel queue-editor">
-      <div className="panel-title"><span>{draft.id ? "编辑计划组" : "新建计划组"}</span></div>
-      <label className="queue-name-row">名称<input value={draft.name} placeholder="例如：日常挂机" onChange={(event) => { setEditorError(""); setDraft({ ...draft, name: event.target.value }); }} /></label>
-      <div className="queue-editor-columns">
-        <div className="queue-selected">
-          <div className="panel-title"><span>已选脚本（按此顺序执行）</span><span className="counter">{draft.items.length}</span></div>
-          <p className="empty-note queue-duration-note">时长留空 = 跑完为止（会自己结束的脚本）；标 ∞ 的脚本会无限运行，必须填时长，或放在最后并关闭整队循环。</p>
-          <p className="empty-note queue-duration-note">主城出发的脚本建议把“G_主城校准出发点”放到第一位置。</p>
-          <p className="empty-note queue-duration-note">执行周期（天）留空 = 每次都执行；默认值读取脚本变量 EXEC_CYCLE_DAYS（天），可在右侧覆盖。</p>
-          {draft.items.length === 0 && <p className="empty-note">还没有选择脚本，请从右侧列表添加。</p>}
-          {draft.items.map((item, index) => {
-            const meta = planMeta[item.plan];
-            const planDefault = meta?.maxRuntimeSec ?? 0;
-            const unbounded = meta?.unbounded ?? false;
-            const minutes = Number(item.minutesText.trim() || NaN);
-            const allowedForever = unbounded && index === draft.items.length - 1 && !draft.repeat;
-            const needDuration = unbounded && !allowedForever && !(Number.isFinite(minutes) && minutes > 0) && !(planDefault > 0);
-            return <div className={`queue-item-row ${needDuration ? "queue-item-warning" : ""}`} key={`${item.plan}-${index}`}>
-              <span className="queue-order">{index + 1}</span>
-              <strong title={item.plan}>{planLabel(item.plan)}</strong>
-              <input className="queue-minutes" title="留空 = 跑完为止（仅会自己结束的脚本）；∞ 无限循环脚本必须填时长，或放在最后并关闭整队循环" aria-label={`${planLabel(item.plan)} 的运行时长（分钟）`} value={item.minutesText} placeholder={planDefault > 0 ? `默认 ${formatMinutes(planDefault)}` : unbounded ? (allowedForever ? "可留空" : "必填") : "不限"} onChange={(event) => { setEditorError(""); const value = event.target.value; setDraft((current) => current && { ...current, items: current.items.map((entry, i) => (i === index ? { ...entry, minutesText: value } : entry)) }); }} />
-              <span className="queue-minutes-unit">分钟</span>
-              <input className="queue-cycle" title="执行周期（天）：未到周期时启动会提示跳过；留空 = 每次都执行" aria-label={`${planLabel(item.plan)} 的执行周期（天）`} value={item.cycleDaysText} placeholder={meta && meta.cycleDays > 0 ? `周期${meta.cycleDays}` : "周期(天)"} onChange={(event) => { setEditorError(""); const value = event.target.value; setDraft((current) => current && { ...current, items: current.items.map((entry, i) => (i === index ? { ...entry, cycleDaysText: value } : entry)) }); }} />
-              <span className="queue-minutes-unit">天</span>
-              <button className="icon-button" title="上移" aria-label={`上移 ${planLabel(item.plan)}`} disabled={index === 0} onClick={() => moveDraftItem(index, -1)}><ArrowUp size={14} /></button>
-              <button className="icon-button" title="下移" aria-label={`下移 ${planLabel(item.plan)}`} disabled={index === draft.items.length - 1} onClick={() => moveDraftItem(index, 1)}><ArrowDown size={14} /></button>
-              <button className="icon-button" title="移除" aria-label={`移除 ${planLabel(item.plan)}`} onClick={() => removeDraftItem(index)}><Trash2 size={14} /></button>
-            </div>;
-          })}
-        </div>
-        <div className="queue-available">
-          <div className="panel-title"><span>可选脚本</span><span className="counter">{props.plans.length}</span></div>
-          <div className="queue-plan-list">
-            {props.plans.map((name) => {
-              const added = draft.items.some((item) => item.plan === name);
-              const unbounded = planMeta[name]?.unbounded ?? false;
-              return <button key={name} className={`plan-item ${added ? "selected" : ""}`} disabled={added} onClick={() => addDraftItem(name)}><Plus size={14} /><span>{planLabel(name)}</span>{unbounded && <em className="queue-infinite" title="无限循环脚本">∞</em>}</button>;
-            })}
+    {draft && <div className="queue-editor-backdrop">
+      <section className="panel queue-editor queue-editor-modal" role="dialog" aria-modal="true" aria-labelledby="queue-editor-title">
+        <header className="queue-editor-header">
+          <div>
+            <strong id="queue-editor-title">{draft.id ? "编辑计划组" : "新建计划组"}</strong>
+            <span>{draft.id ? "调整脚本顺序、时长与执行周期" : "命名 → 选择脚本 → 调整顺序 → 保存"}</span>
+          </div>
+          <button className="icon-button" title="关闭" aria-label="关闭编辑器" onClick={closeEditor}><X size={16} /></button>
+        </header>
+        <div className="queue-editor-body">
+          <label className="queue-name-row">名称<input value={draft.name} placeholder="例如：日常挂机" onChange={(event) => { setEditorError(""); setDraft({ ...draft, name: event.target.value }); }} /></label>
+          <div className="queue-editor-columns">
+            <div className="queue-selected">
+              <div className="panel-title">
+                <span>已选脚本（按此顺序执行）</span>
+                <span className="queue-selected-heading">
+                  {draft.items.length > 1 && <span className="queue-sort-hint">拖动 ⋮⋮ 调整顺序</span>}
+                  <span className="counter">{draft.items.length}</span>
+                </span>
+              </div>
+              <div className="queue-selected-notes">
+                <p className="empty-note queue-duration-note">主城出发的脚本建议把“主城校准出发点”放到第一位置。</p>
+                <p className="empty-note queue-duration-note">执行周期（天）留空 = 每次都执行；默认值读取脚本变量 EXEC_CYCLE_DAYS（天），可在右侧覆盖。</p>
+              </div>
+              <div
+                className="queue-selected-list"
+                onDragOver={(event) => { event.preventDefault(); if (dragIndex !== null) setDropSlot(draft.items.length); }}
+                onDrop={(event) => { event.preventDefault(); if (dragIndex !== null) reorderDraftItem(dragIndex, draft.items.length); setDragIndex(null); setDropSlot(null); }}
+              >
+                {draft.items.length === 0 && <p className="empty-note">还没有选择脚本，请从右侧列表添加。</p>}
+                {draft.items.map((item, index) => {
+                  const meta = planMeta[item.plan];
+                  const planDefault = meta?.maxRuntimeSec ?? 0;
+                  const unbounded = meta?.unbounded ?? false;
+                  const minutes = Number(item.minutesText.trim() || NaN);
+                  const allowedForever = unbounded && index === draft.items.length - 1 && !draft.repeat;
+                  const needDuration = unbounded && !allowedForever && !(Number.isFinite(minutes) && minutes > 0) && !(planDefault > 0);
+                  const dragging = dragIndex === index;
+                  const dropBefore = dragIndex !== null && dropSlot === index;
+                  const dropAfter = dragIndex !== null && dropSlot === draft.items.length && index === draft.items.length - 1;
+                  return <div
+                    className={`queue-item-row ${needDuration ? "queue-item-warning" : ""} ${dragging ? "queue-item-dragging" : ""} ${dropBefore ? "queue-item-drop-before" : ""} ${dropAfter ? "queue-item-drop-after" : ""}`}
+                    key={`${item.plan}-${index}`}
+                    onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); if (dragIndex === null) return; const rect = event.currentTarget.getBoundingClientRect(); setDropSlot(index + (event.clientY >= rect.top + rect.height / 2 ? 1 : 0)); }}
+                    onDrop={(event) => { event.preventDefault(); event.stopPropagation(); if (dragIndex === null) return; const rect = event.currentTarget.getBoundingClientRect(); reorderDraftItem(dragIndex, index + (event.clientY >= rect.top + rect.height / 2 ? 1 : 0)); setDragIndex(null); setDropSlot(null); }}
+                    onDragEnd={() => { setDragIndex(null); setDropSlot(null); }}
+                  >
+                    <span className="queue-drag-handle" draggable title="拖动调整执行顺序" aria-label={`拖动调整 ${planShortLabel(item.plan)} 的执行顺序`} onDragStart={(event) => { setDragIndex(index); setDropSlot(null); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", String(index)); if (event.currentTarget.parentElement) event.dataTransfer.setDragImage(event.currentTarget.parentElement, 12, 12); }}>
+                      <GripVertical size={14} />
+                    </span>
+                    <span className="queue-order">{index + 1}</span>
+                    <strong title={item.plan}>{planShortLabel(item.plan)}</strong>
+                    {unbounded && <>
+                      <input className="queue-minutes" title="无限循环脚本单次最多运行多久；留空则使用脚本自带时长，没有则必须填写" aria-label={`${planShortLabel(item.plan)} 的运行时长（分钟）`} value={item.minutesText} placeholder={planDefault > 0 ? `默认 ${formatMinutes(planDefault)}` : allowedForever ? "可留空" : "必填"} onChange={(event) => { setEditorError(""); const value = event.target.value; setDraft((current) => current && { ...current, items: current.items.map((entry, i) => (i === index ? { ...entry, minutesText: value } : entry)) }); }} />
+                      <span className="queue-minutes-unit">分钟</span>
+                    </>}
+                    <input className="queue-cycle" title="执行周期（天）：未到周期时启动会提示跳过；留空 = 每次都执行" aria-label={`${planShortLabel(item.plan)} 的执行周期（天）`} value={item.cycleDaysText} placeholder={meta && meta.cycleDays > 0 ? `周期${meta.cycleDays}` : "周期(天)"} onChange={(event) => { setEditorError(""); const value = event.target.value; setDraft((current) => current && { ...current, items: current.items.map((entry, i) => (i === index ? { ...entry, cycleDaysText: value } : entry)) }); }} />
+                    <span className="queue-minutes-unit">天</span>
+                    <button className="icon-button" title="移除" aria-label={`移除 ${planShortLabel(item.plan)}`} onClick={() => removeDraftItem(index)}><Trash2 size={14} /></button>
+                  </div>;
+                })}
+              </div>
+            </div>
+            <div className="queue-available">
+              <div className="panel-title"><span>可选脚本</span><span className="counter">{props.plans.length}</span></div>
+              <div className="queue-plan-list">
+                {props.plans.map((name) => {
+                  const added = draft.items.some((item) => item.plan === name);
+                  const unbounded = planMeta[name]?.unbounded ?? false;
+                  return <button key={name} className={`plan-item ${added ? "selected" : ""}`} disabled={added} onClick={() => addDraftItem(name)}><Plus size={14} /><span>{planLabel(name)}</span>{unbounded && <em className="queue-infinite" title="无限循环脚本">∞</em>}</button>;
+                })}
+              </div>
+            </div>
+          </div>
+          <div className="queue-editor-options">
+            <label>某项失败时<select value={draft.onError} onChange={(event) => { setEditorError(""); setDraft({ ...draft, onError: event.target.value === "stop" ? "stop" : "continue" }); }}><option value="continue">跳过并继续下一项</option><option value="stop">停止整个队列</option></select></label>
+            <Toggle label="整队循环（最后一项跑完回到第一项）" checked={draft.repeat} onChange={(repeat) => { setEditorError(""); setDraft({ ...draft, repeat }); }} />
+          </div>
+          {editorError && <p className="queue-editor-error" role="alert">{editorError}</p>}
+          <div className="queue-editor-actions">
+            {draft.id && <button className="button quiet danger queue-delete-button" onClick={() => { if (draft.id) void deleteGroup(draft.id, draft.name); }}><Trash2 size={15} />删除计划组</button>}
+            <button className="button secondary" onClick={closeEditor}>取消</button>
+            <button className="button primary" onClick={() => void saveDraft()}><Save size={15} />保存计划组</button>
           </div>
         </div>
-      </div>
-      <div className="queue-editor-options">
-        <label>某项失败时<select value={draft.onError} onChange={(event) => { setEditorError(""); setDraft({ ...draft, onError: event.target.value === "stop" ? "stop" : "continue" }); }}><option value="continue">跳过并继续下一项</option><option value="stop">停止整个队列</option></select></label>
-        <Toggle label="整队循环（最后一项跑完回到第一项）" checked={draft.repeat} onChange={(repeat) => { setEditorError(""); setDraft({ ...draft, repeat }); }} />
-      </div>
-      {editorError && <p className="queue-editor-error" role="alert">{editorError}</p>}
-      <div className="queue-editor-actions">
-        {draft.id && <button className="button quiet danger queue-delete-button" onClick={() => { if (draft.id) void deleteGroup(draft.id, draft.name); }}><Trash2 size={15} />删除计划组</button>}
-        <button className="button secondary" onClick={() => { setDraft(null); setEditorError(""); }}>取消</button>
-        <button className="button primary" onClick={() => void saveDraft()}><Save size={15} />保存计划组</button>
-      </div>
-    </section>}
+      </section>
+    </div>}
     {groups.length === 0 && !draft && <p className="empty-note padded-note">还没有计划组，点击右上角“新建计划组”创建：命名 → 勾选脚本 → 调整顺序 → 保存。</p>}
     <div className="queue-group-list">
       {groups.map((group) => {
@@ -419,14 +473,14 @@ export function QueueGroupPage(props: SharedProps) {
           <header className="queue-card-header">
             <div className="queue-card-title">
               <strong>{group.name}</strong>
-              <span>{group.items.map((item) => planLabel(item.plan)).join(" → ") || "（空）"}</span>
+              <span>{group.items.map((item) => planShortLabel(item.plan)).join(" → ") || "（空）"}</span>
             </div>
             <div className="queue-card-side">
               <span className={`run-state ${running ? "live" : ""}`}>{statusLabel(group)}</span>
               <span className="queue-last-run" title={group.lastRunAt ?? ""}>{group.lastRunAt ? `全部执行 ${formatLastRun(group.lastRunAt)}` : "尚未全部执行"}</span>
               {group.items.filter((item) => (item.cycleDays ?? 0) > 0).map((item) => (
                 <span className="queue-last-run queue-cycle-last" key={`cycle-${item.plan}`} title={`每 ${item.cycleDays} 天执行一次`}>
-                  {planLabel(item.plan)}：{item.lastRunAt ? formatLastRun(item.lastRunAt) : "未执行"} · 每{item.cycleDays}天
+                  {planShortLabel(item.plan)}：{item.lastRunAt ? formatLastRun(item.lastRunAt) : "未执行"} · 每{item.cycleDays}天
                 </span>
               ))}
             </div>
@@ -434,7 +488,7 @@ export function QueueGroupPage(props: SharedProps) {
           {snapshot && <div className="queue-card-progress">
             {snapshot.results.map((result: QueueItemResult, index: number) => {
               const meta = ITEM_STATUS_META[result.status];
-              return <span key={`${result.plan}-${index}`} className={meta.className} title={result.error ?? (result.exitCode != null ? `退出码 ${result.exitCode}` : meta.text)}>{planLabel(result.plan)} · {meta.text}</span>;
+              return <span key={`${result.plan}-${index}`} className={meta.className} title={result.error ?? (result.exitCode != null ? `退出码 ${result.exitCode}` : meta.text)}>{planShortLabel(result.plan)} · {meta.text}</span>;
             })}
           </div>}
           {snapshot?.error && <p className="queue-error-line">最后错误：{snapshot.error}</p>}
@@ -462,7 +516,7 @@ export function QueueGroupPage(props: SharedProps) {
           {cyclePrompt.notDue.map((item) => {
             const remainingDays = Math.max(1, Math.ceil(cycleRemainingMs(item) / 86_400_000));
             return <div className="cycle-prompt-item" key={`cycle-prompt-${item.plan}`}>
-              <strong>{planLabel(item.plan)}</strong>
+              <strong>{planShortLabel(item.plan)}</strong>
               <span>每 {item.cycleDays} 天执行一次 · 上次 {item.lastRunAt ? formatLastRun(item.lastRunAt) : "未执行"} · 还差约 {remainingDays} 天</span>
             </div>;
           })}

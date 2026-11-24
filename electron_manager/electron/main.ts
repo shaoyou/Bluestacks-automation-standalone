@@ -713,7 +713,7 @@ const APP_VERSION_MARKER_FILE = "last-app-version.json";
 // runtime copy, which left deleted/renamed legacy scripts behind. Starting with
 // this version, upgrading from an older build replaces the plan library with
 // the bundled set once; plans created after the upgrade are kept as usual.
-const PLAN_LIBRARY_RESET_VERSION = "1.2.47";
+const PLAN_LIBRARY_RESET_VERSION = "1.2.49";
 
 function appVersionMarkerPath(): string {
   return path.join(app.getPath("userData"), APP_VERSION_MARKER_FILE);

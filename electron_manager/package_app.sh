@@ -42,9 +42,31 @@ build_mac() {
   echo "Building macOS package..."
   if [[ "$dir_only" == true ]]; then
     npm run package:mac -- --dir
-  else
-    npm run package:mac
+    return
   fi
+
+  npm run build
+  npx electron-builder --mac dmg --arm64 --publish never
+
+  local release_dir="$SCRIPT_DIR/release"
+  local version
+  version="$(node -p "require('./package.json').version")"
+  local wanted="$release_dir/熊熊乐园小助手-${version}-arm64.dmg"
+  local dmg="$wanted"
+  if [[ ! -f "$dmg" ]]; then
+    dmg="$(find "$release_dir" -maxdepth 1 -type f -name "熊熊乐园小助手-${version}-arm64*.dmg" -print -quit)"
+  fi
+  if [[ -z "$dmg" || ! -f "$dmg" ]]; then
+    echo "ERROR: DMG not found in $release_dir"
+    exit 1
+  fi
+  if [[ "$dmg" != "$wanted" ]]; then
+    mv "$dmg" "$wanted"
+  fi
+  # Keep only the requested DMG; remove the zip, blockmaps, latest-mac.yml
+  # and the unpacked mac-arm64 directory.
+  find "$release_dir" -mindepth 1 -maxdepth 1 ! -name "$(basename "$wanted")" -exec rm -rf {} +
+  echo "DMG package: $wanted"
 }
 
 build_win() {

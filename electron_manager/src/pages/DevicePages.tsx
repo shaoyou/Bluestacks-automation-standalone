@@ -224,12 +224,40 @@ export function DiagnosticsPage(props: SharedProps) {
   return <div className="page"><PageHeading title="设备诊断" detail="分别检查安卓设备发现、鸿蒙设备发现和设备连接链路。"><button className="button secondary" onClick={() => void props.refreshDevices()}><RefreshCw size={16} />刷新设备</button></PageHeading><div className="diagnostic-stack"><div className="two-column diagnostic-android"><section className="panel form-panel"><label>ADB 连接目标<input value={connectTarget} onChange={(event) => setConnectTarget(event.target.value)} placeholder="127.0.0.1:5555" /></label><label>目标设备序列号<select value={device} onChange={(event) => setDevice(event.target.value)}><option value="">优先自动发现</option>{props.devices.map((item) => <option key={item}>{item}</option>)}</select></label><div className="diagnostic-note"><SlidersHorizontal size={18} /><p>检查 Android ADB 版本、设备列表、连接尝试和 shell 探测结果。</p></div>{!discoveryRunning ? <button className="button primary full" onClick={startDiscoveryDiagnostic}><Activity size={16} />开始安卓设备发现诊断</button> : <button className="button danger full" onClick={() => void window.bsManager.stopTask(discoveryTaskId)}><CircleStop size={16} />停止诊断</button>}</section><LogPanel title="安卓设备发现诊断输出" text={props.logs[discoveryTaskId] ?? ""} actions={<button className="icon-button" title="复制日志" aria-label="复制日志" disabled={!props.logs[discoveryTaskId]} onClick={() => void copyDiagnosticLog(discoveryTaskId)}><Copy size={15} /></button>} /></div><div className="two-column diagnostic-harmony"><section className="panel form-panel"><label>HDC 目标<input value={hdcTarget} onChange={(event) => setHdcTarget(event.target.value)} placeholder="12345 [HarmonyOS/HDC] 或 hdc:12345" /></label><div className="diagnostic-note"><SlidersHorizontal size={18} /><p>检查鸿蒙 HDC targets、目标探活和屏幕尺寸。</p></div>{!hdcDiscoveryRunning ? <button className="button primary full" onClick={startHdcDiscoveryDiagnostic}><Activity size={16} />开始鸿蒙设备发现诊断</button> : <button className="button danger full" onClick={() => void window.bsManager.stopTask(hdcDiscoveryTaskId)}><CircleStop size={16} />停止诊断</button>}</section><LogPanel title="鸿蒙设备发现诊断输出" text={props.logs[hdcDiscoveryTaskId] ?? ""} actions={<button className="icon-button" title="复制日志" aria-label="复制日志" disabled={!props.logs[hdcDiscoveryTaskId]} onClick={() => void copyDiagnosticLog(hdcDiscoveryTaskId)}><Copy size={15} /></button>} /></div><div className="two-column diagnostic-connection"><section className="panel form-panel"><label>设备序列号<select value={device} onChange={(event) => setDevice(event.target.value)}><option value="">自动选择健康设备</option>{props.devices.map((item) => <option key={item}>{item}</option>)}</select></label><div className="diagnostic-note"><SlidersHorizontal size={18} /><p>检查触摸映射、输入事件和设备连接稳定性。</p></div>{!touchRunning ? <button className="button primary full" onClick={startTouchDiagnostic}><Activity size={16} />开始设备连接诊断</button> : <button className="button danger full" onClick={() => void window.bsManager.stopTask(touchTaskId)}><CircleStop size={16} />停止诊断</button>}</section><LogPanel title="设备连接诊断输出" text={props.logs[touchTaskId] ?? ""} actions={<button className="icon-button" title="复制日志" aria-label="复制日志" disabled={!props.logs[touchTaskId]} onClick={() => void copyDiagnosticLog(touchTaskId)}><Copy size={15} /></button>} /></div></div></div>;
 }
 
+
+export function DevicesPage(props: SharedProps) {
+  const [refreshing, setRefreshing] = useState(false);
+  const forceRefresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      const devices = await props.forceRefreshDevices(true);
+      props.setNotice(devices.length ? `已强制刷新，发现 ${devices.length} 个设备` : "强制刷新完成，未发现可用设备");
+    } catch (error) {
+      props.setNotice(`设备强制刷新失败: ${String(error)}`);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+  return <div className="page">
+    <PageHeading title="设备管理" detail="查看已连接设备；模拟器刚启动或设备列表不更新时，可强制刷新 ADB/HDC。">
+      <button className="button secondary" onClick={() => void props.refreshDevices()}><RefreshCw size={16} />刷新设备</button>
+      <button className="button primary" disabled={refreshing} onClick={() => void forceRefresh()}><RefreshCw className={refreshing ? "spin" : ""} size={16} />{refreshing ? "刷新中" : "强制刷新设备"}</button>
+    </PageHeading>
+    <section className="panel">
+      <div className="panel-title"><span>已发现设备</span><span className="counter">{props.devices.length}</span></div>
+      {props.devices.length > 0
+        ? <div className="device-list">{props.devices.map((device) => <div key={device}><MonitorSmartphone size={16} /><code>{device}</code></div>)}</div>
+        : <p className="empty-note padded-note">暂未发现设备。请确认模拟器已启动、ADB 调试已开启。</p>}
+      <p className="field-note">强制刷新会重启 ADB/HDC 服务并重新扫描设备，通常需要几秒钟。</p>
+    </section>
+  </div>;
+}
+
 export function SettingsPage(props: SharedProps) {
   const save = async () => { const saved = await window.bsManager.settingsSave(props.settings); props.setSettings(saved); props.setNotice("设置已保存"); };
   const [code, setCode] = useState("");
   const [copied, setCopied] = useState(false);
-  const [refreshingDevices, setRefreshingDevices] = useState(false);
-  const [hdcConfigBusy, setHdcConfigBusy] = useState(false);
   const license = props.license;
   const isPro = license?.tier === "pro" && license.valid;
   const update = props.update;
@@ -253,49 +281,52 @@ export function SettingsPage(props: SharedProps) {
       props.setNotice(`复制安装 ID 失败: ${String(error)}`);
     }
   };
-  const forceRefresh = async () => {
-    if (refreshingDevices) return;
-    setRefreshingDevices(true);
-    try {
-      const devices = await props.forceRefreshDevices(true);
-      window.setTimeout(() => {
-        props.setNotice(devices.length ? `发现 ${devices.length} 个设备` : "未发现可用设备");
-        setRefreshingDevices(false);
-      }, 2000);
-    } catch (error) {
-      window.setTimeout(() => {
-        props.setNotice(`设备强制刷新失败: ${String(error)}`);
-        setRefreshingDevices(false);
-      }, 2000);
-    }
-  };
-  const chooseHdcDirectory = async () => {
-    try {
-      const selected = await window.bsManager.hdcChooseToolsDirectory();
-      if (!selected) return;
-      props.setSettings({ ...props.settings, hdcToolsDir: selected });
-      props.setNotice(`已选择目录: ${selected}`);
-    } catch (error) {
-      props.setNotice(`选择目录失败: ${String(error)}`);
-    }
-  };
-  const configureHdc = async () => {
-    if (hdcConfigBusy) return;
-    setHdcConfigBusy(true);
-    try {
-      const directory = props.settings.hdcToolsDir.trim();
-      if (!directory) {
-        props.setNotice("请先选择 Command Line Tools 目录");
-        return;
-      }
-      const saved = await window.bsManager.hdcConfigureTools(directory);
-      props.setSettings(saved);
-      props.setNotice(`已配置 HDC: ${saved.hdcPath}`);
-    } catch (error) {
-      props.setNotice(`HDC 配置失败: ${String(error)}`);
-    } finally {
-      setHdcConfigBusy(false);
-    }
-  };
-  return <div className="page"><PageHeading title="环境设置" detail="配置跨平台运行时使用的 ADB、HDC 与 Python 可执行文件。" /><div className="settings-stack"><section className="panel form-panel"><label>ADB 可执行文件<input value={props.settings.adbPath} onChange={(event) => props.setSettings({ ...props.settings, adbPath: event.target.value })} /></label><label>HDC 工具目录<div className="inline-input-action"><input value={props.settings.hdcToolsDir} onChange={(event) => props.setSettings({ ...props.settings, hdcToolsDir: event.target.value })} placeholder="选择 command-line-tools 目录" /><button className="icon-button" title="选择目录" onClick={() => void chooseHdcDirectory()}><FolderOpen size={15} /></button></div></label><label>HDC 可执行文件<input value={props.settings.hdcPath} onChange={(event) => props.setSettings({ ...props.settings, hdcPath: event.target.value })} /></label><label>Python 可执行文件<input value={props.settings.pythonPath} onChange={(event) => props.setSettings({ ...props.settings, pythonPath: event.target.value })} /></label><p className="field-note">选择 `command-line-tools` 目录后，应用会自动定位 `sdk/default/openharmony/toolchains/hdc.exe` 或 `hdc`，再写入可执行文件路径。</p><Toggle label="保存图像匹配调试图" checked={props.settings.imageMatchDebug} onChange={(next) => props.setSettings({ ...props.settings, imageMatchDebug: next })} /><p className="field-note">开启后，图像识别动作默认会把命中叠框、裁剪图和元数据写入 diagnostics/image_match_debug，便于排查识别问题；默认关闭，单个动作仍可用 "save_debug": true/false 覆盖。修改后需重新运行脚本生效。</p><div className="button-grid"><button className="button primary" onClick={() => void save()}><Save size={16} />保存设置</button><button className="button secondary" disabled={hdcConfigBusy || !props.settings.hdcToolsDir.trim()} onClick={() => void configureHdc()}><FolderOpen size={16} />{hdcConfigBusy ? "配置中" : "一键配置 HDC"}</button><button className="button secondary" disabled={refreshingDevices} onClick={() => void forceRefresh()}><RefreshCw className={refreshingDevices ? "spin" : ""} size={16} />{refreshingDevices ? "刷新中" : "强制刷新设备"}</button></div></section><section className="panel form-panel"><div className="panel-title"><span>历史数据</span></div><p className="field-note">将现有开宝箱和抽卡记录写入本地 SQLite 数据库。截图仅作为可选关联资源，清理截图不会删除历史记录和统计。</p><button className="button secondary" onClick={() => void migrateHistory()}><Save size={16} />迁移历史数据</button></section><section className="panel form-panel"><div className="panel-title"><span>应用更新</span><span className={`run-state ${update?.phase === "available" || update?.phase === "downloaded" ? "live" : ""}`}>{update?.currentVersion ? `v${update.currentVersion}` : "读取中"}</span></div><p className="field-note">{update?.message ?? "正在读取更新状态..."}</p>{update?.releaseNotes && <pre className="command-result">{update.releaseNotes}</pre>}{update?.phase === "downloading" && <div className="progress-track"><i style={{ width: `${update.progress ?? 0}%` }} /></div>}<div className="button-grid">{update?.phase === "available" && <button className="button primary" onClick={() => void props.downloadUpdate()}><Download size={16} />下载 {update.version ? `v${update.version}` : "更新"}</button>}{update?.phase === "downloaded" && <button className="button primary" onClick={() => void props.installUpdate()}><RefreshCw size={16} />重启安装</button>}<button className="button secondary" disabled={!update?.supported || updateBusy} onClick={() => void props.checkForUpdates()}><RefreshCw size={16} />{updateBusy ? "处理中" : "检查更新"}</button></div><Toggle label="启动时自动检查版本更新" checked={props.settings.startupUpdateCheck !== false} onChange={(next) => props.setSettings({ ...props.settings, startupUpdateCheck: next })} /><p className="field-note">关闭后启动时不会自动检测版本更新，也不会弹出更新策略提示；仍可点击上方“检查更新”手动检测。修改后点“保存设置”并重启应用生效。</p></section><section className="panel form-panel"><div className="panel-title"><span>专业版授权</span><span className={`run-state ${isPro ? "live" : ""}`}>{isPro ? "专业版" : "免费版"}</span></div><p className="field-note">{license?.message ?? "正在读取授权状态..."}</p><label>安装 ID<div className="inline-input-action"><input readOnly value={license?.installId ?? ""} /><button className="icon-button" title="复制安装 ID" disabled={!license?.installId} onClick={() => void copyInstallId()}>{copied ? <Check size={15} /> : <Copy size={15} />}</button></div>{copied && <small className="copy-success">已复制</small>}</label>{!isPro ? <><label>激活码<textarea className="license-code-input" value={code} placeholder="粘贴专业版激活码" onChange={(event) => setCode(event.target.value)} /></label><button className="button primary" disabled={!code.trim()} onClick={() => void props.activateLicense(code)}><KeyRound size={16} />激活专业版</button></> : <><p className="field-note">最多可同时运行 {license?.maxConcurrentRunners ?? 6} 个自动化任务。</p><button className="button quiet danger" onClick={() => void props.clearLicense()}><Trash2 size={15} />移除本机授权</button></>}</section><section className="panel path-panel"><span className="eyebrow">用户运行目录</span><code>{props.runtime?.root ?? "加载中..."}</code><p>脚本、模板、录制配置和诊断数据都存放在这里；应用升级不会覆盖用户创建的计划文件。</p><button className="button secondary" onClick={() => void window.bsManager.templatesList().then(() => props.setNotice("模板目录可通过系统文件管理器查看"))}><FolderOpen size={16} />检查模板</button></section></div></div>;
+  return <div className="page">
+    <PageHeading title="应用设置" detail="调试、更新、授权和运行目录设置。">
+      <button className="button primary" onClick={() => void save()}><Save size={16} />保存设置</button>
+    </PageHeading>
+    <div className="settings-stack">
+      <section className="panel form-panel">
+        <div className="panel-title"><span>调试与运行</span></div>
+        <Toggle label="保存图像匹配调试图" checked={props.settings.imageMatchDebug} onChange={(next) => props.setSettings({ ...props.settings, imageMatchDebug: next })} />
+        <p className="field-note">开启后，图像识别动作默认会把命中叠框、裁剪图和元数据写入 diagnostics/image_match_debug，便于排查识别问题；默认关闭，单个动作仍可用 "save_debug": true/false 覆盖。修改后需重新运行脚本生效。</p>
+      </section>
+      <section className="panel form-panel">
+        <div className="panel-title"><span>历史数据</span></div>
+        <p className="field-note">将现有开宝箱和抽卡记录写入本地 SQLite 数据库。截图仅作为可选关联资源，清理截图不会删除历史记录和统计。</p>
+        <button className="button secondary" onClick={() => void migrateHistory()}><Save size={16} />迁移历史数据</button>
+      </section>
+      <section className="panel form-panel">
+        <div className="panel-title"><span>应用更新</span><span className={`run-state ${update?.phase === "available" || update?.phase === "downloaded" ? "live" : ""}`}>{update?.currentVersion ? `v${update.currentVersion}` : "读取中"}</span></div>
+        <p className="field-note">{update?.message ?? "正在读取更新状态..."}</p>
+        {update?.releaseNotes && <pre className="command-result">{update.releaseNotes}</pre>}
+        {update?.phase === "downloading" && <div className="progress-track"><i style={{ width: `${update.progress ?? 0}%` }} /></div>}
+        <div className="button-grid">
+          {update?.phase === "available" && <button className="button primary" onClick={() => void props.downloadUpdate()}><Download size={16} />下载 {update.version ? `v${update.version}` : "更新"}</button>}
+          {update?.phase === "downloaded" && <button className="button primary" onClick={() => void props.installUpdate()}><RefreshCw size={16} />重启安装</button>}
+          <button className="button secondary" disabled={!update?.supported || updateBusy} onClick={() => void props.checkForUpdates()}><RefreshCw size={16} />{updateBusy ? "处理中" : "检查更新"}</button>
+        </div>
+        <Toggle label="启动时自动检查版本更新" checked={props.settings.startupUpdateCheck !== false} onChange={(next) => props.setSettings({ ...props.settings, startupUpdateCheck: next })} />
+        <p className="field-note">关闭后启动时不会自动检测版本更新，也不会弹出更新策略提示；仍可点击上方“检查更新”手动检测。修改后点“保存设置”并重启应用生效。</p>
+      </section>
+      <section className="panel form-panel">
+        <div className="panel-title"><span>专业版授权</span><span className={`run-state ${isPro ? "live" : ""}`}>{isPro ? "专业版" : "免费版"}</span></div>
+        <p className="field-note">{license?.message ?? "正在读取授权状态..."}</p>
+        <label>安装 ID<div className="inline-input-action"><input readOnly value={license?.installId ?? ""} /><button className="icon-button" title="复制安装 ID" disabled={!license?.installId} onClick={() => void copyInstallId()}>{copied ? <Check size={15} /> : <Copy size={15} />}</button></div>{copied && <small className="copy-success">已复制</small>}</label>
+        {!isPro ? <>
+          <label>激活码<textarea className="license-code-input" value={code} placeholder="粘贴专业版激活码" onChange={(event) => setCode(event.target.value)} /></label>
+          <button className="button primary" disabled={!code.trim()} onClick={() => void props.activateLicense(code)}><KeyRound size={16} />激活专业版</button>
+        </> : <>
+          <p className="field-note">最多可同时运行 {license?.maxConcurrentRunners ?? 6} 个自动化任务。</p>
+          <button className="button quiet danger" onClick={() => void props.clearLicense()}><Trash2 size={15} />移除本机授权</button>
+        </>}
+      </section>
+      <section className="panel path-panel">
+        <span className="eyebrow">用户运行目录</span>
+        <code>{props.runtime?.root ?? "加载中..."}</code>
+        <p>脚本、模板、录制配置和诊断数据都存放在这里；应用升级不会覆盖用户创建的计划文件。</p>
+        <button className="button secondary" onClick={() => void window.bsManager.templatesOpenFolder().then(() => props.setNotice("已打开模板目录")).catch((error) => props.setNotice(`打开模板目录失败: ${String(error)}`))}><FolderOpen size={16} />检查模板</button>
+      </section>
+    </div>
+  </div>;
 }

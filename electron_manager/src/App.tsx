@@ -6,6 +6,7 @@ import {
   Code2,
   Crosshair,
   Layers,
+  MonitorSmartphone,
   Play,
   Radio,
   Settings2,
@@ -15,12 +16,13 @@ import { appendPlanAction, type Page, type PickedCoordinate, type SharedProps } 
 import { LicenseActivationDialog, PromptDialog, UpdateCheckingDialog, UpdateRequiredDialog } from "./components/layout";
 import { ScriptsPage, RunnerPage } from "./pages/ScriptsRunnerPage";
 import { QueueGroupPage } from "./pages/QueueGroupPage";
-import { CalibrationPage, DiagnosticsPage, RecorderPage, SettingsPage } from "./pages/DevicePages";
+import { CalibrationPage, DevicesPage, DiagnosticsPage, RecorderPage, SettingsPage } from "./pages/DevicePages";
 import { DrawPage } from "./pages/DrawPage";
 import { ChestPage } from "./pages/ChestPage";
 
 const navItems: { id: Page; label: string; icon: typeof Code2 }[] = [
   { id: "runner", label: "运行", icon: Play },
+  { id: "devices", label: "设备", icon: MonitorSmartphone },
   { id: "queue", label: "计划组", icon: Layers },
   { id: "draw", label: "抽卡", icon: Activity },
   { id: "chest", label: "开宝箱", icon: Archive },
@@ -86,7 +88,7 @@ export function App() {
     } catch (error) {
       setDevices([]);
       if (!silent) setNotice(`设备强制刷新失败: ${String(error)}`);
-      return [];
+      throw error;
     }
   };
 
@@ -376,6 +378,7 @@ export function App() {
         <section className="workbench">
           {page === "scripts" && <ScriptsPage {...context} />}
           {page === "runner" && <RunnerPage {...context} />}
+          {page === "devices" && <DevicesPage {...context} />}
           {page === "queue" && <QueueGroupPage {...context} />}
           {page === "draw" && <DrawPage {...context} />}
           {page === "chest" && <ChestPage {...context} />}

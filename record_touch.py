@@ -39,9 +39,9 @@ EVENT_WITH_DEV_RE = re.compile(
 )
 EVENT_NO_DEV_RE = re.compile(r"\[\s*([0-9]+\.[0-9]+)\]\s+([0-9a-fA-F]{4})\s+([0-9a-fA-F]{4})\s+([0-9a-fA-F]{8})")
 EVENT_TEXT_WITH_DEV_RE = re.compile(
-    r"\[\s*([0-9]+\.[0-9]+)\]\s+(/dev/input/event\d+):\s+([A-Z_]+)\s+([A-Z0-9_]+)\s+([0-9a-fA-F]{1,8})"
+    r"\[\s*([0-9]+\.[0-9]+)\]\s+(/dev/input/event\d+):\s+([A-Z_]+)\s+([A-Z0-9_]+)\s+([A-Za-z0-9_]+)"
 )
-EVENT_TEXT_NO_DEV_RE = re.compile(r"\[\s*([0-9]+\.[0-9]+)\]\s+([A-Z_]+)\s+([A-Z0-9_]+)\s+([0-9a-fA-F]{1,8})")
+EVENT_TEXT_NO_DEV_RE = re.compile(r"\[\s*([0-9]+\.[0-9]+)\]\s+([A-Z_]+)\s+([A-Z0-9_]+)\s+([A-Za-z0-9_]+)")
 ADD_DEVICE_RE = re.compile(r"add device \d+:\s+(/dev/input/event\d+)")
 ABS_X_RE = re.compile(r"ABS_MT_POSITION_X")
 ABS_Y_RE = re.compile(r"ABS_MT_POSITION_Y")
@@ -64,6 +64,15 @@ ECODE_MAP = {
     "ABS_MT_TRACKING_ID": "0039",
     "BTN_TOUCH": "014a",
 }
+
+
+def parse_event_value(raw: str) -> int:
+    value = raw.strip().lower()
+    if value == "down":
+        return 1
+    if value == "up":
+        return 0
+    return int(value, 16)
 
 def configure_console_encoding() -> None:
     if sys.platform != "win32":
@@ -246,29 +255,44 @@ def get_touch_devices_and_max(adb: str, device: Optional[str]) -> Dict[str, Tupl
         add_match = ADD_DEVICE_RE.search(line)
         if add_match:
             current_dev = add_match.group(1)
-            device_info[current_dev] = {"x_max": None, "y_max": None, "has_x": False, "has_y": False}
+            device_info[current_dev] = {"x_max": None, "y_max": None, "has_x": False, "has_y": False, "has_mt": False}
             i += 1
             continue
         if current_dev is None:
             i += 1
             continue
         info = device_info[current_dev]
-        if ABS_X_RE.search(line) or ABS_X_FALLBACK_RE.search(line):
+        x_is_mt = bool(ABS_X_RE.search(line))
+        y_is_mt = bool(ABS_Y_RE.search(line))
+        if x_is_mt or ABS_X_FALLBACK_RE.search(line):
             info["has_x"] = True
+            if x_is_mt:
+                info["has_mt"] = True
             m = MAX_RE.search(line)
             if m:
                 info["x_max"] = int(m.group(1))
-        if ABS_Y_RE.search(line) or ABS_Y_FALLBACK_RE.search(line):
+        if y_is_mt or ABS_Y_FALLBACK_RE.search(line):
             info["has_y"] = True
+            if y_is_mt:
+                info["has_mt"] = True
             m = MAX_RE.search(line)
             if m:
                 info["y_max"] = int(m.group(1))
         i += 1
 
     caps: Dict[str, Tuple[int, int]] = {}
+    mt_caps: Dict[str, Tuple[int, int]] = {}
     for dev, info in device_info.items():
         if info["has_x"] and info["has_y"] and info["x_max"] and info["y_max"]:
-            caps[dev] = (int(info["x_max"]), int(info["y_max"]))
+            device_caps = (int(info["x_max"]), int(info["y_max"]))
+            caps[dev] = device_caps
+            if info["has_mt"]:
+                mt_caps[dev] = device_caps
+    if mt_caps:
+        # Prefer the real multitouch screen. Phones often expose a separate
+        # fallback-only stylus/pen node that never receives finger touches;
+        # keeping it in the candidate list breaks device auto-detection.
+        return mt_caps
     if not caps:
         raise RecorderError("No touch device with ABS_MT_POSITION_X/Y found in getevent -lp output.")
     return caps
@@ -431,25 +455,26 @@ def build_actions_from_gestures(
 
 
 def gesture_to_click(
-    x1: int, y1: int, x2: int, y2: int, gesture: Gesture, profile: Optional[Dict[str, float]] = None
+    x1: int, y1: int, x2: int, y2: int, gesture: Gesture, profile: Optional[Dict[str, float]] = None, picker_mode: bool = False
 ) -> Optional[Dict]:
     resolved_profile = normalize_profile(profile)
     tap_distance_px = resolved_profile["tap_distance_px"]
     tap_duration_sec = resolved_profile["tap_duration_sec"]
-    min_swipe_duration_sec = resolved_profile["min_swipe_duration_sec"]
     dist = math.hypot(x2 - x1, y2 - y1)
     duration = max(0.0, gesture.end_t - gesture.start_t)
     point_count = len(gesture.points)
+    if picker_mode:
+        # The picker only needs a stable tap target. Real phones can report
+        # 100-200Hz touch samples, so a short tap easily exceeds 12 points;
+        # distance and duration are the useful discriminators here.
+        if dist <= max(tap_distance_px, 48.0) and duration <= max(tap_duration_sec, 0.9):
+            return {"type": "click", "x": x2, "y": y2}
+        return None
     # BlueStacks virtual touch can emit sparse ABS samples without BTN_TOUCH/TRACKING_ID.
     # In that mode, a multi-point window is more likely a drag than a tap.
     if not gesture.explicit_touch and point_count >= 2 and (duration >= 0.20 or dist >= tap_distance_px * 0.5):
         return None
-    if (
-        point_count <= 12
-        and dist <= tap_distance_px
-        and duration <= tap_duration_sec
-        and not (point_count >= 2 and duration >= min_swipe_duration_sec)
-    ):
+    if point_count <= 60 and dist <= tap_distance_px and duration <= tap_duration_sec:
         return {"type": "click", "x": x2, "y": y2}
     return None
 
@@ -632,7 +657,9 @@ def record_gestures(
 
     selected_dev: Optional[str] = forced_event_dev if forced_event_dev else None
     fallback_only_dev: Optional[str] = None
-    if len(touch_caps) == 1:
+    if touch_caps:
+        # When getevent omits the device path, attribute the event to the first
+        # touch candidate instead of dropping it. This is common on real phones.
         fallback_only_dev = next(iter(touch_caps.keys()))
     if selected_dev and selected_dev not in touch_caps:
         raise RecorderError(f"Forced event device {selected_dev} not in touch-capable list.")
@@ -646,18 +673,21 @@ def record_gestures(
     x_raw: Optional[int] = None
     y_raw: Optional[int] = None
     saw_touch_flag = False
+    active_tracking_id: Optional[int] = None
+    coords_in_frame = False
     using_sparse_abs_mode = False
     last_point_t: Optional[float] = None
     idle_split_sec = 0.25
     seen_event_lines = 0
     unmatched_samples: List[str] = []
     cur_raw_lines: List[str] = []
+    debug_samples: List[str] = []
     last_gesture_signature: Optional[Tuple[float, float, int]] = None
 
     if selected_dev:
         print(f"[Recorder] Listening on forced device {selected_dev}. Press Ctrl+C to stop and save.")
     else:
-        print("[Recorder] Listening on all input events. Touch BlueStacks to auto-detect touch device.")
+        print("[Recorder] Listening on all input events. Touch the device to auto-detect touch device.")
         print("[Recorder] Press Ctrl+C to stop and save.")
     if stdin_stop:
         print("[Recorder] Waiting for 'stop' command on stdin to stop and save.")
@@ -746,7 +776,12 @@ def record_gestures(
                 if line_s and len(unmatched_samples) < 8:
                     unmatched_samples.append(line_s)
                 continue
-            evalue = int(evalue_hex, 16)
+            try:
+                evalue = parse_event_value(evalue_hex)
+            except ValueError:
+                if line_s and len(unmatched_samples) < 8:
+                    unmatched_samples.append(line_s)
+                continue
 
             if selected_dev is None:
                 is_touch_signal = (
@@ -762,13 +797,17 @@ def record_gestures(
 
             if len(cur_raw_lines) < 200:
                 cur_raw_lines.append(line_s)
+            if len(debug_samples) < 40:
+                debug_samples.append(line_s)
 
             # EV_ABS
             if etype == "0003":
                 if ecode in {"0035", "0000"}:
                     x_raw = evalue
+                    coords_in_frame = True
                 elif ecode in {"0036", "0001"}:
                     y_raw = evalue
+                    coords_in_frame = True
                 elif ecode == "0039":
                     saw_touch_flag = True
                     # ABS_MT_TRACKING_ID, 0xffffffff means up
@@ -795,39 +834,49 @@ def record_gestures(
                                 cur_raw_lines = []
                                 cur_start_t = None
                                 current_explicit_touch = False
+                                active_tracking_id = None
+                                coords_in_frame = False
                                 break
                         touching = False
                         cur_points = []
                         cur_raw_lines = []
                         cur_start_t = None
                         current_explicit_touch = False
+                        active_tracking_id = None
+                        coords_in_frame = False
+                    elif touching and active_tracking_id is not None and evalue == active_tracking_id:
+                        # Huawei input_mt_wrapper repeats the same tracking id
+                        # on every frame; it is not a new touch.
+                        pass
                     else:
                         touching = True
+                        active_tracking_id = evalue
                         cur_start_t = t
                         cur_points = []
                         cur_raw_lines = [line_s]
                         current_explicit_touch = True
-                        # Drop coordinates from the previous gesture. Drivers such
-                        # as BlueStacks Virtual Touch emit TRACKING_ID before
-                        # POSITION_X/Y, so keeping the old values would prepend a
-                        # bogus jump from the last touch point to this gesture.
-                        x_raw = None
-                        y_raw = None
-                        # Some devices emit coordinates before TRACKING_ID down.
+                        # Keep coordinates that arrived earlier in this same
+                        # frame (Huawei emits X/Y before TRACKING_ID). Only drop
+                        # stale coordinates from the previous frame.
+                        if not coords_in_frame:
+                            x_raw = None
+                            y_raw = None
                         append_point_if_possible(t)
             # EV_KEY BTN_TOUCH
             elif etype == "0001" and ecode == "014a":
                 saw_touch_flag = True
                 if evalue == 1:
                     if not touching:
-                        # Same stale-coordinate guard as TRACKING_ID down, but
-                        # do not wipe coordinates that already arrived for this
-                        # frame (BlueStacks sends TRACKING_ID, X, Y, BTN_TOUCH).
-                        x_raw = None
-                        y_raw = None
-                    touching = True
-                    cur_start_t = t
-                    cur_points = []
+                        active_tracking_id = None
+                        cur_start_t = t
+                        cur_points = []
+                        cur_raw_lines = [line_s]
+                        current_explicit_touch = True
+                        if not coords_in_frame:
+                            x_raw = None
+                            y_raw = None
+                    # If TRACKING_ID already started this touch, BTN_TOUCH is
+                    # only the explicit-touch marker; do not reset the gesture.
                     current_explicit_touch = True
                     append_point_if_possible(t)
                 elif evalue == 0:
@@ -853,12 +902,16 @@ def record_gestures(
                             cur_raw_lines = []
                             cur_start_t = None
                             current_explicit_touch = False
+                            active_tracking_id = None
+                            coords_in_frame = False
                             break
                     touching = False
                     cur_points = []
                     cur_raw_lines = []
                     cur_start_t = None
                     current_explicit_touch = False
+                    active_tracking_id = None
+                    coords_in_frame = False
             # EV_SYN SYN_REPORT
             elif etype == "0000" and ecode == "0000":
                 # Fallback split: some devices don't emit BTN_TOUCH/TRACKING_ID.
@@ -907,6 +960,7 @@ def record_gestures(
                     last_t = t
                     last_point_t = t
                     current_explicit_touch = False
+                coords_in_frame = False
     except KeyboardInterrupt:
         print("\n[Recorder] Stopping...")
     finally:
@@ -934,7 +988,11 @@ def record_gestures(
 
     filtered = [g for g in gestures if len(g.points) >= min_points]
     print(f"[Recorder] Kept gestures: {len(filtered)} / raw {len(gestures)}")
-    if seen_event_lines == 0 and unmatched_samples:
+    if not filtered and debug_samples:
+        print("[Recorder] Debug sample (selected-device lines):")
+        for sample in debug_samples:
+            print(f"  {sample}")
+    if not filtered and unmatched_samples:
         print("[Recorder] Debug sample (unparsed getevent lines):")
         for sample in unmatched_samples:
             print(f"  {sample}")
@@ -969,7 +1027,7 @@ def listen_click_coordinates(
         x2, y2 = map_raw_point_to_screen(
             last.x_raw, last.y_raw, x_max, y_max, screen_w, screen_h, invert_x, invert_y, swap_xy
         )
-        click = gesture_to_click(x1, y1, x2, y2, gesture, profile)
+        click = gesture_to_click(x1, y1, x2, y2, gesture, profile, picker_mode=True)
         if click is not None:
             print(f"[Click] x={click['x']} y={click['y']}", flush=True)
 
