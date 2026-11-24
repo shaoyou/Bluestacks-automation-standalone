@@ -1,5 +1,5 @@
 import { createVerify, randomUUID, verify } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { app } from "electron";
 import { LICENSE_ED25519_PUBLIC_KEY, LICENSE_PUBLIC_KEY } from "./license-public-key.js";
@@ -36,21 +36,30 @@ function licenseFile() {
 }
 
 function readStore(): LicenseStore {
+  const file = licenseFile();
   try {
-    const parsed = JSON.parse(readFileSync(licenseFile(), "utf8")) as Partial<LicenseStore>;
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<LicenseStore>;
     if (typeof parsed.installId === "string" && parsed.installId) {
       return { installId: parsed.installId, ...(typeof parsed.code === "string" ? { code: parsed.code } : {}) };
     }
   } catch {
-    // A new installation simply receives a new anonymous installation ID.
+    // Fall through to the recovery path below.
   }
+  // Never silently overwrite an unusable license file: keep a copy so the
+  // user's activation code can still be recovered by support.
+  try {
+    if (existsSync(file)) copyFileSync(file, `${file}.corrupt-${Date.now()}`);
+  } catch { /* best effort */ }
   const store = { installId: randomUUID() };
   writeStore(store);
   return store;
 }
 
 function writeStore(store: LicenseStore) {
-  writeFileSync(licenseFile(), `${JSON.stringify(store, null, 2)}\n`, "utf8");
+  const file = licenseFile();
+  const temporary = `${file}.tmp-${process.pid}`;
+  writeFileSync(temporary, `${JSON.stringify(store, null, 2)}\n`, "utf8");
+  renameSync(temporary, file);
 }
 
 function freeStatus(installId: string, message: string): LicenseStatus {
@@ -105,9 +114,11 @@ function decodePayload(encoded: string): LicensePayload {
   if (raw.expiresAt !== undefined && (typeof raw.expiresAt !== "string" || Number.isNaN(Date.parse(raw.expiresAt)))) {
     throw new Error("授权码到期时间无效");
   }
+  // Older releases allowed up to 10 runners. Keep those licenses valid and
+  // enforce the current 6-runner cap when reporting the status below.
   if (
     raw.maxConcurrentRunners !== undefined
-    && (!Number.isInteger(raw.maxConcurrentRunners) || raw.maxConcurrentRunners < 2 || raw.maxConcurrentRunners > 6)
+    && (!Number.isInteger(raw.maxConcurrentRunners) || raw.maxConcurrentRunners < 2 || raw.maxConcurrentRunners > 10)
   ) {
     throw new Error("授权码并发配额无效");
   }
@@ -129,7 +140,7 @@ function validateLegacyCode(code: string, installId: string): LicenseStatus {
   const payload = decodePayload(encodedPayload);
   if (payload.installId !== installId) throw new Error("授权码不属于当前安装，请确认安装 ID");
   if (payload.expiresAt && expiryTimestamp(payload.expiresAt) < Date.now()) throw new Error("专业版授权已到期");
-  return statusForPro(installId, payload.maxConcurrentRunners ?? 6, payload.expiresAt);
+  return statusForPro(installId, Math.min(6, payload.maxConcurrentRunners ?? 6), payload.expiresAt);
 }
 
 function compactCodeBytes(code: string) {
@@ -156,10 +167,12 @@ function validateCompactCode(code: string, installId: string): LicenseStatus {
   const expiryDay = payload.readUInt32BE(18);
   if ((!expires && expiryDay !== 0) || (expires && expiryDay === 0)) throw new Error("授权码到期信息无效");
   const maxConcurrentRunners = payload[22];
-  if (maxConcurrentRunners < 2 || maxConcurrentRunners > 6) throw new Error("授权码并发配额无效");
+  // Old compact codes could carry up to 10 runners; keep the license valid
+  // and clamp the effective concurrency to the current 6-runner cap.
+  if (maxConcurrentRunners < 2 || maxConcurrentRunners > 10) throw new Error("授权码并发配额无效");
   const expiresAt = expires ? isoDateFromDay(expiryDay) : undefined;
   if (expiresAt && expiryTimestamp(expiresAt) < Date.now()) throw new Error("专业版授权已到期");
-  return statusForPro(installId, maxConcurrentRunners, expiresAt);
+  return statusForPro(installId, Math.min(6, maxConcurrentRunners), expiresAt);
 }
 
 function validateCode(code: string, installId: string): LicenseStatus {
