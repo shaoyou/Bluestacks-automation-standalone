@@ -4,7 +4,7 @@ import { PageHeading, PromptDialog, Toggle } from "../components/layout";
 import type { QueueGroup, QueueGroupItem, QueueItemResult, QueueItemStatus, QueueRunSnapshot } from "../types";
 import { newestFirstLog, type SharedProps } from "../app/shared";
 
-type DraftItem = { plan: string; minutesText: string };
+type DraftItem = { plan: string; minutesText: string; cycleDaysText: string };
 type QueueGroupDraft = {
   id: string | null;
   name: string;
@@ -38,7 +38,38 @@ function formatMinutes(seconds: number) {
   return Number.isInteger(minutes) ? String(minutes) : String(Math.round(minutes * 100) / 100);
 }
 
-type PlanMeta = { maxRuntimeSec: number; unbounded: boolean };
+type PlanMeta = { maxRuntimeSec: number; unbounded: boolean; cycleDays: number };
+
+const CYCLE_VARIABLE_NAMES = ["EXEC_CYCLE_DAYS", "CYCLE_DAYS", "执行周期"];
+
+function planDefaultCycleDays(variables: unknown): number {
+  const entries: Array<[string, unknown]> = [];
+  if (Array.isArray(variables)) {
+    for (const entry of variables) {
+      if (!entry || typeof entry !== "object") continue;
+      const record = entry as Record<string, unknown>;
+      entries.push([String(record.name ?? ""), record.value]);
+    }
+  } else if (variables && typeof variables === "object") {
+    entries.push(...Object.entries(variables as Record<string, unknown>));
+  }
+  for (const [name, value] of entries) {
+    const normalized = name.trim().toUpperCase();
+    if (!CYCLE_VARIABLE_NAMES.some((candidate) => candidate.toUpperCase() === normalized)) continue;
+    const days = Number(String(value ?? "").replace(/[^\d.]/g, ""));
+    if (Number.isFinite(days) && days > 0) return Math.round(days);
+  }
+  return 0;
+}
+
+function cycleRemainingMs(item: QueueGroupItem) {
+  const days = item.cycleDays ?? 0;
+  if (days <= 0) return 0;
+  if (!item.lastRunAt) return 0;
+  const last = Date.parse(item.lastRunAt);
+  if (!Number.isFinite(last)) return 0;
+  return Math.max(0, days * 86_400_000 - (Date.now() - last));
+}
 
 function planHasUnboundedLoop(value: unknown): boolean {
   if (!Array.isArray(value)) return false;
@@ -63,7 +94,13 @@ function draftFromGroup(group: QueueGroup, planMeta: Record<string, PlanMeta>): 
     name: group.name,
     items: group.items.map((item) => {
       const planDefault = planMeta[item.plan]?.maxRuntimeSec ?? 0;
-      return { plan: item.plan, minutesText: item.maxRuntimeSec > 0 ? formatMinutes(item.maxRuntimeSec) : planDefault > 0 ? formatMinutes(planDefault) : "" };
+      const cycleDefault = planMeta[item.plan]?.cycleDays ?? 0;
+      const cycleDays = item.cycleDays && item.cycleDays > 0 ? item.cycleDays : cycleDefault;
+      return {
+        plan: item.plan,
+        minutesText: item.maxRuntimeSec > 0 ? formatMinutes(item.maxRuntimeSec) : planDefault > 0 ? formatMinutes(planDefault) : "",
+        cycleDaysText: cycleDays > 0 ? String(cycleDays) : "",
+      };
     }),
     onError: group.onError,
     repeat: group.repeat,
@@ -78,6 +115,7 @@ export function QueueGroupPage(props: SharedProps) {
   const [draft, setDraft] = useState<QueueGroupDraft | null>(null);
   const [editorError, setEditorError] = useState("");
   const [renameTarget, setRenameTarget] = useState<QueueGroup | null>(null);
+  const [cyclePrompt, setCyclePrompt] = useState<{ group: QueueGroup; device: string; notDue: QueueGroupItem[] } | null>(null);
 
   useEffect(() => {
     setGroupDevices((current) => {
@@ -114,6 +152,8 @@ export function QueueGroupPage(props: SharedProps) {
 
   useEffect(() => window.bsManager.onQueueEvent((event) => {
     setStates((current) => ({ ...current, [event.groupId]: event }));
+    // Item completions update per-plan lastRunAt on disk; refresh the group list.
+    void refresh();
   }), []);
 
   useEffect(() => {
@@ -121,10 +161,10 @@ export function QueueGroupPage(props: SharedProps) {
     void (async () => {
       const entries = await Promise.all(props.plans.map(async (name) => {
         try {
-          const plan = JSON.parse(await window.bsManager.plansRead(name)) as { max_runtime_sec?: unknown; actions?: unknown };
+          const plan = JSON.parse(await window.bsManager.plansRead(name)) as { max_runtime_sec?: unknown; actions?: unknown; variables?: unknown };
           const seconds = Number(plan.max_runtime_sec ?? 0);
-          return [name, { maxRuntimeSec: Number.isFinite(seconds) && seconds > 0 ? seconds : 0, unbounded: planHasUnboundedLoop(plan.actions) }] as const;
-        } catch { return [name, { maxRuntimeSec: 0, unbounded: false }] as const; }
+          return [name, { maxRuntimeSec: Number.isFinite(seconds) && seconds > 0 ? seconds : 0, unbounded: planHasUnboundedLoop(plan.actions), cycleDays: planDefaultCycleDays(plan.variables) }] as const;
+        } catch { return [name, { maxRuntimeSec: 0, unbounded: false, cycleDays: 0 }] as const; }
       }));
       if (!cancelled) setPlanMeta(Object.fromEntries(entries));
     })();
@@ -165,9 +205,10 @@ export function QueueGroupPage(props: SharedProps) {
     setEditorError("");
     const planDefault = planMeta[plan]?.maxRuntimeSec ?? 0;
     const minutesText = planDefault > 0 ? formatMinutes(planDefault) : "";
+    const cycleDefault = planMeta[plan]?.cycleDays ?? 0;
     setDraft((current) => {
       if (!current || current.items.some((item) => item.plan === plan)) return current;
-      return { ...current, items: [...current.items, { plan, minutesText }] };
+      return { ...current, items: [...current.items, { plan, minutesText, cycleDaysText: cycleDefault > 0 ? String(cycleDefault) : "" }] };
     });
   };
 
@@ -191,7 +232,13 @@ export function QueueGroupPage(props: SharedProps) {
       if (seconds <= 0 && !(planDefault > 0) && unbounded && !allowedForever) {
         return fail(`${planLabel(item.plan)} 会无限运行且未设置时长：请填写分钟数，或把它放在最后并关闭整队循环`);
       }
-      items.push({ plan: item.plan, maxRuntimeSec: seconds, enabled: true });
+      const cycleText = item.cycleDaysText.trim();
+      const cycleNumber = Number(cycleText);
+      const cycleDays = Number.isFinite(cycleNumber) && cycleNumber > 0 ? Math.round(cycleNumber) : 0;
+      if (cycleText && cycleDays <= 0) {
+        return fail(`${planLabel(item.plan)} 的执行周期需填写正整数天数（留空表示每次都执行）`);
+      }
+      items.push({ plan: item.plan, maxRuntimeSec: seconds, enabled: true, cycleDays });
     }
     try {
       await window.bsManager.queueGroupsSave({ id: draft.id ?? "", name: draft.name.trim(), items, onError: draft.onError, repeat: draft.repeat });
@@ -205,19 +252,33 @@ export function QueueGroupPage(props: SharedProps) {
     }
   };
 
+  const beginGroupStart = async (group: QueueGroup, device: string, skipPlans: string[]) => {
+    const runnable = group.items.filter((item) => item.enabled !== false && !skipPlans.includes(item.plan));
+    if (runnable.length === 0) {
+      props.setNotice("所有计划都未到执行周期，本次未启动");
+      return;
+    }
+    const taskId = `runner-queue-${group.id}`;
+    props.clearTaskLog(taskId);
+    try {
+      await window.bsManager.queueStart(group.id, device, skipPlans);
+      await refresh();
+      props.setNotice(`计划组「${group.name}」开始执行${skipPlans.length > 0 ? `（跳过 ${skipPlans.length} 个未到期计划）` : ""}`);
+    } catch (error) {
+      props.setNotice(`启动失败: ${String(error)}`);
+    }
+  };
+
   const startGroup = async (group: QueueGroup) => {
     if (!props.runtime) return props.setNotice("运行环境尚未加载完成");
     const device = (groupDevices[group.id] ?? "").trim();
     if (!device) return props.setNotice("请先在卡片中选择该计划组的执行设备");
-    const taskId = `runner-queue-${group.id}`;
-    props.clearTaskLog(taskId);
-    try {
-      await window.bsManager.queueStart(group.id, device);
-      await refresh();
-      props.setNotice(`计划组「${group.name}」开始执行`);
-    } catch (error) {
-      props.setNotice(`启动失败: ${String(error)}`);
+    const notDue = group.items.filter((item) => item.enabled !== false && cycleRemainingMs(item) > 0);
+    if (notDue.length > 0) {
+      setCyclePrompt({ group, device, notDue });
+      return;
     }
+    await beginGroupStart(group, device, []);
   };
 
   const stopGroup = async (group: QueueGroup) => {
@@ -302,6 +363,7 @@ export function QueueGroupPage(props: SharedProps) {
           <div className="panel-title"><span>已选脚本（按此顺序执行）</span><span className="counter">{draft.items.length}</span></div>
           <p className="empty-note queue-duration-note">时长留空 = 跑完为止（会自己结束的脚本）；标 ∞ 的脚本会无限运行，必须填时长，或放在最后并关闭整队循环。</p>
           <p className="empty-note queue-duration-note">主城出发的脚本建议把“G_主城校准出发点”放到第一位置。</p>
+          <p className="empty-note queue-duration-note">执行周期（天）留空 = 每次都执行；默认值读取脚本变量 EXEC_CYCLE_DAYS（天），可在右侧覆盖。</p>
           {draft.items.length === 0 && <p className="empty-note">还没有选择脚本，请从右侧列表添加。</p>}
           {draft.items.map((item, index) => {
             const meta = planMeta[item.plan];
@@ -315,6 +377,8 @@ export function QueueGroupPage(props: SharedProps) {
               <strong title={item.plan}>{planLabel(item.plan)}</strong>
               <input className="queue-minutes" title="留空 = 跑完为止（仅会自己结束的脚本）；∞ 无限循环脚本必须填时长，或放在最后并关闭整队循环" aria-label={`${planLabel(item.plan)} 的运行时长（分钟）`} value={item.minutesText} placeholder={planDefault > 0 ? `默认 ${formatMinutes(planDefault)}` : unbounded ? (allowedForever ? "可留空" : "必填") : "不限"} onChange={(event) => { setEditorError(""); const value = event.target.value; setDraft((current) => current && { ...current, items: current.items.map((entry, i) => (i === index ? { ...entry, minutesText: value } : entry)) }); }} />
               <span className="queue-minutes-unit">分钟</span>
+              <input className="queue-cycle" title="执行周期（天）：未到周期时启动会提示跳过；留空 = 每次都执行" aria-label={`${planLabel(item.plan)} 的执行周期（天）`} value={item.cycleDaysText} placeholder={meta && meta.cycleDays > 0 ? `周期${meta.cycleDays}` : "周期(天)"} onChange={(event) => { setEditorError(""); const value = event.target.value; setDraft((current) => current && { ...current, items: current.items.map((entry, i) => (i === index ? { ...entry, cycleDaysText: value } : entry)) }); }} />
+              <span className="queue-minutes-unit">天</span>
               <button className="icon-button" title="上移" aria-label={`上移 ${planLabel(item.plan)}`} disabled={index === 0} onClick={() => moveDraftItem(index, -1)}><ArrowUp size={14} /></button>
               <button className="icon-button" title="下移" aria-label={`下移 ${planLabel(item.plan)}`} disabled={index === draft.items.length - 1} onClick={() => moveDraftItem(index, 1)}><ArrowDown size={14} /></button>
               <button className="icon-button" title="移除" aria-label={`移除 ${planLabel(item.plan)}`} onClick={() => removeDraftItem(index)}><Trash2 size={14} /></button>
@@ -359,7 +423,12 @@ export function QueueGroupPage(props: SharedProps) {
             </div>
             <div className="queue-card-side">
               <span className={`run-state ${running ? "live" : ""}`}>{statusLabel(group)}</span>
-              <span className="queue-last-run" title={group.lastRunAt ?? ""}>{group.lastRunAt ? `上次执行 ${formatLastRun(group.lastRunAt)}` : "从未执行"}</span>
+              <span className="queue-last-run" title={group.lastRunAt ?? ""}>{group.lastRunAt ? `全部执行 ${formatLastRun(group.lastRunAt)}` : "尚未全部执行"}</span>
+              {group.items.filter((item) => (item.cycleDays ?? 0) > 0).map((item) => (
+                <span className="queue-last-run queue-cycle-last" key={`cycle-${item.plan}`} title={`每 ${item.cycleDays} 天执行一次`}>
+                  {planLabel(item.plan)}：{item.lastRunAt ? formatLastRun(item.lastRunAt) : "未执行"} · 每{item.cycleDays}天
+                </span>
+              ))}
             </div>
           </header>
           {snapshot && <div className="queue-card-progress">
@@ -386,6 +455,25 @@ export function QueueGroupPage(props: SharedProps) {
         </section>;
       })}
     </div>
+    {cyclePrompt && <div className="chest-label-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setCyclePrompt(null); }}>
+      <section className="chest-label-modal cycle-prompt-modal" role="dialog" aria-modal="true" aria-label="执行周期提醒">
+        <header><div><strong>执行周期提醒</strong><span>以下计划未到执行周期</span></div><button className="icon-button" title="关闭" onClick={() => setCyclePrompt(null)}><X size={16} /></button></header>
+        <div className="cycle-prompt-list">
+          {cyclePrompt.notDue.map((item) => {
+            const remainingDays = Math.max(1, Math.ceil(cycleRemainingMs(item) / 86_400_000));
+            return <div className="cycle-prompt-item" key={`cycle-prompt-${item.plan}`}>
+              <strong>{planLabel(item.plan)}</strong>
+              <span>每 {item.cycleDays} 天执行一次 · 上次 {item.lastRunAt ? formatLastRun(item.lastRunAt) : "未执行"} · 还差约 {remainingDays} 天</span>
+            </div>;
+          })}
+        </div>
+        <footer>
+          <button className="button quiet" onClick={() => setCyclePrompt(null)}>取消</button>
+          <button className="button secondary" onClick={() => { const { group, device, notDue } = cyclePrompt; setCyclePrompt(null); void beginGroupStart(group, device, notDue.map((item) => item.plan)); }}>跳过未到期</button>
+          <button className="button primary" onClick={() => { const { group, device } = cyclePrompt; setCyclePrompt(null); void beginGroupStart(group, device, []); }}>全部执行</button>
+        </footer>
+      </section>
+    </div>}
     {renameTarget && <PromptDialog title="计划组改名" defaultValue={renameTarget.name} confirmLabel="保存" onConfirm={(value) => void renameGroup(renameTarget, value)} onClose={() => setRenameTarget(null)} />}
   </div>;
 }

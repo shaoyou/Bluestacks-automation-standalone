@@ -220,6 +220,14 @@ h2 { font-size: 18px; }
 .queue-card-side { display: grid; gap: 4px; justify-items: end; }
 .queue-last-run { color: #8fa0a5; font-size: 11px; white-space: nowrap; }
 .queue-editor-actions .queue-delete-button { margin-right: auto; }
+.queue-cycle { width: 72px; height: 28px; min-width: 0; padding: 0 8px; border: 1px solid #35454b; border-radius: 4px; outline: none; color: #e6eeee; background: #111719; font-size: 12px; }
+.queue-cycle-last { color: #d7c28a; }
+.cycle-prompt-modal { width: min(520px, 100%); }
+.cycle-prompt-list { display: grid; align-content: start; gap: 8px; overflow: auto; padding: 12px; }
+.cycle-prompt-item { display: grid; gap: 4px; padding: 10px; border: 1px solid #334047; border-radius: 4px; background: #151b1e; }
+.cycle-prompt-item strong { color: #e8efee; font-size: 13px; }
+.cycle-prompt-item span { color: #9cafb1; font-size: 12px; }
+.cycle-prompt-modal footer { justify-content: flex-end; gap: 8px; }
 .queue-card-title { display: grid; gap: 4px; min-width: 0; }
 .queue-card-title strong { color: #eef5f4; font-size: 15px; }
 .queue-card-title span { overflow: hidden; color: #8fa0a5; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }

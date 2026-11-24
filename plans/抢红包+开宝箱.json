@@ -8,24 +8,24 @@
         {
           "type": "background_check",
           "command": "start",
-          "remark": "启动后台识别线程：持续截图匹配放大镜(每轮约2-2.5秒)，命中即置标志并退出；幂等。scales限0.95-1.05(真机误报均为0.75x缩放变体)+阈值0.94(真实0.962-0.990 vs 误报最高0.895)",
+          "remark": "启动后台识别线程：持续截图匹配放大镜(区域 x=0 起，每轮约1.5-2秒)，命中即置标志并退出；幂等。scales限0.95-1.05(真机误报均为0.75x缩放变体)+阈值0.94(真实0.962-0.990 vs 误报最高0.895)",
           "templates": [
             "../image_templates/bl_baoxiaoxing_1080x1920.png",
             "../image_templates/bl_baoxiaoxing_emulator.png"
           ],
-          "region": {
-            "x": 137,
-            "y": 378,
-            "width": 828,
-            "height": 1191
-          },
           "threshold": 0.94,
           "interval_sec": 0.2,
           "scales": [
             0.95,
             1.0,
             1.05
-          ]
+          ],
+          "region": {
+            "x": 0,
+            "y": 378,
+            "width": 965,
+            "height": 1191
+          }
         },
         {
           "type": "grab_loop",
@@ -85,19 +85,13 @@
           "then_actions": [
             {
               "type": "find_image_click",
-              "remark": "识别到放大镜立即点击(同时停止抢红包)；点击前重新截图二次确认(0.94+scales限0.95-1.05防误点)，若战斗已开始图标消失则不点",
+              "remark": "识别到放大镜立即点击（区域 x=0 起）(同时停止抢红包)；点击前重新截图二次确认(0.94+scales限0.95-1.05防误点)，若战斗已开始图标消失则不点",
               "templates": [
                 "../image_templates/bl_baoxiaoxing_1080x1920.png",
-                "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
                 "../image_templates/bl_baoxiaoxing.png",
-                "../image_templates/bl_baoxiaoxing_emulator.png"
+                "../image_templates/bl_baoxiaoxing_emulator.png",
+                "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png"
               ],
-              "region": {
-                "x": 137,
-                "y": 378,
-                "width": 828,
-                "height": 1191
-              },
               "threshold": 0.94,
               "timeout_sec": 3,
               "interval_sec": 0.3,
@@ -106,7 +100,13 @@
                 0.95,
                 1.0,
                 1.05
-              ]
+              ],
+              "region": {
+                "x": 0,
+                "y": 378,
+                "width": 965,
+                "height": 1191
+              }
             },
             {
               "type": "wait",

@@ -818,6 +818,46 @@ def map_input_point(ctx: RunContext, x: int, y: int) -> Tuple[int, int]:
     return mapped_x, mapped_y
 
 
+def resolve_resolution_override(
+    ctx: RunContext, action: Dict[str, Any]
+) -> Optional[Tuple[int, int, str]]:
+    """Return a device-pixel point for the current screen resolution, if configured.
+
+    `resolution_overrides` lets a click carry coordinates for specific devices whose
+    layout does not scale linearly from the plan's reference screen (for example a
+    1080x1920 emulator plan used on a 1216x2688 phone). Entries are matched against
+    the real device resolution and used as device pixels, without `screen_size` scaling.
+    """
+    raw_overrides = action.get("resolution_overrides")
+    if raw_overrides is None:
+        return None
+    if not isinstance(raw_overrides, list):
+        raise BotError("resolution_overrides must be an array")
+    if ctx.dst_screen_w <= 0 or ctx.dst_screen_h <= 0:
+        return None
+    for index, entry in enumerate(raw_overrides):
+        if not isinstance(entry, dict):
+            raise BotError(f"resolution_overrides[{index}] must be an object")
+        try:
+            width = int(entry.get("width"))
+            height = int(entry.get("height"))
+            x = int(entry.get("x"))
+            y = int(entry.get("y"))
+        except (TypeError, ValueError):
+            raise BotError(
+                f"resolution_overrides[{index}] requires integer width, height, x and y"
+            )
+        if width <= 0 or height <= 0:
+            raise BotError(f"resolution_overrides[{index}] width and height must be positive")
+        if width == ctx.dst_screen_w and height == ctx.dst_screen_h:
+            return (
+                max(0, min(ctx.dst_screen_w - 1, x)),
+                max(0, min(ctx.dst_screen_h - 1, y)),
+                f"{width}x{height}",
+            )
+    return None
+
+
 def clamp_input_point(ctx: RunContext, x: int, y: int) -> Tuple[int, int]:
     if ctx.dst_screen_w > 0 and ctx.dst_screen_h > 0:
         x = max(0, min(ctx.dst_screen_w - 1, x))
@@ -914,10 +954,19 @@ def check_stop(ctx: RunContext) -> None:
         raise KeyboardInterrupt("Reached max runtime")
 
 
-def do_click(ctx: RunContext, action: Dict[str, Any]) -> None:
+def resolve_click_point(ctx: RunContext, action: Dict[str, Any]) -> Tuple[int, int, str]:
+    override = resolve_resolution_override(ctx, action)
+    if override is not None:
+        x, y, label = override
+        return x, y, f" [resolution {label}]"
     x = int(action["x"])
     y = int(action["y"])
     x, y = map_input_point(ctx, x, y)
+    return x, y, ""
+
+
+def do_click(ctx: RunContext, action: Dict[str, Any]) -> None:
+    x, y, resolution_note = resolve_click_point(ctx, action)
     x = apply_jitter(x, ctx.jitter)
     y = apply_jitter(y, ctx.jitter)
     duration_ms = int(action.get("duration_ms", 0) or 0)
@@ -925,17 +974,15 @@ def do_click(ctx: RunContext, action: Dict[str, Any]) -> None:
         # Preserve a recorded slow tap: a plain `input tap` releases almost
         # immediately, which some game buttons distinguish from a short hold.
         adb_shell(ctx, ["input", "swipe", str(x), str(y), str(x), str(y), str(duration_ms)])
-        log(with_action_remark(f"Click ({x}, {y}), hold {duration_ms}ms", action))
+        log(with_action_remark(f"Click ({x}, {y}){resolution_note}, hold {duration_ms}ms", action))
         return
     adb_shell(ctx, ["input", "tap", str(x), str(y)])
-    log(with_action_remark(f"Click ({x}, {y})", action))
+    log(with_action_remark(f"Click ({x}, {y}){resolution_note}", action))
 
 
 def do_long_press(ctx: RunContext, action: Dict[str, Any]) -> None:
-    x = int(action["x"])
-    y = int(action["y"])
+    x, y, resolution_note = resolve_click_point(ctx, action)
     duration_ms = max(1, int(action.get("duration_ms", 700) or 700))
-    x, y = map_input_point(ctx, x, y)
     x = apply_jitter(x, ctx.jitter)
     y = apply_jitter(y, ctx.jitter)
     if ctx.device_backend == "hdc":
@@ -943,7 +990,7 @@ def do_long_press(ctx: RunContext, action: Dict[str, Any]) -> None:
     else:
         # Zero-length swipe = press, hold, release at the same coordinate.
         adb_shell(ctx, ["input", "swipe", str(x), str(y), str(x), str(y), str(duration_ms)])
-    log(with_action_remark(f"Long press ({x}, {y}), {duration_ms}ms", action))
+    log(with_action_remark(f"Long press ({x}, {y}){resolution_note}, {duration_ms}ms", action))
 
 
 def tap_absolute(ctx: RunContext, x: int, y: int) -> Tuple[int, int]:

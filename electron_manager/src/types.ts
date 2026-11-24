@@ -70,7 +70,13 @@ export type UpdatePromptState = {
   lastChangedAt?: string;
 };
 
-export type QueueGroupItem = { plan: string; maxRuntimeSec: number; enabled: boolean };
+export type QueueGroupItem = {
+  plan: string;
+  maxRuntimeSec: number;
+  enabled: boolean;
+  cycleDays?: number;
+  lastRunAt?: string;
+};
 
 export type QueueGroup = {
   id: string;
@@ -138,7 +144,7 @@ declare global {
       queueGroupsList(): Promise<QueueGroup[]>;
       queueGroupsSave(group: QueueGroup): Promise<QueueGroup>;
       queueGroupsDelete(id: string): Promise<void>;
-      queueStart(groupId: string, device: string): Promise<void>;
+      queueStart(groupId: string, device: string, skipPlans?: string[]): Promise<void>;
       queueStop(groupId: string): Promise<void>;
       queueStates(): Promise<QueueRunSnapshot[]>;
       onQueueEvent(listener: (event: QueueRunSnapshot) => void): () => void;

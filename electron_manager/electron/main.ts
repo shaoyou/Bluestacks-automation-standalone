@@ -402,7 +402,7 @@ async function refreshUpdatePromptState() {
 
   const nextMode = updatePromptMode(nextState, now);
   if (nextMode === "required" && currentMode !== "required" && !isProLicense()) {
-    stopAllTasks();
+    stopAllTasks(true);
   }
   if (changed || nextMode !== currentMode) {
     writeUpdatePromptState(nextState);
@@ -1069,9 +1069,26 @@ function trackTask(taskId: string, task: ChildProcess, ownerWebContentsId?: numb
   });
 }
 
-function killTaskProcess(task: ChildProcess) {
+function killTaskProcess(task: ChildProcess, force = false) {
   if (process.platform !== "win32") {
-    task.kill("SIGINT");
+    const isRunning = () => task.exitCode === null && task.signalCode === null;
+    try {
+      task.kill(force ? "SIGTERM" : "SIGINT");
+    } catch { /* already gone */ }
+    // A bot blocked in an ADB/subprocess call can ignore SIGINT. Escalate so
+    // a stopped or quitting app never leaves a Python child running.
+    const terminateTimer = setTimeout(() => {
+      if (!isRunning()) return;
+      try { task.kill(force ? "SIGKILL" : "SIGTERM"); } catch { /* already gone */ }
+    }, force ? 800 : 5000);
+    terminateTimer.unref();
+    if (!force) {
+      const killTimer = setTimeout(() => {
+        if (!isRunning()) return;
+        try { task.kill("SIGKILL"); } catch { /* already gone */ }
+      }, 8000);
+      killTimer.unref();
+    }
     return;
   }
   // Bundled Windows scripts are PyInstaller onefile executables: the spawned
@@ -1088,12 +1105,12 @@ function killTaskProcess(task: ChildProcess) {
   task.kill();
 }
 
-function stopAllTasks() {
+function stopAllTasks(force = false) {
   for (const run of queueRuns.values()) {
     if (run.taskId && run.status === "running") run.status = "stopping";
   }
   for (const task of tasks.values()) {
-    killTaskProcess(task);
+    killTaskProcess(task, force);
   }
   tasks.clear();
   taskOwners.clear();
@@ -1172,6 +1189,8 @@ type QueueGroupItem = {
   plan: string;
   maxRuntimeSec: number;
   enabled: boolean;
+  cycleDays?: number;
+  lastRunAt?: string;
 };
 
 type QueueGroup = {
@@ -1187,7 +1206,7 @@ type QueueGroup = {
 
 type QueueRunStatus = "running" | "stopping" | "completed" | "stopped";
 
-type QueueRunItem = { plan: string; runtimeSec: number };
+type QueueRunItem = { plan: string; runtimeSec: number; skip: boolean };
 
 type QueueRun = {
   groupId: string;
@@ -1229,10 +1248,13 @@ function normalizeQueueGroup(raw: unknown): QueueGroup {
     const plan = path.basename(String(item.plan ?? ""));
     if (!plan.endsWith(".json")) continue;
     const maxRuntimeSec = Number(item.maxRuntimeSec);
+    const cycleDays = Number(item.cycleDays);
     items.push({
       plan,
       maxRuntimeSec: Number.isFinite(maxRuntimeSec) && maxRuntimeSec > 0 ? Math.round(maxRuntimeSec) : 0,
       enabled: item.enabled !== false,
+      cycleDays: Number.isFinite(cycleDays) && cycleDays > 0 ? Math.round(cycleDays) : 0,
+      lastRunAt: typeof item.lastRunAt === "string" ? item.lastRunAt : undefined,
     });
   }
   const fallbackId = `qg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -1327,6 +1349,12 @@ function spawnQueueItem(run: QueueRun, ownerWebContentsId?: number) {
     finishQueueRun(run, "completed");
     return;
   }
+  if (item.skip) {
+    run.results[run.index] = { plan: item.plan, status: "skipped" };
+    run.index += 1;
+    advanceQueueRun(run, ownerWebContentsId);
+    return;
+  }
   const taskId = `runner-queue-${run.groupId}`;
   const args = [path.join(runtimeRoot(), "adb_bot.py"), "--plan", safePlanPath(item.plan), "--adb", getSettings().adbPath, "--hdc", getSettings().hdcPath];
   if (run.device.trim()) args.push("--device", run.device.trim());
@@ -1343,6 +1371,7 @@ function spawnQueueItem(run: QueueRun, ownerWebContentsId?: number) {
       return;
     }
     run.results[run.index] = { plan: item.plan, status: exitCode === 0 ? "ok" : "failed", exitCode };
+    if (exitCode === 0) recordQueueItemRun(run.groupId, item.plan);
     if (exitCode !== 0 && run.onError === "stop") {
       skipRemainingQueueItems(run, run.index + 1);
       finishQueueRun(run, "stopped");
@@ -1394,7 +1423,20 @@ function planHasUnboundedLoop(actions: unknown): boolean {
   return false;
 }
 
-function startQueueRun(group: QueueGroup, device: string, ownerWebContentsId?: number) {
+function recordQueueItemRun(groupId: string, plan: string) {
+  try {
+    const group = normalizeQueueGroup(JSON.parse(readFileSync(queueGroupFilePath(groupId), "utf8")));
+    const item = group.items.find((entry) => entry.plan === plan);
+    if (!item) return;
+    item.lastRunAt = new Date().toISOString();
+    group.updatedAt = item.lastRunAt;
+    writeQueueGroup(group);
+  } catch (error) {
+    console.warn(`[queue] skip lastRunAt update ${groupId}/${plan}: ${String(error)}`);
+  }
+}
+
+function startQueueRun(group: QueueGroup, device: string, ownerWebContentsId?: number, skipPlans: string[] = []) {
   const enabledItems = group.items.filter((item) => item.enabled !== false);
   if (enabledItems.length === 0) throw new Error("计划组中没有可运行的脚本");
   const existing = queueRuns.get(group.id);
@@ -1403,7 +1445,9 @@ function startQueueRun(group: QueueGroup, device: string, ownerWebContentsId?: n
   }
   assertRunnerCapacity();
   const lastEnabledIndex = enabledItems.length - 1;
+  const skipSet = new Set(skipPlans.map((name) => String(name)));
   const runItems: QueueRunItem[] = enabledItems.map((item, index) => {
+    const skip = skipSet.has(item.plan);
     let planMaxRuntimeSec = 0;
     let unbounded = false;
     try {
@@ -1414,13 +1458,15 @@ function startQueueRun(group: QueueGroup, device: string, ownerWebContentsId?: n
       throw new Error(`无法读取计划 ${item.plan}`);
     }
     const runtimeSec = item.maxRuntimeSec > 0 ? item.maxRuntimeSec : planMaxRuntimeSec;
-    if (runtimeSec <= 0 && unbounded && !(index === lastEnabledIndex && !group.repeat)) {
+    if (!skip && runtimeSec <= 0 && unbounded && !(index === lastEnabledIndex && !group.repeat)) {
       throw new Error(`脚本 ${item.plan} 会无限运行且未设置时长：请为它填写运行时长，或把它放在计划组最后并关闭整队循环`);
     }
-    return { plan: item.plan, runtimeSec };
+    return { plan: item.plan, runtimeSec, skip };
   });
-  group.lastRunAt = new Date().toISOString();
-  writeQueueGroup(group);
+  if (skipSet.size === 0) {
+    group.lastRunAt = new Date().toISOString();
+    writeQueueGroup(group);
+  }
   const run: QueueRun = {
     groupId: group.id,
     groupName: group.name,
@@ -1843,6 +1889,8 @@ app.whenReady().then(() => {
     group.updatedAt = timestamp;
     group.createdAt = group.createdAt ?? existing?.createdAt ?? timestamp;
     group.lastRunAt = group.lastRunAt ?? existing?.lastRunAt;
+    const existingItemRunAt = new Map((existing?.items ?? []).map((item) => [item.plan, item.lastRunAt]));
+    group.items = group.items.map((item) => ({ ...item, lastRunAt: item.lastRunAt ?? existingItemRunAt.get(item.plan) }));
     writeQueueGroup(group);
     return group;
   });
@@ -1854,11 +1902,12 @@ app.whenReady().then(() => {
     rmSync(queueGroupFilePath(id), { force: true });
     queueRuns.delete(id);
   });
-  ipcMain.handle("queue:start", (event, rawGroupId: string, rawDevice: unknown) => {
+  ipcMain.handle("queue:start", (event, rawGroupId: string, rawDevice: unknown, rawSkipPlans?: unknown) => {
     const id = String(rawGroupId || "").replace(/[^a-zA-Z0-9_-]/g, "");
     const group = readQueueGroups().find((item) => item.id === id);
     if (!group) throw new Error("未找到该计划组，可能已被删除");
-    startQueueRun(group, String(rawDevice ?? ""), event.sender.id);
+    const skipPlans = Array.isArray(rawSkipPlans) ? rawSkipPlans.map((name) => String(name)) : [];
+    startQueueRun(group, String(rawDevice ?? ""), event.sender.id, skipPlans);
   });
   ipcMain.handle("queue:stop", (_, rawGroupId: string) => stopQueueRun(String(rawGroupId || "").replace(/[^a-zA-Z0-9_-]/g, "")));
   ipcMain.handle("queue:states", () => [...queueRuns.values()].map(queueRunSnapshot));
@@ -1928,7 +1977,7 @@ app.whenReady().then(() => {
         const timeout = setTimeout(() => {
           if (settled) return;
           settled = true;
-          killTaskProcess(child);
+          killTaskProcess(child, true);
           reject(new Error("模板识别超时（30秒）"));
         }, 30_000);
         child.stdout.on("data", (data) => { stdout += data.toString("utf8"); });
@@ -3320,21 +3369,21 @@ async function migrateHistoryToDatabase() {
 }
 
 app.on("window-all-closed", () => {
-  stopAllTasks();
+  stopAllTasks(true);
   if (process.platform !== "darwin") app.quit();
 });
 
 app.on("before-quit", () => {
   isQuitting = true;
-  stopAllTasks();
+  stopAllTasks(true);
 });
 
 process.once("SIGINT", () => {
-  stopAllTasks();
+  stopAllTasks(true);
 });
 
 process.once("SIGTERM", () => {
-  stopAllTasks();
+  stopAllTasks(true);
 });
 
 app.on("activate", () => {
