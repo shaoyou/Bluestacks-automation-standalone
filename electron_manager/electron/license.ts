@@ -114,8 +114,7 @@ function decodePayload(encoded: string): LicensePayload {
   if (raw.expiresAt !== undefined && (typeof raw.expiresAt !== "string" || Number.isNaN(Date.parse(raw.expiresAt)))) {
     throw new Error("授权码到期时间无效");
   }
-  // Older releases allowed up to 10 runners. Keep those licenses valid and
-  // enforce the current 6-runner cap when reporting the status below.
+  // Pro licenses may request 2-10 concurrent runners.
   if (
     raw.maxConcurrentRunners !== undefined
     && (!Number.isInteger(raw.maxConcurrentRunners) || raw.maxConcurrentRunners < 2 || raw.maxConcurrentRunners > 10)
@@ -140,7 +139,7 @@ function validateLegacyCode(code: string, installId: string): LicenseStatus {
   const payload = decodePayload(encodedPayload);
   if (payload.installId !== installId) throw new Error("授权码不属于当前安装，请确认安装 ID");
   if (payload.expiresAt && expiryTimestamp(payload.expiresAt) < Date.now()) throw new Error("专业版授权已到期");
-  return statusForPro(installId, Math.min(6, payload.maxConcurrentRunners ?? 6), payload.expiresAt);
+  return statusForPro(installId, payload.maxConcurrentRunners ?? 6, payload.expiresAt);
 }
 
 function compactCodeBytes(code: string) {
@@ -167,12 +166,10 @@ function validateCompactCode(code: string, installId: string): LicenseStatus {
   const expiryDay = payload.readUInt32BE(18);
   if ((!expires && expiryDay !== 0) || (expires && expiryDay === 0)) throw new Error("授权码到期信息无效");
   const maxConcurrentRunners = payload[22];
-  // Old compact codes could carry up to 10 runners; keep the license valid
-  // and clamp the effective concurrency to the current 6-runner cap.
   if (maxConcurrentRunners < 2 || maxConcurrentRunners > 10) throw new Error("授权码并发配额无效");
   const expiresAt = expires ? isoDateFromDay(expiryDay) : undefined;
   if (expiresAt && expiryTimestamp(expiresAt) < Date.now()) throw new Error("专业版授权已到期");
-  return statusForPro(installId, Math.min(6, maxConcurrentRunners), expiresAt);
+  return statusForPro(installId, maxConcurrentRunners, expiresAt);
 }
 
 function validateCode(code: string, installId: string): LicenseStatus {

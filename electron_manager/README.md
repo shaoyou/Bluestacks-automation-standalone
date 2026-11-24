@@ -96,6 +96,8 @@ npm run license:issue -- \
   --max-runners 6
 ```
 
+`--max-runners` accepts 2-10 (default 6).
+
 The default is the compact `P2-xxxxx-xxxxx-...` format, typically around 140
 characters including grouping. The `--expires` option is optional for a
 perpetual license. Send the resulting single-line activation code to the
