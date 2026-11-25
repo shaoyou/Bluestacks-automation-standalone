@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
-import { CircleStop, Copy, CopyPlus, GripVertical, Layers, Pencil, PencilLine, Play, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { CircleStop, CopyPlus, Download, GripVertical, Layers, Pencil, PencilLine, Pin, Play, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
 import { PageHeading, PromptDialog, Toggle } from "../components/layout";
 import type { QueueGroup, QueueGroupItem, QueueItemResult, QueueItemStatus, QueueRunSnapshot } from "../types";
-import { newestFirstLog, type SharedProps } from "../app/shared";
+import type { SharedProps } from "../app/shared";
 
 type DraftItem = { plan: string; minutesText: string; cycleDaysText: string };
 type QueueGroupDraft = {
@@ -150,6 +150,24 @@ export function QueueGroupPage(props: SharedProps) {
     const status = states[group.id]?.status;
     return status === "running" || status === "stopping";
   }).length;
+  const orderedGroups = useMemo(() => {
+    const isRunning = (group: QueueGroup) => {
+      const status = states[group.id]?.status;
+      return status === "running" || status === "stopping";
+    };
+    return [...groups].sort((left, right) => {
+      const leftPinned = left.pinned === true;
+      const rightPinned = right.pinned === true;
+      // Pinned groups always stay on top; point 2 (running first) only applies
+      // to the rest of the list.
+      if (leftPinned !== rightPinned) return leftPinned ? -1 : 1;
+      if (leftPinned) return 0;
+      const leftRunning = isRunning(left);
+      const rightRunning = isRunning(right);
+      if (leftRunning !== rightRunning) return leftRunning ? -1 : 1;
+      return 0;
+    });
+  }, [groups, states]);
   const licenseFree = props.license?.tier !== "pro" || !props.license?.valid;
 
   useEffect(() => {
@@ -338,6 +356,26 @@ export function QueueGroupPage(props: SharedProps) {
     }
   };
 
+  const togglePin = async (group: QueueGroup) => {
+    try {
+      await window.bsManager.queueGroupsPin(group.id, group.pinned !== true);
+      await refresh();
+    } catch (error) {
+      props.setNotice(`置顶失败: ${String(error)}`);
+    }
+  };
+
+  const exportGroupLog = async (group: QueueGroup, text: string) => {
+    if (!text.trim()) return props.setNotice("当前没有可导出的日志");
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    try {
+      const result = await window.bsManager.exportLog(`${group.name}_${stamp}`, text);
+      if (!result.canceled && result.file) props.setNotice(`日志已导出: ${result.file}`);
+    } catch (error) {
+      props.setNotice(`导出日志失败: ${String(error)}`);
+    }
+  };
+
   const deleteGroup = async (groupId: string, groupName: string) => {
     if (!window.confirm(`删除计划组「${groupName}」？`)) return;
     try {
@@ -463,12 +501,11 @@ export function QueueGroupPage(props: SharedProps) {
     </div>}
     {groups.length === 0 && !draft && <p className="empty-note padded-note">还没有计划组，点击右上角“新建计划组”创建：命名 → 勾选脚本 → 调整顺序 → 保存。</p>}
     <div className="queue-group-list">
-      {groups.map((group) => {
+      {orderedGroups.map((group) => {
         const snapshot = states[group.id];
         const running = snapshot?.status === "running" || snapshot?.status === "stopping";
         const taskId = `runner-queue-${group.id}`;
         const rawLog = props.logs[taskId] ?? "";
-        const tail = rawLog.split(/\r?\n/).filter(Boolean).slice(-8).reverse().join("\n");
         return <section className="panel queue-card" key={group.id}>
           <header className="queue-card-header">
             <div className="queue-card-title">
@@ -492,8 +529,6 @@ export function QueueGroupPage(props: SharedProps) {
             })}
           </div>}
           {snapshot?.error && <p className="queue-error-line">最后错误：{snapshot.error}</p>}
-          {tail && <div className="queue-log-bar"><span>最近输出（最新在上）</span><button className="icon-button" title="复制完整日志" aria-label="复制完整日志" disabled={!rawLog} onClick={() => void navigator.clipboard.writeText(newestFirstLog(rawLog))}><Copy size={14} /></button></div>}
-          {tail && <pre className="queue-log-preview">{tail}</pre>}
           <footer className="queue-card-actions">
             <select className="queue-device-select" aria-label={`${group.name} 执行设备`} value={groupDevices[group.id] ?? ""} onChange={(event) => updateGroupDevice(group.id, event.target.value)} disabled={running}>
               <option value="">选择设备</option>
@@ -503,8 +538,10 @@ export function QueueGroupPage(props: SharedProps) {
               ? <button className="button danger" onClick={() => void stopGroup(group)}><CircleStop size={15} />停止</button>
               : <button className="button primary" disabled={group.items.length === 0} onClick={() => void startGroup(group)}><Play size={15} />启动</button>}
             <button className="button secondary" onClick={() => openEditor(group)}><Pencil size={15} />编辑</button>
+            <button className={`icon-button ${group.pinned ? "queue-pin-active" : ""}`} title={group.pinned ? "取消置顶" : "置顶"} aria-label={`${group.pinned ? "取消置顶" : "置顶"} ${group.name}`} onClick={() => void togglePin(group)}><Pin size={15} fill={group.pinned ? "currentColor" : "none"} /></button>
             <button className="icon-button" title="复制计划组" aria-label={`复制 ${group.name}`} onClick={() => void duplicateGroup(group)}><CopyPlus size={15} /></button>
             <button className="icon-button" title="改名" aria-label={`改名 ${group.name}`} onClick={() => setRenameTarget(group)}><PencilLine size={15} /></button>
+            <button className="icon-button" title="导出本次运行日志" aria-label={`导出 ${group.name} 的日志`} disabled={!rawLog.trim()} onClick={() => void exportGroupLog(group, rawLog)}><Download size={15} /></button>
           </footer>
         </section>;
       })}

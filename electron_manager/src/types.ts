@@ -84,6 +84,7 @@ export type QueueGroup = {
   items: QueueGroupItem[];
   onError: "continue" | "stop";
   repeat: boolean;
+  pinned?: boolean;
   createdAt?: string;
   updatedAt?: string;
   lastRunAt?: string;
@@ -144,6 +145,8 @@ declare global {
       queueGroupsList(): Promise<QueueGroup[]>;
       queueGroupsSave(group: QueueGroup): Promise<QueueGroup>;
       queueGroupsDelete(id: string): Promise<void>;
+      queueGroupsPin(id: string, pinned: boolean): Promise<QueueGroup>;
+      exportLog(name: string, text: string): Promise<{ canceled: boolean; file?: string }>;
       queueStart(groupId: string, device: string, skipPlans?: string[]): Promise<void>;
       queueStop(groupId: string): Promise<void>;
       queueStates(): Promise<QueueRunSnapshot[]>;

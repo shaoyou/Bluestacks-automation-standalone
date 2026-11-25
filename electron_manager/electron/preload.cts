@@ -29,6 +29,8 @@ contextBridge.exposeInMainWorld("bsManager", {
   queueGroupsList: () => ipcRenderer.invoke("queue-groups:list"),
   queueGroupsSave: (group: unknown) => ipcRenderer.invoke("queue-groups:save", group),
   queueGroupsDelete: (id: string) => ipcRenderer.invoke("queue-groups:delete", id),
+  queueGroupsPin: (id: string, pinned: boolean) => ipcRenderer.invoke("queue-groups:pin", id, pinned),
+  exportLog: (name: string, text: string) => ipcRenderer.invoke("logs:export", name, text),
   queueStart: (groupId: string, device: string, skipPlans?: string[]) => ipcRenderer.invoke("queue:start", groupId, device, skipPlans),
   queueStop: (groupId: string) => ipcRenderer.invoke("queue:stop", groupId),
   queueStates: () => ipcRenderer.invoke("queue:states"),

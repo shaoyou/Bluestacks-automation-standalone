@@ -43,8 +43,8 @@
             },
             {
               "type": "wait",
-              "seconds": 2,
-              "remark": "等待2秒"
+              "seconds": 3,
+              "remark": "等待3秒"
             },
             {
               "type": "loop",
@@ -86,8 +86,8 @@
             },
             {
               "type": "wait",
-              "seconds": 2,
-              "remark": "等待2秒"
+              "seconds": 3,
+              "remark": "等待3秒"
             },
             {
               "type": "click",
@@ -97,8 +97,8 @@
             },
             {
               "type": "wait",
-              "seconds": 2,
-              "remark": "等待2秒"
+              "seconds": 3,
+              "remark": "等待3秒"
             },
             {
               "type": "click",
@@ -137,7 +137,15 @@
               "type": "click",
               "x": 542,
               "y": 808,
-              "remark": "点击传送点、去掉箭头"
+              "remark": "点击传送点、去掉箭头",
+              "resolution_overrides": [
+                {
+                  "width": 1216,
+                  "height": 2688,
+                  "x": 605,
+                  "y": 1205
+                }
+              ]
             },
             {
               "type": "wait",
@@ -148,7 +156,15 @@
               "type": "click",
               "x": 542,
               "y": 808,
-              "remark": "点击传送点，弹出气泡"
+              "remark": "点击传送点，弹出气泡",
+              "resolution_overrides": [
+                {
+                  "width": 1216,
+                  "height": 2688,
+                  "x": 605,
+                  "y": 1205
+                }
+              ]
             },
             {
               "type": "wait",
@@ -159,7 +175,15 @@
               "type": "click",
               "x": 537,
               "y": 699,
-              "remark": "点击 传送"
+              "remark": "点击 传送",
+              "resolution_overrides": [
+                {
+                  "width": 1216,
+                  "height": 2688,
+                  "x": 607,
+                  "y": 1069
+                }
+              ]
             },
             {
               "remark": "识别放大镜图标后继续下一步",

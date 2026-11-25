@@ -75,6 +75,8 @@ if (!window.bsManager) {
     queueGroupsList: async () => [],
     queueGroupsSave: async (group) => group,
     queueGroupsDelete: async () => {},
+    queueGroupsPin: async (id, pinned) => ({ id, name: "", items: [], onError: "continue", repeat: false, pinned }),
+    exportLog: async () => ({ canceled: true }),
     queueStart: async () => {},
     queueStop: async () => {},
     queueStates: async () => [],

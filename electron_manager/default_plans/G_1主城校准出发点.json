@@ -10,8 +10,8 @@
                 },
                 {
                     "type": "wait",
-                    "seconds": 2.5,
-                    "remark": "等待2.5秒"
+                    "seconds": 3,
+                    "remark": "等待3秒"
                 },
                 {
                     "type": "click",

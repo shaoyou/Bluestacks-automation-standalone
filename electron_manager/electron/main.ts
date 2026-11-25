@@ -402,7 +402,7 @@ async function refreshUpdatePromptState() {
 
   const nextMode = updatePromptMode(nextState, now);
   if (nextMode === "required" && currentMode !== "required" && !isProLicense()) {
-    stopAllTasks(true);
+    void stopAllTasks(true);
   }
   if (changed || nextMode !== currentMode) {
     writeUpdatePromptState(nextState);
@@ -1069,52 +1069,104 @@ function trackTask(taskId: string, task: ChildProcess, ownerWebContentsId?: numb
   });
 }
 
-function killTaskProcess(task: ChildProcess, force = false) {
-  if (process.platform !== "win32") {
-    const isRunning = () => task.exitCode === null && task.signalCode === null;
-    try {
-      task.kill(force ? "SIGTERM" : "SIGINT");
-    } catch { /* already gone */ }
-    // A bot blocked in an ADB/subprocess call can ignore SIGINT. Escalate so
-    // a stopped or quitting app never leaves a Python child running.
-    const terminateTimer = setTimeout(() => {
-      if (!isRunning()) return;
-      try { task.kill(force ? "SIGKILL" : "SIGTERM"); } catch { /* already gone */ }
-    }, force ? 800 : 5000);
-    terminateTimer.unref();
-    if (!force) {
-      const killTimer = setTimeout(() => {
-        if (!isRunning()) return;
-        try { task.kill("SIGKILL"); } catch { /* already gone */ }
-      }, 8000);
-      killTimer.unref();
-    }
-    return;
-  }
-  // Bundled Windows scripts are PyInstaller onefile executables: the spawned
-  // process is a bootloader parent and the actual bot runs in its child process.
-  // kill() would terminate only the parent and orphan the running worker, so
-  // terminate the whole tree; keep kill() as a fallback if taskkill is unavailable.
-  if (typeof task.pid === "number") {
-    try {
-      spawnSync("taskkill", ["/pid", String(task.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
-    } catch {
-      // Fall through to the direct kill below.
-    }
-  }
-  task.kill();
+function taskIsRunning(task: ChildProcess): boolean {
+  return task.exitCode === null && task.signalCode === null;
 }
 
-function stopAllTasks(force = false) {
+function waitForTaskExit(task: ChildProcess, timeoutMs: number): Promise<void> {
+  if (!taskIsRunning(task)) return Promise.resolve();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      task.off("exit", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    task.once("exit", finish);
+  });
+}
+
+async function terminateTask(task: ChildProcess, force = false): Promise<void> {
+  if (!taskIsRunning(task)) return;
+  if (process.platform === "win32") {
+    // Bundled Windows scripts are PyInstaller onefile executables: the spawned
+    // process is a bootloader parent and the actual bot runs in its child process.
+    // kill() would terminate only the parent and orphan the running worker, so
+    // terminate the whole tree; keep kill() as a fallback if taskkill is unavailable.
+    if (typeof task.pid === "number") {
+      try {
+        spawnSync("taskkill", ["/pid", String(task.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+      } catch {
+        // Fall through to the direct kill below.
+      }
+    }
+    try { task.kill(); } catch { /* already gone */ }
+    await waitForTaskExit(task, 1500);
+    return;
+  }
+  // A bot blocked in an ADB/subprocess call can ignore SIGINT. Escalate and
+  // wait for the process to actually exit, so a stop/quit never returns while
+  // the Python child is still alive.
+  try { task.kill(force ? "SIGTERM" : "SIGINT"); } catch { /* already gone */ }
+  await waitForTaskExit(task, force ? 800 : 1500);
+  if (!taskIsRunning(task)) return;
+  try { task.kill("SIGTERM"); } catch { /* already gone */ }
+  await waitForTaskExit(task, 1000);
+  if (!taskIsRunning(task)) return;
+  try { task.kill("SIGKILL"); } catch { /* already gone */ }
+  await waitForTaskExit(task, 500);
+}
+
+async function stopAllTasks(force = false): Promise<void> {
   for (const run of queueRuns.values()) {
     if (run.taskId && run.status === "running") run.status = "stopping";
   }
-  for (const task of tasks.values()) {
-    killTaskProcess(task, force);
-  }
+  const running = [...tasks.values()];
   tasks.clear();
   taskOwners.clear();
   taskKinds.clear();
+  await Promise.all(running.map((task) => terminateTask(task, force)));
+}
+
+function killOrphanedRuntimeBots() {
+  if (process.platform === "win32") return;
+  const scriptPath = path.join(runtimeRoot(), "adb_bot.py");
+  let output = "";
+  try {
+    const result = spawnSync("ps", ["-ww", "-axo", "pid=,ppid=,command="], { encoding: "utf8" });
+    if (result.status !== 0 || typeof result.stdout !== "string") return;
+    output = result.stdout;
+  } catch {
+    return;
+  }
+  const orphanPids: number[] = [];
+  for (const line of output.split("\n")) {
+    const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    const ppid = Number(match[2]);
+    const command = match[3];
+    // Only bots whose spawning app is gone (launchd/init reparented them).
+    if (ppid !== 1 || !command.includes(scriptPath) || !/python/i.test(command)) continue;
+    orphanPids.push(pid);
+  }
+  if (orphanPids.length === 0) return;
+  for (const pid of orphanPids) {
+    try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ }
+  }
+  const killTimer = setTimeout(() => {
+    for (const pid of orphanPids) {
+      try {
+        process.kill(pid, 0);
+        process.kill(pid, "SIGKILL");
+      } catch { /* already gone */ }
+    }
+  }, 1200);
+  killTimer.unref();
+  console.log(`[runtime] stopped ${orphanPids.length} orphaned bot process(es)`);
 }
 
 async function stopTaskGracefully(id: string) {
@@ -1137,7 +1189,7 @@ async function stopTaskGracefully(id: string) {
     });
     if (exited) return;
   }
-  killTaskProcess(task);
+  await terminateTask(task);
 }
 
 function assertRunnerCapacity() {
@@ -1199,6 +1251,7 @@ type QueueGroup = {
   items: QueueGroupItem[];
   onError: "continue" | "stop";
   repeat: boolean;
+  pinned?: boolean;
   createdAt?: string;
   updatedAt?: string;
   lastRunAt?: string;
@@ -1265,6 +1318,7 @@ function normalizeQueueGroup(raw: unknown): QueueGroup {
     items,
     onError: value.onError === "stop" ? "stop" : "continue",
     repeat: Boolean(value.repeat),
+    pinned: value.pinned === true,
     createdAt: typeof value.createdAt === "string" ? value.createdAt : undefined,
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : undefined,
     lastRunAt: typeof value.lastRunAt === "string" ? value.lastRunAt : undefined,
@@ -1484,13 +1538,13 @@ function startQueueRun(group: QueueGroup, device: string, ownerWebContentsId?: n
   spawnQueueItem(run, ownerWebContentsId);
 }
 
-function stopQueueRun(groupId: string) {
+async function stopQueueRun(groupId: string) {
   const run = queueRuns.get(groupId);
   if (!run || run.status !== "running") return;
   run.status = "stopping";
   sendQueueEvent(run);
   const task = run.taskId ? tasks.get(run.taskId) : undefined;
-  if (task) killTaskProcess(task);
+  if (task) await terminateTask(task);
   else {
     skipRemainingQueueItems(run, run.index);
     finishQueueRun(run, "stopped");
@@ -1722,7 +1776,12 @@ function createRunWindow(initialPlan?: string, mode: "runner" | "chest" = "runne
     },
   });
   runnerWindows.add(window.id);
+  let closingAfterStop = false;
   window.on("close", (event) => {
+    if (closingAfterStop) {
+      event.preventDefault();
+      return;
+    }
     const ownedTaskIds = [...taskOwners.entries()]
       .filter(([, ownerId]) => ownerId === window.webContents.id)
       .map(([taskId]) => taskId);
@@ -1739,10 +1798,14 @@ function createRunWindow(initialPlan?: string, mode: "runner" | "chest" = "runne
       event.preventDefault();
       return;
     }
-    for (const taskId of ownedTaskIds) {
-      const task = tasks.get(taskId);
-      if (task) killTaskProcess(task);
-    }
+    event.preventDefault();
+    closingAfterStop = true;
+    const ownedTasks = ownedTaskIds
+      .map((taskId) => tasks.get(taskId))
+      .filter((task): task is ChildProcess => Boolean(task));
+    void Promise.all(ownedTasks.map((task) => terminateTask(task))).finally(() => {
+      if (!window.isDestroyed()) window.destroy();
+    });
   });
   window.on("closed", () => {
     runnerWindows.delete(window.id);
@@ -1758,6 +1821,7 @@ app.whenReady().then(() => {
       const runtimePlansDir = path.join(app.getPath("userData"), "runtime", "plans");
       const hadExistingPlans = existsSync(runtimePlansDir) && readdirSync(runtimePlansDir).some((name) => name.endsWith(".json"));
       runtimeRoot();
+      killOrphanedRuntimeBots();
       // Older builds did not write the marker file, so an existing plan library
       // on first run of this version means "upgrade", not a fresh install.
       const shouldResetPlans = previousVersion
@@ -1807,8 +1871,11 @@ app.whenReady().then(() => {
   ipcMain.handle("update:prompt-acknowledge", () => acknowledgeUpdatePrompt());
   ipcMain.handle("update:check", () => checkForUpdates());
   ipcMain.handle("update:download", () => downloadUpdate());
-  ipcMain.handle("update:install", () => {
+  ipcMain.handle("update:install", async () => {
     if (updateState.phase !== "downloaded") throw new Error("更新尚未下载完成");
+    // Kill running bots before the updater quits the app; otherwise the update
+    // relaunch can orphan a Python child that keeps clicking in the background.
+    await stopAllTasks(true);
     setImmediate(() => autoUpdater.quitAndInstall());
   });
   ipcMain.handle("app:quit", () => {
@@ -1889,6 +1956,7 @@ app.whenReady().then(() => {
     group.updatedAt = timestamp;
     group.createdAt = group.createdAt ?? existing?.createdAt ?? timestamp;
     group.lastRunAt = group.lastRunAt ?? existing?.lastRunAt;
+    group.pinned = existing?.pinned ?? group.pinned;
     const existingItemRunAt = new Map((existing?.items ?? []).map((item) => [item.plan, item.lastRunAt]));
     group.items = group.items.map((item) => ({ ...item, lastRunAt: item.lastRunAt ?? existingItemRunAt.get(item.plan) }));
     writeQueueGroup(group);
@@ -1901,6 +1969,29 @@ app.whenReady().then(() => {
     if (run && (run.status === "running" || run.status === "stopping")) throw new Error("请先停止正在运行的计划组");
     rmSync(queueGroupFilePath(id), { force: true });
     queueRuns.delete(id);
+  });
+  ipcMain.handle("queue-groups:pin", (_, rawId: string, rawPinned: unknown) => {
+    const id = String(rawId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+    if (!id) throw new Error("计划组 ID 无效");
+    const group = readQueueGroups().find((item) => item.id === id);
+    if (!group) throw new Error("未找到该计划组，可能已被删除");
+    group.pinned = Boolean(rawPinned);
+    group.updatedAt = new Date().toISOString();
+    writeQueueGroup(group);
+    return group;
+  });
+  ipcMain.handle("logs:export", async (_, rawName: string, rawText: string) => {
+    const text = String(rawText ?? "");
+    if (!text.trim()) throw new Error("没有可导出的日志");
+    const base = String(rawName || "queue-log").replace(/[\\/:*?"<>|\r\n]/g, "_").trim().slice(0, 120) || "queue-log";
+    const result = await dialog.showSaveDialog(mainWindow!, {
+      title: "导出日志",
+      defaultPath: `${base}.log.txt`,
+      filters: [{ name: "文本日志", extensions: ["log", "txt"] }],
+    });
+    if (result.canceled || !result.filePath) return { canceled: true };
+    writeFileSync(result.filePath, text.endsWith("\n") ? text : `${text}\n`, "utf8");
+    return { canceled: false, file: result.filePath };
   });
   ipcMain.handle("queue:start", (event, rawGroupId: string, rawDevice: unknown, rawSkipPlans?: unknown) => {
     const id = String(rawGroupId || "").replace(/[^a-zA-Z0-9_-]/g, "");
@@ -1977,7 +2068,7 @@ app.whenReady().then(() => {
         const timeout = setTimeout(() => {
           if (settled) return;
           settled = true;
-          killTaskProcess(child, true);
+          void terminateTask(child, true);
           reject(new Error("模板识别超时（30秒）"));
         }, 30_000);
         child.stdout.on("data", (data) => { stdout += data.toString("utf8"); });
@@ -3368,23 +3459,41 @@ async function migrateHistoryToDatabase() {
   return JSON.parse(result) as Record<string, unknown>;
 }
 
+let quitCleanupStarted = false;
+let quitCleanupDone = false;
+
 app.on("window-all-closed", () => {
-  stopAllTasks(true);
   if (process.platform !== "darwin") app.quit();
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
   isQuitting = true;
-  stopAllTasks(true);
+  if (quitCleanupDone) return;
+  if (tasks.size === 0) {
+    quitCleanupDone = true;
+    return;
+  }
+  // Keep the app alive until every bot process has actually exited. The old
+  // fire-and-forget escalation could lose the race against app shutdown and
+  // leave an orphaned Python process clicking in the background.
+  event.preventDefault();
+  if (quitCleanupStarted) return;
+  quitCleanupStarted = true;
+  void (async () => {
+    await stopAllTasks(true);
+    quitCleanupDone = true;
+    app.quit();
+  })();
 });
 
-process.once("SIGINT", () => {
-  stopAllTasks(true);
-});
+function handleTerminationSignal() {
+  if (quitCleanupStarted) return;
+  quitCleanupStarted = true;
+  void stopAllTasks(true).finally(() => app.exit(0));
+}
 
-process.once("SIGTERM", () => {
-  stopAllTasks(true);
-});
+process.once("SIGINT", handleTerminationSignal);
+process.once("SIGTERM", handleTerminationSignal);
 
 app.on("activate", () => {
   if (mainWindow && !mainWindow.isDestroyed()) {
