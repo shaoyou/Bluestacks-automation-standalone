@@ -1,0 +1,608 @@
+{
+    "actions": [
+        {
+            "actions": [
+                
+                {
+                    "type": "joystick",
+                    "x": 540,
+                    "y": 1720,
+                    "angle": 50,
+                    "seconds": 5,
+                    "distance": 180,
+                    "remark": "50度45秒"
+                },
+                {
+                    "type": "joystick",
+                    "x": 540,
+                    "y": 1720,
+                    "angle": 170,
+                    "seconds": 3,
+                    "distance": 180,
+                    "remark": "50度45秒"
+                },
+                {
+                    "type": "wait",
+                    "seconds": 10,
+                    "remark": "等待10秒"
+                },
+                {
+                    "remark": "点击回城",
+                    "type": "click",
+                    "x": 989,
+                    "y": 1709
+                },
+                {
+                    "seconds": 1,
+                    "type": "wait"
+                },
+                {
+                    "remark": "点击(OK)",
+                    "type": "click",
+                    "x": 744,
+                    "y": 1123
+                },
+                {
+                    "remark": "识别放大镜图标后继续下一步",
+                    "type": "if_image",
+                    "templates": [
+                        "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
+                        "../image_templates/bl_baoxiaoxing_1080x1920.png",
+                        "../image_templates/bl_baoxiaoxing.png"
+                    ],
+                    "max_candidates": 32,
+                    "threshold": 0.7,
+                    "min_color_similarity": 0.75,
+                    "scales": [
+                        1.0
+                    ],
+                    "timeout_sec": 15,
+                    "interval_sec": 5,
+                    "then_actions": [
+                        {
+                            "type": "log",
+                            "message": "已识别到放大镜图标，继续下一步"
+                        }
+                    ],
+                    "else_actions": [
+                        {
+                            "type": "log",
+                            "message": "15秒内未识别到放大镜图标，继续下一步"
+                        }
+                    ]
+                },
+                
+                {
+                    "remark": "点击传送阵",
+                    "type": "click",
+                    "x": 649,
+                    "y": 831
+                },
+                {
+                    "seconds": 1,
+                    "type": "wait"
+                },
+                {
+                    "remark": "目标：曲折小径 开始传送",
+                    "type": "click",
+                    "x": 685,
+                    "y": 1058
+                },
+                {
+                    "remark": "识别放大镜图标后继续下一步",
+                    "type": "if_image",
+                    "templates": [
+                        "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
+                        "../image_templates/bl_baoxiaoxing_1080x1920.png",
+                        "../image_templates/bl_baoxiaoxing.png"
+                    ],
+                    "max_candidates": 32,
+                    "threshold": 0.7,
+                    "min_color_similarity": 0.75,
+                    "scales": [
+                        1.0
+                    ],
+                    "timeout_sec": 10,
+                    "interval_sec": 5,
+                    "then_actions": [
+                        {
+                            "type": "log",
+                            "message": "已识别到放大镜图标，继续下一步"
+                        }
+                    ],
+                    "else_actions": [
+                        {
+                            "type": "log",
+                            "message": "15秒内未识别到放大镜图标，继续下一步"
+                        }
+                    ]
+                },
+                
+                
+                
+                
+                {
+                    "type": "joystick",
+                    "x": 540,
+                    "y": 1720,
+                    "angle": -130,
+                    "seconds": 5.5,
+                    "distance": 180,
+                    "remark": "-130度5秒"
+                },
+                {
+                    "type": "wait",
+                    "seconds": 10,
+                    "remark": "等待10秒"
+                },
+                
+                {
+                    "remark": "点击回城",
+                    "type": "click",
+                    "x": 989,
+                    "y": 1709
+                },
+                {
+                    "seconds": 1,
+                    "type": "wait"
+                },
+                {
+                    "remark": "点击(OK)",
+                    "type": "click",
+                    "x": 744,
+                    "y": 1123
+                },
+                {
+                    "remark": "识别放大镜图标后继续下一步",
+                    "type": "if_image",
+                    "templates": [
+                        "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
+                        "../image_templates/bl_baoxiaoxing_1080x1920.png",
+                        "../image_templates/bl_baoxiaoxing.png"
+                    ],
+                    "max_candidates": 32,
+                    "threshold": 0.7,
+                    "min_color_similarity": 0.75,
+                    "scales": [
+                        1.0
+                    ],
+                    "timeout_sec": 15,
+                    "interval_sec": 5,
+                    "then_actions": [
+                        {
+                            "type": "log",
+                            "message": "已识别到放大镜图标，继续下一步"
+                        }
+                    ],
+                    "else_actions": [
+                        {
+                            "type": "log",
+                            "message": "15秒内未识别到放大镜图标，继续下一步"
+                        }
+                    ]
+                },
+                {
+                    "remark": "点击传送阵",
+                    "type": "click",
+                    "x": 649,
+                    "y": 831
+                },
+                {
+                    "seconds": 1,
+                    "type": "wait"
+                },
+                {
+                    "remark": "点击：荒芜之地",
+                    "type": "click",
+                    "x": 338,
+                    "y": 607
+                },
+                {
+                    "seconds": 0.3,
+                    "type": "wait"
+                },
+                {
+                    "remark": "目标：双峰峡谷 开始传送",
+                    "type": "click",
+                    "x": 711,
+                    "y": 688
+                },
+                {
+                    "remark": "识别放大镜图标后继续下一步",
+                    "type": "if_image",
+                    "templates": [
+                        "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
+                        "../image_templates/bl_baoxiaoxing_1080x1920.png",
+                        "../image_templates/bl_baoxiaoxing.png"
+                    ],
+                    "max_candidates": 32,
+                    "threshold": 0.7,
+                    "min_color_similarity": 0.75,
+                    "scales": [
+                        1.0
+                    ],
+                    "timeout_sec": 10,
+                    "interval_sec": 5,
+                    "then_actions": [
+                        {
+                            "type": "log",
+                            "message": "已识别到放大镜图标，继续下一步"
+                        }
+                    ],
+                    "else_actions": [
+                        {
+                            "type": "log",
+                            "message": "15秒内未识别到放大镜图标，继续下一步"
+                        }
+                    ]
+                },
+                
+                
+                {
+                    "type": "joystick",
+                    "x": 540,
+                    "y": 1720,
+                    "angle": 130,
+                    "seconds": 5,
+                    "distance": 180,
+                    "remark": "130度5秒"
+                },
+{
+                    "seconds": 10,
+                    "type": "wait"
+                },
+
+                {
+                    "type": "joystick",
+                    "x": 540,
+                    "y": 1720,
+                    "angle": 80,
+                    "seconds": 6,
+                    "distance": 180,
+                    "remark": "80度6秒"
+                },
+                {
+                    "type": "joystick",
+                    "x": 540,
+                    "y": 1720,
+                    "angle": 180,
+                    "seconds": 8,
+                    "distance": 180,
+                    "remark": "180度8秒"
+                },
+                {
+                    "type": "joystick",
+                    "x": 540,
+                    "y": 1720,
+                    "angle": 135,
+                    "seconds": 5,
+                    "distance": 180,
+                    "remark": "135度5秒"
+                },
+                {
+                    "type": "joystick",
+                    "x": 540,
+                    "y": 1720,
+                    "angle": 120,
+                    "seconds": 3,
+                    "distance": 180,
+                    "remark": "120度3秒"
+                },
+{
+                    "seconds": 10,
+                    "type": "wait"
+                }, 
+{
+                    "remark": "点击回城",
+                    "type": "click",
+                    "x": 989,
+                    "y": 1709
+                },
+                {
+                    "seconds": 1,
+                    "type": "wait"
+                },
+                {
+                    "remark": "点击(OK)",
+                    "type": "click",
+                    "x": 744,
+                    "y": 1123
+                },
+                {
+                    "remark": "识别放大镜图标后继续下一步",
+                    "type": "if_image",
+                    "templates": [
+                        "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
+                        "../image_templates/bl_baoxiaoxing_1080x1920.png",
+                        "../image_templates/bl_baoxiaoxing.png"
+                    ],
+                    "max_candidates": 32,
+                    "threshold": 0.7,
+                    "min_color_similarity": 0.75,
+                    "scales": [
+                        1.0
+                    ],
+                    "timeout_sec": 15,
+                    "interval_sec": 5,
+                    "then_actions": [
+                        {
+                            "type": "log",
+                            "message": "已识别到放大镜图标，继续下一步"
+                        }
+                    ],
+                    "else_actions": [
+                        {
+                            "type": "log",
+                            "message": "15秒内未识别到放大镜图标，继续下一步"
+                        }
+                    ]
+                },
+                {
+                    "remark": "点击传送阵",
+                    "type": "click",
+                    "x": 649,
+                    "y": 831
+                },
+                {
+                    "seconds": 1,
+                    "type": "wait"
+                },
+                {
+                    "remark": "点击：污染之林",
+                    "type": "click",
+                    "x": 302,
+                    "y": 722
+                },
+                {
+                    "seconds": 0.3,
+                    "type": "wait"
+                },
+                {
+                    "remark": "点击：污染哨站",
+                    "type": "click",
+                    "x": 683,
+                    "y": 524
+                },
+                {
+                    "remark": "识别放大镜图标后继续下一步",
+                    "type": "if_image",
+                    "templates": [
+                        "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
+                        "../image_templates/bl_baoxiaoxing_1080x1920.png",
+                        "../image_templates/bl_baoxiaoxing.png"
+                    ],
+                    "max_candidates": 32,
+                    "threshold": 0.7,
+                    "min_color_similarity": 0.75,
+                    "scales": [
+                        1.0
+                    ],
+                    "timeout_sec": 15,
+                    "interval_sec": 5,
+                    "then_actions": [
+                        {
+                            "type": "log",
+                            "message": "已识别到放大镜图标，继续下一步"
+                        }
+                    ],
+                    "else_actions": [
+                        {
+                            "type": "log",
+                            "message": "15秒内未识别到放大镜图标，继续下一步"
+                        }
+                    ]
+                },
+                {
+                  "type": "joystick",
+                  "x": 540,
+                  "y": 1720,
+                  "angle": -20,
+                  "seconds": 3,
+                  "distance": 180,
+                  "remark": "-20度5秒"
+                },
+                {
+                  "type": "joystick",
+                  "x": 540,
+                  "y": 1720,
+                  "angle": 40,
+                  "seconds": 8,
+                  "distance": 180,
+                  "remark": "40度8秒"
+                },
+                {
+                  "type": "joystick",
+                  "x": 540,
+                  "y": 1720,
+                  "angle": 30,
+                  "seconds": 4,
+                  "distance": 180,
+                  "remark": "30度4秒"
+                },
+                {
+                  "type": "joystick",
+                  "x": 540,
+                  "y": 1720,
+                  "angle": -25,
+                  "seconds": 2,
+                  "distance": 180,
+                  "remark": "-25度3秒"
+                }, 
+{
+                    "seconds": 10,
+                    "type": "wait"
+                },
+{
+                    "remark": "点击回城",
+                    "type": "click",
+                    "x": 989,
+                    "y": 1709
+                },
+                {
+                    "seconds": 1,
+                    "type": "wait"
+                },
+                {
+                    "remark": "点击(OK)",
+                    "type": "click",
+                    "x": 744,
+                    "y": 1123
+                },
+                {
+                    "remark": "识别放大镜图标后继续下一步",
+                    "type": "if_image",
+                    "templates": [
+                        "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
+                        "../image_templates/bl_baoxiaoxing_1080x1920.png",
+                        "../image_templates/bl_baoxiaoxing.png"
+                    ],
+                    "max_candidates": 32,
+                    "threshold": 0.7,
+                    "min_color_similarity": 0.75,
+                    "scales": [
+                        1.0
+                    ],
+                    "timeout_sec": 15,
+                    "interval_sec": 5,
+                    "then_actions": [
+                        {
+                            "type": "log",
+                            "message": "已识别到放大镜图标，继续下一步"
+                        }
+                    ],
+                    "else_actions": [
+                        {
+                            "type": "log",
+                            "message": "15秒内未识别到放大镜图标，继续下一步"
+                        }
+                    ]
+                },
+                {
+                    "remark": "点击传送阵",
+                    "type": "click",
+                    "x": 649,
+                    "y": 831
+                },
+                {
+                    "seconds": 1,
+                    "type": "wait"
+                },
+                {
+                    "remark": "点击：污染之林",
+                    "type": "click",
+                    "x": 302,
+                    "y": 722
+                },
+                {
+                    "seconds": 0.3,
+                    "type": "wait"
+                },
+                {
+                    "remark": "点击：腐烂沼泽",
+                    "type": "click",
+                    "x": 673,
+                    "y": 692
+                },
+                {
+                    "remark": "识别放大镜图标后继续下一步",
+                    "type": "if_image",
+                    "templates": [
+                        "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
+                        "../image_templates/bl_baoxiaoxing_1080x1920.png",
+                        "../image_templates/bl_baoxiaoxing.png"
+                    ],
+                    "max_candidates": 32,
+                    "threshold": 0.7,
+                    "min_color_similarity": 0.75,
+                    "scales": [
+                        1.0
+                    ],
+                    "timeout_sec": 15,
+                    "interval_sec": 5,
+                    "then_actions": [
+                        {
+                            "type": "log",
+                            "message": "已识别到放大镜图标，继续下一步"
+                        }
+                    ],
+                    "else_actions": [
+                        {
+                            "type": "log",
+                            "message": "15秒内未识别到放大镜图标，继续下一步"
+                        }
+                    ]
+                },
+                {
+                  "type": "joystick",
+                  "x": 540,
+                  "y": 1720,
+                  "angle": 110,
+                  "seconds": 10.5,
+                  "distance": 180,
+                  "remark": "110度10.5秒"
+                },
+{
+                    "seconds": 10,
+                    "type": "wait"
+                },
+{
+                    "remark": "点击回城",
+                    "type": "click",
+                    "x": 989,
+                    "y": 1709
+                },
+                {
+                    "seconds": 1,
+                    "type": "wait"
+                },
+                {
+                    "remark": "点击(OK)",
+                    "type": "click",
+                    "x": 744,
+                    "y": 1123
+                },
+                {
+                    "remark": "识别放大镜图标后继续下一步",
+                    "type": "if_image",
+                    "templates": [
+                        "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png",
+                        "../image_templates/bl_baoxiaoxing_1080x1920.png",
+                        "../image_templates/bl_baoxiaoxing.png"
+                    ],
+                    "max_candidates": 32,
+                    "threshold": 0.7,
+                    "min_color_similarity": 0.75,
+                    "scales": [
+                        1.0
+                    ],
+                    "timeout_sec": 15,
+                    "interval_sec": 5,
+                    "then_actions": [
+                        {
+                            "type": "log",
+                            "message": "已识别到放大镜图标，继续下一步"
+                        }
+                    ],
+                    "else_actions": [
+                        {
+                            "type": "log",
+                            "message": "15秒内未识别到放大镜图标，继续下一步"
+                        }
+                    ]
+                }
+            ],
+            "count": 1,
+            "type": "loop"
+        }
+    ],
+    "device": "127.0.0.1:5555",
+    "jitter_px": 3,
+    "max_runtime_sec": 0,
+    "variables": [
+        {
+            "name": "EXEC_CYCLE_DAYS",
+            "note": "计划组默认执行周期（天）",
+            "value": "3"
+        }
+    ]
+}

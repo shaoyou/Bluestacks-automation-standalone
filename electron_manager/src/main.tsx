@@ -47,7 +47,7 @@ if (!window.bsManager) {
     licenseGet: async () => ({ installId: "preview", tier: "pro", valid: true, maxConcurrentRunners: 6, message: "预览授权" }),
     licenseActivate: async () => ({ installId: "preview", tier: "pro", valid: true, maxConcurrentRunners: 3, message: "预览授权" }),
     licenseClear: async () => ({ installId: "preview", tier: "free", valid: true, maxConcurrentRunners: 1, message: "已清除预览授权" }),
-    plansList: async () => [...previewPlans.keys()],
+    plansList: async () => [...previewPlans.keys()].filter((name) => !name.startsWith("__debug_")),
     plansRead: async (name) => previewPlans.get(name) ?? "",
     plansSave: async (name, text) => { JSON.parse(text); previewPlans.set(name, text); },
     plansCreate: async (name) => { const filename = `${name.replace(/\.json$/i, "")}.json`; previewPlans.set(filename, "{\n  \"actions\": []\n}\n"); return filename; },

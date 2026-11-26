@@ -102,6 +102,7 @@
 - `sequence`
 - `loop`
 - `patrol`
+- `bag_appraise`
 
 ### 3.1 click
 
@@ -425,6 +426,41 @@
   - `>1`: 多次往返
   - `0`: 不执行
   - `-1`: 无限往返
+
+### 3.14 bag_appraise
+
+按格子底色识别背包装备品质，逐件点击鉴定；鉴定后的装备会变红并自动排到顶部，脚本持续下滑，直到当前画面只剩红装 + 灰色空格且列表无法再下滑为止。
+
+```json
+{
+  "type": "bag_appraise",
+  "target_colors": ["orange", "purple", "blue"],
+  "click_wait_sec": 2.5,
+  "scroll_rows": 4,
+  "scroll_to_top": true,
+  "max_steps": 5000
+}
+```
+
+- `target_colors` (array, 可选，默认 `["orange","purple","blue"]`): 需要点击鉴定的格子颜色；`red`（已鉴定）和 `gray`（空格）不会被点击
+- `click_wait_sec` (number, 可选，默认 `2.5`): 每次点击后等待装备变红/自动排序动画完成的秒数
+- `scroll_rows` (number, 可选，默认 `4`): 当前画面没有可鉴定格子时，每次向上拖动约几行（用于继续浏览下面未鉴定的装备）
+- `scroll_duration_ms` (number, 可选，默认 `700`): 单次滑动时长
+- `scroll_wait_sec` (number, 可选，默认 `1.0`): 滑动后等待列表稳定
+- `scroll_to_top` (bool, 可选，默认 `false`): 开始前先向下拖动几次，确保从背包顶部开始处理（避免上次运行停在中间而漏掉上面的装备）
+- `scroll_to_top_swipes` (number, 可选，默认 `8`): `scroll_to_top` 最多向下拖动几次
+- `max_steps` (number, 可选，默认 `5000`): 最多执行多少次“识别/点击/滑动”，安全上限
+- `max_clicks` (number, 可选，默认 `0`): 最多点击多少次，`0` 表示不限制
+- `max_click_attempts` (number, 可选，默认 `2`): 同一格点击后画面无变化时最多重试几次（模拟器首次点击可能被窗口焦点吞掉）
+- `max_patch_std` (number, 可选，默认 `10`): 格子顶部底色的离散度上限；超过会直接报错，防止在“道具”等其他背包页误点
+- `recover_with_back` (bool, 可选，默认 `true`): 连续两次识别不到背包格子时，发送一次返回键，尝试关闭详情弹窗
+- `debug` (bool, 可选，默认 `false`): 保存带格子标注的调试图到 `diagnostics/bag_appraise/`
+- `region` (object, 可选): 背包格子区域（逻辑坐标 `{x,y,width,height}`）。默认自动按屏幕比例定位；只有分辨率/系统字体密度差异很大、自动识别失败时才需要手动指定
+- `columns` (number, 可选，默认 `5`): 每行格子数量
+- `card_height_ratio` (number, 可选，默认 `0.89`): 格子高度 / 行间距，用于推算点击与取色位置
+- 识别方式：先在画面中段横向投影出 5 列等宽格子，再在列跨度内按行投影和行间距校验定位每一行；颜色取格子顶部中央区域的中位数色相判断（红/橙/紫/蓝/灰/未知），未知颜色不会被点击
+- 结束条件：当前画面没有橙/紫/蓝格子，且向下滑动后画面不再变化（已到列表底部）
+- 使用前请先打开 **背包 → 装备** 页；动作会校验格子底色是否统一，不在装备页会直接报错
 
 ## 4. 操作实例
 

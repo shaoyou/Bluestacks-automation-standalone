@@ -1,0 +1,47 @@
+{
+  "device": "127.0.0.1:5555",
+  "screen_size": {
+    "width": 1206,
+    "height": 2622
+  },
+  "jitter_px": 2,
+  "max_runtime_sec": 0,
+  "variables": [
+    {
+      "name": "CLICK_WAIT",
+      "value": "2.5",
+      "note": "点击装备后等待变红的秒数"
+    },
+    {
+      "name": "SCROLL_ROWS",
+      "value": "4",
+      "note": "每次向下滑动滚动几行"
+    },
+    {
+      "name": "MAX_STEPS",
+      "value": "5000",
+      "note": "最多识别/点击/滑动多少次（安全上限）"
+    }
+  ],
+  "actions": [
+    {
+      "type": "log",
+      "message": "背包鉴定开始：请确认已打开 背包 → 装备 页"
+    },
+    {
+      "type": "bag_appraise",
+      "remark": "逐件点击橙/紫/蓝装备，全部变红+灰格后结束",
+      "target_colors": [
+        "orange",
+        "purple",
+        "blue"
+      ],
+      "click_wait_sec": "${CLICK_WAIT}",
+      "scroll_rows": "${SCROLL_ROWS}",
+      "scroll_to_top": true,
+      "max_steps": "${MAX_STEPS}",
+      "debug": true,
+      "max_click_attempts": 2
+    }
+  ]
+}

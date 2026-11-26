@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleStop, Copy, Crosshair, FileCode2, FolderOpen, ImagePlus, LockKeyhole, MonitorSmartphone, PanelsTopLeft, Pencil, Play, Plus, RefreshCw, Save, ScanText, SquareDashedMousePointer, TerminalSquare, Trash2, Upload, X } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleStop, Copy, Crosshair, FileCode2, FolderOpen, ImagePlus, LockKeyhole, MonitorSmartphone, PanelsTopLeft, Pencil, Play, PlayCircle, Plus, RefreshCw, Save, ScanText, SquareDashedMousePointer, TerminalSquare, Trash2, Upload, X } from "lucide-react";
 import { LogActions, LogPanel, PageHeading, PromptDialog, Toggle } from "../components/layout";
 import { newestFirstLog, updateVariables, type RunnerSelection, type ScriptVariable, type SharedProps } from "../app/shared";
 
 type ImageRegion = { x: number; y: number; width: number; height: number };
 type WheelTurn = { id: number; angle: string; seconds: string };
 type CaptureMode = "template" | "region";
+const DEBUG_SNIPPET_PLAN = "__debug_snippet__.json";
 
 function numberValue(value: string, fallback: number) {
   const parsed = Number(value);
@@ -47,6 +48,75 @@ function actionsBounds(source: string) {
     }
   }
   return null;
+}
+
+type ActionRange = { start: number; end: number };
+
+function actionRanges(source: string): ActionRange[] {
+  const bounds = actionsBounds(source);
+  if (!bounds) return [];
+  const ranges: ActionRange[] = [];
+  let objectDepth = 0;
+  let arrayDepth = 0;
+  let actionStart = -1;
+  let quoted = false;
+  let escaped = false;
+  for (let index = bounds.start + 1; index < bounds.end; index += 1) {
+    const character = source[index];
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === "\"") quoted = false;
+      continue;
+    }
+    if (character === "\"") quoted = true;
+    else if (character === "{") {
+      if (objectDepth === 0 && arrayDepth === 0) actionStart = index;
+      objectDepth += 1;
+    } else if (character === "}") {
+      objectDepth -= 1;
+      if (objectDepth === 0 && arrayDepth === 0 && actionStart >= 0) {
+        ranges.push({ start: actionStart, end: index + 1 });
+        actionStart = -1;
+      }
+    } else if (character === "[") arrayDepth += 1;
+    else if (character === "]") arrayDepth -= 1;
+  }
+  return ranges;
+}
+
+function actionRangeAtCursor(source: string, cursor: number) {
+  return actionRanges(source).find((range) => cursor >= range.start && cursor <= range.end) ?? null;
+}
+
+function parseActionSnippet(text: string): Record<string, unknown>[] {
+  let raw = text.trim().replace(/^[\s,]+/, "").replace(/[\s,]+$/, "");
+  if (!raw) throw new Error("选中的内容为空");
+  const parseList = (candidate: string) => {
+    const parsed = JSON.parse(candidate) as unknown;
+    const list = Array.isArray(parsed) ? parsed : [parsed];
+    if (!list.length) throw new Error("选中的内容没有动作");
+    return list.map((item, index) => {
+      if (!item || typeof item !== "object" || Array.isArray(item) || typeof (item as Record<string, unknown>).type !== "string") {
+        throw new Error(`第 ${index + 1} 项不是有效的动作对象（缺少 type）`);
+      }
+      return item as Record<string, unknown>;
+    });
+  };
+  try {
+    return parseList(raw.startsWith("[") ? raw : `[${raw}]`);
+  } catch (error) {
+    // 也允许直接选中 `"actions": [ ... ]` 这一整段。
+    if (error instanceof SyntaxError) {
+      const actionsMatch = /^"?actions"?\s*:\s*([\s\S]+)$/.exec(raw);
+      if (actionsMatch) {
+        try {
+          return parseList(actionsMatch[1]);
+        } catch { /* 使用下面的原始错误 */ }
+      }
+    }
+    throw error;
+  }
 }
 
 function cursorIsInArray(source: string, cursor: number) {
@@ -337,6 +407,42 @@ export function ScriptsPage(props: SharedProps) {
     props.setPickedCoordinates([]);
     void props.startTask("click-picker", [`${props.runtime.root}/record_touch.py`, "--output", `${props.runtime.root}/diagnostics/editor_click_picker.json`, "--adb", props.settings.adbPath, "--device", editorDevice, "--print-clicks-only"]);
   };
+  const runSnippet = async () => {
+    const runtime = props.runtime;
+    if (!runtime || !props.activePlan) return props.setNotice("请先选择计划文件");
+    if (props.running[debugTaskId]) return props.setNotice("调试正在运行，请先停止");
+    const editor = editorRef.current;
+    const start = editor?.selectionStart ?? editorSelection.current.start;
+    const end = editor?.selectionEnd ?? editorSelection.current.end;
+    let actions: Record<string, unknown>[] = [];
+    let scope = "";
+    try {
+      if (end > start) {
+        actions = parseActionSnippet(props.source.slice(start, end));
+        scope = `选中的 ${actions.length} 个动作`;
+      } else {
+        const range = actionRangeAtCursor(props.source, start);
+        if (!range) return props.setNotice("请把光标放在 actions 数组中的动作内，或先选中要运行的代码");
+        actions = parseActionSnippet(props.source.slice(range.start, range.end));
+        scope = `光标所在的 ${actions.length} 个动作`;
+      }
+    } catch (error) {
+      return props.setNotice(`无法运行片段: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    let base: unknown;
+    try { base = JSON.parse(props.source); } catch { return props.setNotice("当前脚本 JSON 无法解析，请先修正语法后再运行片段"); }
+    if (!base || typeof base !== "object" || Array.isArray(base)) return props.setNotice("当前脚本根节点必须是 JSON 对象");
+    const tempPlan = { ...(base as Record<string, unknown>), actions };
+    try {
+      await window.bsManager.plansSave(DEBUG_SNIPPET_PLAN, JSON.stringify(tempPlan, null, 2));
+      const args = [`${runtime.root}/adb_bot.py`, "--plan", `${runtime.plansDir}/${DEBUG_SNIPPET_PLAN}`, "--adb", props.settings.adbPath, "--hdc", props.settings.hdcPath];
+      if (editorDevice) args.push("--device", editorDevice);
+      props.setNotice(editorDevice ? `正在 ${editorDevice} 上运行${scope}` : `未指定设备，将自动选择设备运行${scope}`);
+      await props.startTask(debugTaskId, args);
+    } catch (error) {
+      props.setNotice(`片段调试启动失败: ${String(error)}`);
+    }
+  };
   const debug = () => {
     if (!props.runtime || !props.activePlan) return props.setNotice("请先选择计划文件");
     if (dirty) return props.setNotice("请先保存计划，再进行调试运行");
@@ -346,10 +452,10 @@ export function ScriptsPage(props: SharedProps) {
     void props.startTask(debugTaskId, args);
   };
   return <div className="page scripts-page">
-    <PageHeading title="脚本工作区" detail="编辑 JSON 计划，并从设备取点、裁图和生成常用自动化动作。"><button className="button secondary" onClick={props.createPlan}><Plus size={16} />新建</button><button className="button secondary" title="打开脚本保存的 plans 目录" onClick={() => void window.bsManager.plansOpenFolder().catch((error) => props.setNotice(`打开目录失败: ${String(error)}`))}><FolderOpen size={16} />打开目录</button><button className="button secondary" onClick={() => void props.refreshDevices()}><RefreshCw size={16} />刷新设备</button><span className="heading-debug-group"><label className="heading-select" title="调试运行、截图和取点使用的设备"><span>调试设备</span><select aria-label="调试设备" disabled={props.running[debugTaskId]} value={editorDevice} onChange={(event) => setEditorDevice(event.target.value)}><option value="">自动</option>{props.devices.map((device) => <option key={device}>{device}</option>)}</select></label>{props.running[debugTaskId] ? <button className="button danger" onClick={() => void window.bsManager.stopTask(debugTaskId)}><CircleStop size={16} />停止调试</button> : <button className="button secondary" disabled={!props.activePlan || dirty} title={editorDevice ? `在 ${editorDevice} 上调试运行` : "自动选择第一个可用设备调试运行"} onClick={debug}><Play size={16} />调试运行</button>}</span><button className="button secondary" onClick={() => document.querySelector(".script-log")?.scrollIntoView({ behavior: "smooth", block: "start" })}><TerminalSquare size={16} />日志</button><button className="button primary" disabled={!props.activePlan || !dirty} onClick={() => void props.savePlan()}><Save size={16} />保存</button></PageHeading>
+    <PageHeading title="脚本工作区" detail="编辑 JSON 计划，并从设备取点、裁图和生成常用自动化动作。"><button className="button secondary" onClick={props.createPlan}><Plus size={16} />新建</button><button className="button secondary" title="打开脚本保存的 plans 目录" onClick={() => void window.bsManager.plansOpenFolder().catch((error) => props.setNotice(`打开目录失败: ${String(error)}`))}><FolderOpen size={16} />打开目录</button><button className="button secondary" onClick={() => void props.refreshDevices()}><RefreshCw size={16} />刷新设备</button><span className="heading-debug-group"><label className="heading-select" title="调试运行、截图和取点使用的设备"><span>调试设备</span><select aria-label="调试设备" disabled={props.running[debugTaskId]} value={editorDevice} onChange={(event) => setEditorDevice(event.target.value)}><option value="">自动</option>{props.devices.map((device) => <option key={device}>{device}</option>)}</select></label>{props.running[debugTaskId] ? <button className="button danger" onClick={() => void window.bsManager.stopTask(debugTaskId)}><CircleStop size={16} />停止调试</button> : <><button className="button secondary" disabled={!props.activePlan} title="仅运行选中的动作；未选中时运行光标所在的动作。无需保存，支持 Ctrl/Cmd+Enter" onClick={() => void runSnippet()}><PlayCircle size={16} />运行片段</button><button className="button secondary" disabled={!props.activePlan || dirty} title={editorDevice ? `在 ${editorDevice} 上调试运行` : "自动选择第一个可用设备调试运行"} onClick={debug}><Play size={16} />调试运行</button></>}</span><button className="button secondary" onClick={() => document.querySelector(".script-log")?.scrollIntoView({ behavior: "smooth", block: "start" })}><TerminalSquare size={16} />日志</button><button className="button primary" disabled={!props.activePlan || !dirty} onClick={() => void props.savePlan()}><Save size={16} />保存</button></PageHeading>
     <div className="script-layout">
       <section className="plan-list panel"><div className="panel-title"><span>计划文件</span><button className="icon-button" title="刷新" onClick={() => void refresh()}><RefreshCw size={15} /></button></div><div className="plan-scroll">{props.plans.map((name) => <button key={name} className={`plan-item ${name === props.activePlan ? "selected" : ""}`} onClick={() => void props.loadPlan(name)}><FileCode2 size={16} /><span>{name}</span></button>)}</div><div className="list-footer plan-list-footer"><button className="button quiet" disabled={!props.activePlan || dirty} title={dirty ? "请先保存当前修改" : "重命名当前脚本"} onClick={() => setPlanDialog({ mode: "rename", defaultValue: (props.activePlan ?? "").replace(/\.json$/i, "") })}><Pencil size={14} />重命名</button><button className="button quiet" disabled={!props.activePlan || dirty} title={dirty ? "请先保存当前修改" : "复制当前脚本"} onClick={() => setPlanDialog({ mode: "copy", defaultValue: `${(props.activePlan ?? "").replace(/\.json$/i, "")}_copy` })}><Copy size={14} />复制</button><button className="button quiet danger" disabled={!props.activePlan} onClick={() => void props.deletePlan()}><Trash2 size={15} />删除</button></div></section>
-      <section className="editor-column"><div className="editor-toolbar"><div><span className="eyebrow">JSON 计划</span><strong>{props.activePlan ?? "未选择计划"}</strong>{dirty && <span className="dirty-mark">未保存</span>}</div><button className="button quiet" onClick={() => void window.bsManager.templatesImport().then(async (value) => { if (value) { setTemplates(await window.bsManager.templatesList()); props.setNotice(`模板已导入: ${value}`); } })}><Upload size={15} />导入模板</button></div><textarea ref={editorRef} className="code-editor" aria-label="脚本 JSON 编辑器" spellCheck={false} value={props.source} onSelect={(event) => { editorSelection.current = { start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd }; }} onBlur={(event) => { editorSelection.current = { start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd }; }} onChange={(event) => { editorSelection.current = { start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd }; props.setSource(event.target.value); props.setNotice("正在编辑"); }} /></section>
+      <section className="editor-column"><div className="editor-toolbar"><div><span className="eyebrow">JSON 计划</span><strong>{props.activePlan ?? "未选择计划"}</strong>{dirty && <span className="dirty-mark">未保存</span>}</div><button className="button quiet" onClick={() => void window.bsManager.templatesImport().then(async (value) => { if (value) { setTemplates(await window.bsManager.templatesList()); props.setNotice(`模板已导入: ${value}`); } })}><Upload size={15} />导入模板</button></div><textarea ref={editorRef} className="code-editor" aria-label="脚本 JSON 编辑器" spellCheck={false} value={props.source} onSelect={(event) => { editorSelection.current = { start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd }; }} onBlur={(event) => { editorSelection.current = { start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd }; }} onChange={(event) => { editorSelection.current = { start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd }; props.setSource(event.target.value); props.setNotice("正在编辑"); }} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); void runSnippet(); } }} /></section>
       <aside className="inspector">
         <section className="panel script-device-panel"><div className="panel-title"><span>编辑设备</span><span className={`run-state ${props.running[debugTaskId] ? "live" : ""}`}>{props.running[debugTaskId] ? "调试中" : "待命"}</span></div><div><select aria-label="编辑设备" value={editorDevice} onChange={(event) => setEditorDevice(event.target.value)}><option value="">选择设备</option>{props.devices.map((device) => <option key={device}>{device}</option>)}</select><div className="picker-actions">{!props.running["click-picker"] ? <button className="button secondary" onClick={startPicker}><Crosshair size={15} />开始取点</button> : <button className="button danger" onClick={() => void window.bsManager.stopTask("click-picker")}><CircleStop size={15} />停止取点</button>}<button className="button quiet" disabled={!props.pickedCoordinates.length} onClick={() => props.setPickedCoordinates([])}><Trash2 size={14} />清空</button></div>{props.pickedCoordinates.length > 0 && <div className="coordinate-list">{props.pickedCoordinates.map((point, index) => <div key={`${point.capturedAt}-${index}`}><code>x={point.x}, y={point.y}</code><span><button className="icon-button" title="插入点击" onClick={() => append({ type: "click", x: point.x, y: point.y, remark: `点击(${point.x},${point.y})` })}><Plus size={14} /></button><button className="icon-button" title="设为摇杆中心" onClick={() => { setWheelCenterX(String(point.x)); setWheelBottomInset(String(Math.max(0, captureSize.height - point.y))); }}><Crosshair size={14} /></button><button className="icon-button" title="复制坐标" onClick={() => void navigator.clipboard.writeText(`x=${point.x}, y=${point.y}`)}><Copy size={14} /></button></span></div>)}</div>}</div></section>
         <section className="panel"><div className="panel-title"><span>运行变量</span><button className="icon-button" title="添加变量" onClick={() => setVariables([...variables, { name: "", value: "", note: "" }])}><Plus size={15} /></button></div><div className="variables">{variables.length === 0 && <p className="empty-note">此计划暂无变量。</p>}{variables.map((item, index) => <div className="variable-row" key={`${item.name}-${index}`}><input aria-label="变量名" value={item.name} placeholder="NAME" onChange={(event) => setVariables(variables.map((v, i) => i === index ? { ...v, name: event.target.value } : v))} /><input aria-label="变量值" value={item.value} placeholder="value" onChange={(event) => setVariables(variables.map((v, i) => i === index ? { ...v, value: event.target.value } : v))} /><input aria-label="变量备注" value={item.note} placeholder="备注" onChange={(event) => setVariables(variables.map((v, i) => i === index ? { ...v, note: event.target.value } : v))} /><button className="icon-button" title="删除变量" onClick={() => setVariables(variables.filter((_, i) => i !== index))}><Trash2 size={14} /></button></div>)}</div><button className="button secondary full" onClick={applyVariables}><Save size={15} />应用变量</button></section>

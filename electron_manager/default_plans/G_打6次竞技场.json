@@ -82,7 +82,15 @@
               "type": "click",
               "x": 211,
               "y": 1776,
-              "remark": "点击返回"
+              "remark": "点击返回",
+              "resolution_overrides": [
+                        {
+                            "width": 1216,
+                            "height": 2688,
+                            "x": 134,
+                            "y": 2513
+                        }
+                    ]
             },
             {
               "type": "wait",

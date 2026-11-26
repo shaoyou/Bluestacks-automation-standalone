@@ -3480,27 +3480,108 @@ def execute_if_image(ctx: RunContext, action: Dict[str, Any]) -> None:
         execute_actions(ctx, else_actions)
 
 
+def background_check_match(
+    ctx: RunContext,
+    screenshot: Image.Image,
+    template_paths: List[Path],
+    search_action: Dict[str, Any],
+    minimum_template_size: Tuple[int, int],
+    threshold: float,
+    index: int,
+) -> Optional[Dict[str, Any]]:
+    search = prepare_search_image(ctx, screenshot, search_action, minimum_size=minimum_template_size)
+    search_size = (search.gray.shape[1], search.gray.shape[0])
+    for template_path in template_paths:
+        prepared_variants = get_prepared_template_variants(ctx, template_path, search_action, search_size)
+        match, _candidate_best = find_image_match(
+            search=search,
+            template_variants=prepared_variants,
+            threshold=threshold,
+            index=index,
+            action=search_action,
+        )
+        if match is None:
+            continue
+        return {
+            "template": template_path.name,
+            "template_path": str(template_path),
+            "similarity": float(match["similarity"]),
+            "x": int(round(match["x"])),
+            "y": int(round(match["y"])),
+            "width": int(round(match["width"])),
+            "height": int(round(match["height"])),
+            "center_x": int(round(match["x"] + match["width"] / 2.0)),
+            "center_y": int(round(match["y"] + match["height"] / 2.0)),
+        }
+    return None
+
+
+def background_check_until_profile(
+    ctx: RunContext,
+    action: Dict[str, Any],
+    until_paths: List[Path],
+    interval_sec: float,
+) -> Tuple[float, Dict[str, Any], Tuple[int, int]]:
+    threshold = float(action.get("until_threshold", 0.8))
+    profile_action = dict(action)
+    profile_action["threshold"] = threshold
+    until_region = action.get("until_region")
+    if isinstance(until_region, dict):
+        profile_action["region"] = until_region
+    if "until_scales" in action:
+        profile_action["scales"] = action.get("until_scales")
+    else:
+        for key in ("scales", "scale_min", "scale_max", "scale_step", "fine_scales"):
+            profile_action.pop(key, None)
+    profile_action["match_profile"] = str(action.get("until_match_profile") or "balanced")
+    profile_action["index"] = 0
+    profile_action = prepare_image_match_profile(profile_action, "background_check", threshold, interval_sec)
+    search_action = image_search_action(profile_action, until_paths)
+    minimum_size = required_template_search_size(ctx, until_paths, search_action)
+    return threshold, search_action, minimum_size
+
+
 def background_check_worker(
     ctx: RunContext,
     action: Dict[str, Any],
     template_paths: List[Path],
     stop_event: threading.Event,
+    until_paths: Optional[List[Path]] = None,
 ) -> None:
     """Continuously screenshot+match in a daemon thread so the main plan can
     keep tapping while a template (e.g. the chest magnifier) is being watched.
 
-    Single-shot semantics: exits after the first hit (result stored in
-    BG_CHECK_HIT_KEY) or when stop_event/ctx.stop_at fires. Never raises:
-    transient screenshot failures are logged and retried."""
+    Default single-shot semantics: exits after the first hit (result stored in
+    BG_CHECK_HIT_KEY) or when stop_event/ctx.stop_at fires. Optional mode for
+    deep-linked workflows:
+    - "click": tap every primary hit and keep watching instead of exiting, so
+      the icon can be retried while a battle blocks the popup.
+    - "until_templates": exit only when one of these appears (e.g. the claim or
+      watch-video button), which proves the popup really opened.
+    Never raises: transient failures are logged and retried."""
+    until_paths = list(until_paths or [])
     threshold = float(action.get("threshold", 0.88))
     interval_sec = max(0.2, float(action.get("interval_sec", 0.5)))
     index = int(action.get("index", 0))
+    click_on_hit = bool_value(action.get("click"), default=False)
+    click_interval_sec = max(0.0, float(action.get("click_interval_sec", interval_sec)))
     match_action = prepare_image_match_profile(dict(action), "background_check", threshold, interval_sec)
     search_action = image_search_action(match_action, template_paths)
     minimum_template_size = required_template_search_size(ctx, template_paths, search_action)
+    until_threshold = 0.0
+    until_search_action: Optional[Dict[str, Any]] = None
+    until_minimum_template_size: Optional[Tuple[int, int]] = None
+    if until_paths:
+        until_threshold, until_search_action, until_minimum_template_size = background_check_until_profile(
+            ctx,
+            action,
+            until_paths,
+            interval_sec,
+        )
     remark = action_remark_text(action)
     remark_suffix = f" | remark: {remark}" if remark else ""
     attempt = 0
+    last_click_at = 0.0
     while not stop_event.is_set():
         if ctx.stop_at is not None and time.time() >= ctx.stop_at:
             return
@@ -3513,40 +3594,71 @@ def background_check_worker(
                 return
             continue
         try:
-            search = prepare_search_image(ctx, screenshot, search_action, minimum_size=minimum_template_size)
-            search_size = (search.gray.shape[1], search.gray.shape[0])
-            for template_path in template_paths:
-                prepared_variants = get_prepared_template_variants(ctx, template_path, search_action, search_size)
-                match, _candidate_best = find_image_match(
-                    search=search,
-                    template_variants=prepared_variants,
-                    threshold=threshold,
-                    index=index,
-                    action=search_action,
+            if until_search_action is not None and until_minimum_template_size is not None:
+                until_hit = background_check_match(
+                    ctx,
+                    screenshot,
+                    until_paths,
+                    until_search_action,
+                    until_minimum_template_size,
+                    until_threshold,
+                    0,
                 )
-                if match is None:
-                    continue
-                hit = {
-                    "template": template_path.name,
-                    "similarity": float(match["similarity"]),
-                    "x": int(round(match["x"])),
-                    "y": int(round(match["y"])),
-                    "width": int(round(match["width"])),
-                    "height": int(round(match["height"])),
-                    "center_x": int(round(match["x"] + match["width"] / 2.0)),
-                    "center_y": int(round(match["y"] + match["height"] / 2.0)),
-                }
-                ctx.runtime_values[BG_CHECK_HIT_KEY] = hit
-                log(
-                    f"background_check HIT '{template_path.name}' "
-                    f"box=({hit['x']},{hit['y']})-({hit['x'] + hit['width']},{hit['y'] + hit['height']}) "
-                    f"similarity={hit['similarity']:.3f} (attempt {attempt}){remark_suffix}"
-                )
-                return
-        except Exception as exc:  # noqa: BLE001 - matching must never kill the worker
-            log(f"background_check matching failed (attempt {attempt}): {exc}")
+                if until_hit is not None:
+                    until_hit["kind"] = "until"
+                    ctx.runtime_values[BG_CHECK_HIT_KEY] = until_hit
+                    log(
+                        f"background_check UNTIL '{until_hit['template']}' "
+                        f"box=({until_hit['x']},{until_hit['y']})-"
+                        f"({until_hit['x'] + until_hit['width']},{until_hit['y'] + until_hit['height']}) "
+                        f"similarity={until_hit['similarity']:.3f} -> popup opened "
+                        f"(attempt {attempt}){remark_suffix}"
+                    )
+                    return
+            hit = background_check_match(
+                ctx,
+                screenshot,
+                template_paths,
+                search_action,
+                minimum_template_size,
+                threshold,
+                index,
+            )
+            if hit is not None:
+                if not click_on_hit and not until_paths:
+                    ctx.runtime_values[BG_CHECK_HIT_KEY] = hit
+                    log(
+                        f"background_check HIT '{hit['template']}' "
+                        f"box=({hit['x']},{hit['y']})-({hit['x'] + hit['width']},{hit['y'] + hit['height']}) "
+                        f"similarity={hit['similarity']:.3f} (attempt {attempt}){remark_suffix}"
+                    )
+                    return
+                if click_on_hit:
+                    now = time.time()
+                    if now - last_click_at >= click_interval_sec:
+                        tap_x, tap_y = tap_absolute(ctx, hit["center_x"], hit["center_y"])
+                        last_click_at = time.time()
+                        log(
+                            f"background_check CLICK '{hit['template']}' "
+                            f"box=({hit['x']},{hit['y']})-({hit['x'] + hit['width']},{hit['y'] + hit['height']}) "
+                            f"similarity={hit['similarity']:.3f} -> tap ({tap_x}, {tap_y}) "
+                            f"(attempt {attempt}){remark_suffix}"
+                        )
+        except Exception as exc:  # noqa: BLE001 - matching/clicking must never kill the worker
+            log(f"background_check cycle failed (attempt {attempt}): {exc}")
         if stop_event.wait(interval_sec):
             return
+
+
+def resolve_background_check_until_paths(ctx: RunContext, action: Dict[str, Any]) -> List[Path]:
+    raw_templates = action.get("until_templates")
+    if raw_templates is None:
+        return []
+    if not isinstance(raw_templates, list) or not raw_templates:
+        raise BotError("background_check 'until_templates' must be a non-empty array")
+    until_action = dict(action)
+    until_action["templates"] = raw_templates
+    return resolve_action_template_paths(ctx, until_action, "background_check")
 
 
 def start_background_check(ctx: RunContext, action: Dict[str, Any]) -> None:
@@ -3559,22 +3671,28 @@ def start_background_check(ctx: RunContext, action: Dict[str, Any]) -> None:
     template_paths = resolve_action_template_paths(ctx, action, "background_check")
     if not template_paths:
         raise BotError("background_check requires at least one template")
+    until_paths = resolve_background_check_until_paths(ctx, action)
     stop_event = threading.Event()
     ctx.runtime_values[BG_CHECK_STOP_KEY] = stop_event
     worker = threading.Thread(
         target=background_check_worker,
-        args=(ctx, dict(action), template_paths, stop_event),
+        args=(ctx, dict(action), template_paths, stop_event, until_paths),
         name="background-check",
         daemon=True,
     )
     ctx.runtime_values[BG_CHECK_THREAD_KEY] = worker
     worker.start()
-    log(with_action_remark(
-        f"background_check worker started ({len(template_paths)} template(s), "
-        f"threshold={float(action.get('threshold', 0.88)):.3f}, "
-        f"interval={max(0.2, float(action.get('interval_sec', 0.5))):.1f}s)",
-        action,
-    ))
+    mode_parts = [
+        f"{len(template_paths)} template(s)",
+        f"threshold={float(action.get('threshold', 0.88)):.3f}",
+        f"interval={max(0.2, float(action.get('interval_sec', 0.5))):.1f}s",
+    ]
+    if bool_value(action.get("click")):
+        click_interval_sec = max(0.2, float(action.get("click_interval_sec", action.get("interval_sec", 0.5))))
+        mode_parts.append(f"click=True cooldown={click_interval_sec:.1f}s")
+    if until_paths:
+        mode_parts.append(f"until={len(until_paths)} template(s)")
+    log(with_action_remark(f"background_check worker started ({', '.join(mode_parts)})", action))
 
 
 def execute_background_check(ctx: RunContext, action: Dict[str, Any]) -> None:
@@ -4661,6 +4779,634 @@ def execute_patrol(ctx: RunContext, action: Dict[str, Any]) -> None:
         count += 1
 
 
+# ---------------------------------------------------------------------------
+# bag_appraise: classify bag equipment by cell background color, tap each
+# unidentified item, and stop once only red items and gray empty cells remain.
+# ---------------------------------------------------------------------------
+
+BAG_APPRAISE_DEFAULT_TARGETS = ("orange", "purple", "blue")
+BAG_APPRAISE_COLOR_RULES: Dict[str, Dict[str, Any]] = {
+    "red": {"hue_ranges": ((338.0, 360.0), (0.0, 16.0)), "min_saturation": 0.45, "min_value": 0.25},
+    "orange": {"hue_ranges": ((17.0, 50.0),), "min_saturation": 0.55, "min_value": 0.40},
+    "purple": {"hue_ranges": ((280.0, 330.0),), "min_saturation": 0.45, "min_value": 0.30},
+    "blue": {"hue_ranges": ((180.0, 235.0),), "min_saturation": 0.45, "min_value": 0.30},
+}
+BAG_APPRAISE_STALL_DIFF = 1.0
+
+
+def bag_rgb_to_hsv(rgb: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """RGB(0-255) -> HSV with hue in degrees and saturation/value in 0..1."""
+    values = rgb.astype(np.float32) / 255.0
+    max_channel = values.max(axis=2)
+    min_channel = values.min(axis=2)
+    delta = max_channel - min_channel
+    saturation = np.where(max_channel > 1e-6, delta / np.maximum(max_channel, 1e-6), 0.0)
+    hue = np.zeros_like(max_channel)
+    nonzero = delta > 1e-6
+    red_channel = values[..., 0]
+    green_channel = values[..., 1]
+    blue_channel = values[..., 2]
+    red_max = nonzero & (max_channel == red_channel)
+    green_max = nonzero & ~red_max & (max_channel == green_channel)
+    blue_max = nonzero & ~red_max & ~green_max
+    hue[red_max] = ((green_channel[red_max] - blue_channel[red_max]) / delta[red_max]) % 6.0
+    hue[green_max] = (blue_channel[green_max] - red_channel[green_max]) / delta[green_max] + 2.0
+    hue[blue_max] = (red_channel[blue_max] - green_channel[blue_max]) / delta[blue_max] + 4.0
+    return hue * 60.0, saturation, max_channel
+
+
+def bag_projection_runs(
+    projection: np.ndarray,
+    threshold: float,
+    min_length: int,
+    max_gap: int,
+) -> List[Tuple[int, int]]:
+    """Merge contiguous above-threshold spans of a 1-D projection into runs."""
+    indexes = np.flatnonzero(projection >= threshold)
+    if indexes.size == 0:
+        return []
+    runs: List[Tuple[int, int]] = []
+    start = previous = int(indexes[0])
+    for raw_index in indexes[1:]:
+        index = int(raw_index)
+        if index - previous > max_gap:
+            if previous - start + 1 >= min_length:
+                runs.append((start, previous))
+            start = index
+        previous = index
+    if previous - start + 1 >= min_length:
+        runs.append((start, previous))
+    return runs
+
+
+def bag_cell_pixel_mask(rgb: np.ndarray, action: Dict[str, Any]) -> np.ndarray:
+    """Mask quality-colored card pixels and gray empty cells to locate the grid."""
+    _, saturation, value = bag_rgb_to_hsv(rgb)
+    colored = (
+        (saturation > float(action.get("cell_min_saturation", 0.45)))
+        & (value > float(action.get("cell_min_value", 0.30)))
+    )
+    empty = (
+        (saturation < float(action.get("empty_max_saturation", 0.32)))
+        & (value > float(action.get("empty_min_value", 0.42)))
+        & (value < float(action.get("empty_max_value", 0.82)))
+    )
+    return colored | empty
+
+
+def bag_classify_patch(patch: np.ndarray, action: Dict[str, Any]) -> Tuple[str, float]:
+    """Classify a cell from its median top-strip color; returns (color, std)."""
+    if patch.size == 0:
+        return "unknown", 0.0
+    flat_pixels = patch.reshape(-1, 3)
+    median = np.median(flat_pixels, axis=0).astype(np.float32).reshape(1, 1, 3)
+    hue, saturation, value = bag_rgb_to_hsv(median)
+    hue_value = float(hue[0, 0])
+    saturation_value = float(saturation[0, 0])
+    value_value = float(value[0, 0])
+    flatness = float(flat_pixels.std(axis=0).mean())
+    empty_max_saturation = float(action.get("empty_max_saturation", 0.32))
+    empty_min_value = float(action.get("empty_min_value", 0.42))
+    empty_max_value = float(action.get("empty_max_value", 0.82))
+    if (
+        saturation_value <= empty_max_saturation
+        and empty_min_value <= value_value <= empty_max_value
+    ):
+        return "gray", flatness
+    for name, rule in BAG_APPRAISE_COLOR_RULES.items():
+        if saturation_value < float(rule["min_saturation"]) or value_value < float(rule["min_value"]):
+            continue
+        if any(low <= hue_value <= high for low, high in rule["hue_ranges"]):
+            return name, flatness
+    return "unknown", flatness
+
+
+def bag_search_box(
+    ctx: RunContext,
+    action: Dict[str, Any],
+    image_size: Tuple[int, int],
+) -> Optional[Dict[str, int]]:
+    raw_region = action.get("region")
+    if not isinstance(raw_region, dict):
+        return None
+    return map_logical_region(ctx, raw_region, image_size, name="bag_appraise region")
+
+
+def bag_analyze_screen(
+    ctx: RunContext,
+    screenshot: Image.Image,
+    action: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Locate the 5-column bag grid and classify every cell background.
+
+    Columns come from a horizontal projection over the middle screen band;
+    rows come from a vertical projection across the detected columns with a
+    row-height filter, so any scroll offset (snapped or not) is supported.
+    """
+    rgb = np.asarray(screenshot.convert("RGB"), dtype=np.float32)
+    height, width = rgb.shape[:2]
+    if width < 160 or height < 320:
+        return None
+    mask = bag_cell_pixel_mask(rgb, action)
+
+    region = bag_search_box(ctx, action, (width, height))
+    if region is not None:
+        band_left = region["x"]
+        band_top = region["y"]
+        band_right = region["x"] + region["width"]
+        band_bottom = region["y"] + region["height"]
+        row_top, row_bottom = band_top, band_bottom
+    else:
+        band_left = int(width * 0.03)
+        band_top = int(height * 0.25)
+        band_right = int(width * 0.97)
+        band_bottom = int(height * 0.65)
+        row_top, row_bottom = 0, height
+    band_left = max(0, min(width - 1, band_left))
+    band_right = max(band_left + 1, min(width, band_right))
+    band_top = max(0, min(height - 1, band_top))
+    band_bottom = max(band_top + 1, min(height, band_bottom))
+
+    column_projection = mask[band_top:band_bottom, band_left:band_right].sum(axis=0)
+    column_runs = bag_projection_runs(
+        column_projection,
+        threshold=max(1.0, (band_bottom - band_top) * 0.20),
+        min_length=max(8, int(width * 0.05)),
+        max_gap=max(2, int(round(width * 0.005))),
+    )
+    expected_columns = max(1, int(action.get("columns", 5)))
+    if expected_columns < 2:
+        return None
+    width_min = width * 0.07
+    width_max = width * 0.25
+    candidates = [
+        (band_left + start, band_left + end)
+        for start, end in column_runs
+        if width_min <= end - start + 1 <= width_max
+    ]
+    if len(candidates) < expected_columns:
+        return None
+
+    best_group: Optional[Tuple[float, List[Tuple[int, int]], float]] = None
+    for index in range(0, len(candidates) - expected_columns + 1):
+        group = candidates[index : index + expected_columns]
+        centers = [(left + right) / 2.0 for left, right in group]
+        gaps = [centers[i + 1] - centers[i] for i in range(expected_columns - 1)]
+        if any(gap <= 0 for gap in gaps):
+            continue
+        mean_gap = sum(gaps) / len(gaps)
+        if not (width * 0.07 <= mean_gap <= width * 0.30):
+            continue
+        spacing_error = sum(abs(gap - mean_gap) for gap in gaps)
+        coverage = min(
+            float(mask[band_top:band_bottom, left:right].sum(axis=0).max()) / max(1, band_bottom - band_top)
+            for left, right in group
+        )
+        score = spacing_error + max(0.0, 0.60 - coverage) * 80.0
+        if best_group is None or score < best_group[0]:
+            best_group = (score, group, coverage)
+    if best_group is None:
+        return None
+
+    group = best_group[1]
+    centers_array = np.array([(left + right) / 2.0 for left, right in group], dtype=np.float64)
+    index_array = np.arange(expected_columns, dtype=np.float64)
+    slope, intercept = np.polyfit(index_array, centers_array, 1)
+    if not np.isfinite(slope) or slope <= 0:
+        return None
+    pitch_x = float(slope)
+    column_centers = [float(intercept + slope * i) for i in range(expected_columns)]
+
+    row_left = int(group[0][0])
+    row_right = int(group[-1][1])
+    row_projection = mask[row_top:row_bottom, row_left:row_right].sum(axis=1)
+    row_runs = bag_projection_runs(
+        row_projection,
+        threshold=max(1.0, (row_right - row_left) * 0.45),
+        min_length=20,
+        max_gap=max(2, int(round(width * 0.005))),
+    )
+    if len(row_runs) < 2:
+        return None
+    row_heights = {row_top + start: end - start + 1 for start, end in row_runs}
+    starts = sorted(row_heights)
+
+    diffs = [
+        later - earlier
+        for earlier, later in zip(starts, starts[1:])
+        if 0 < later - earlier <= max(400, int(height * 0.20))
+    ]
+    if not diffs:
+        return None
+    best_pitch: Optional[Tuple[int, int]] = None
+    for candidate_pitch in sorted(set(diffs)):
+        if candidate_pitch < 30:
+            continue
+        cluster_size = len([value for value in diffs if abs(value - candidate_pitch) <= 12])
+        if cluster_size < 2:
+            continue
+        key = (cluster_size, candidate_pitch)
+        if best_pitch is None or key > best_pitch:
+            best_pitch = key
+    if best_pitch is None:
+        return None
+    pitch_y = float(np.median([value for value in diffs if abs(value - best_pitch[1]) <= 12]))
+    tolerance = max(5.0, pitch_y * 0.06)
+
+    best_chain: List[int] = []
+    for seed in starts:
+        chain = [seed]
+        for next_start in starts:
+            if next_start <= chain[-1]:
+                continue
+            steps = (next_start - chain[-1]) / pitch_y
+            whole_steps = int(round(steps))
+            if 1 <= whole_steps <= 3 and abs(steps - whole_steps) * pitch_y <= tolerance:
+                chain.append(next_start)
+        if len(chain) > len(best_chain):
+            best_chain = chain
+
+    card_height = pitch_y * float(action.get("card_height_ratio", 0.89))
+    row_starts = [
+        start
+        for start in best_chain
+        if row_heights.get(start, 0) >= pitch_y * 0.55
+    ]
+    if len(row_starts) < 2:
+        return None
+
+    patch_half_width = max(5, int(round(pitch_x * 0.16)))
+    patch_top = max(0, int(round(card_height * 0.08)))
+    patch_bottom = max(patch_top + 2, int(round(card_height * 0.18)))
+    click_offset = max(2, int(round(card_height * 0.10)))
+    rows: List[Dict[str, Any]] = []
+    flatness_values: List[float] = []
+    for start in row_starts:
+        cells: List[Dict[str, Any]] = []
+        for column_index, center in enumerate(column_centers):
+            center_x = int(round(center))
+            left = max(0, min(width - 1, center_x - patch_half_width))
+            right = max(left + 1, min(width, center_x + patch_half_width))
+            top = max(0, min(height - 1, start + patch_top))
+            bottom = max(top + 1, min(height, start + patch_bottom))
+            color, flatness = bag_classify_patch(rgb[top:bottom, left:right], action)
+            flatness_values.append(flatness)
+            cells.append(
+                {
+                    "column": column_index,
+                    "color": color,
+                    "x": center_x,
+                    "y": min(height - 1, start + click_offset),
+                }
+            )
+        rows.append({"start": start, "cells": cells})
+
+    return {
+        "rows": rows,
+        "columns": column_centers,
+        "pitch_x": pitch_x,
+        "pitch_y": pitch_y,
+        "card_height": card_height,
+        "median_flatness": float(np.median(flatness_values)) if flatness_values else 0.0,
+        "coverage": float(best_group[2]),
+    }
+
+
+def bag_save_debug_image(
+    ctx: RunContext,
+    screenshot: Image.Image,
+    layout: Dict[str, Any],
+    action: Dict[str, Any],
+    tag: str,
+) -> None:
+    directory = persistent_runtime_root(ctx) / "diagnostics" / "bag_appraise"
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        image = screenshot.copy()
+        draw = ImageDraw.Draw(image)
+        palette = {
+            "red": (255, 80, 80),
+            "orange": (255, 170, 40),
+            "purple": (230, 90, 230),
+            "blue": (80, 160, 255),
+            "gray": (200, 200, 200),
+            "unknown": (255, 255, 0),
+        }
+        half_width = layout["pitch_x"] * 0.45
+        cell_height = layout["card_height"] * 0.55
+        for row in layout["rows"]:
+            for cell in row["cells"]:
+                box = (
+                    int(round(cell["x"] - half_width)),
+                    int(row["start"]),
+                    int(round(cell["x"] + half_width)),
+                    int(round(row["start"] + cell_height)),
+                )
+                draw.rectangle(box, outline=palette.get(cell["color"], (255, 255, 255)), width=3)
+                draw.text((box[0] + 5, box[1] + 3), cell["color"][:1].upper(), fill=(0, 0, 0))
+        path = directory / f"{dt.datetime.now().strftime('%Y%m%d-%H%M%S-%f')}_{sanitize_file_component(tag)}.png"
+        image.save(path)
+        log(with_action_remark(f"bag_appraise debug image saved: {path}", action))
+    except OSError as exc:
+        log(f"bag_appraise could not save debug image: {exc}")
+
+
+def bag_view_signature(
+    screenshot: Image.Image,
+    layout: Optional[Dict[str, Any]],
+) -> Optional[np.ndarray]:
+    if not layout or not layout["rows"]:
+        return None
+    rows = layout["rows"]
+    columns = layout["columns"]
+    half = max(1, int(round(layout["pitch_x"] * 0.5)))
+    left = max(0, int(round(columns[0] - half)))
+    right = min(screenshot.size[0], int(round(columns[-1] + half)))
+    top = max(0, int(rows[0]["start"]))
+    bottom = min(screenshot.size[1], int(round(rows[-1]["start"] + layout["card_height"])))
+    if right - left < 8 or bottom - top < 8:
+        return None
+    crop = screenshot.crop((left, top, right, bottom)).convert("L").resize((24, 32), Image.Resampling.BILINEAR)
+    return np.asarray(crop, dtype=np.float32)
+
+
+def bag_signature_distance(left: Optional[np.ndarray], right: Optional[np.ndarray]) -> float:
+    if left is None or right is None or left.shape != right.shape:
+        return float("inf")
+    return float(np.mean(np.abs(left - right)))
+
+
+def bag_color_signature(layout: Optional[Dict[str, Any]]) -> tuple:
+    if not layout or not layout["rows"]:
+        return ()
+    return tuple(
+        (int(row["start"]) // 8, "".join(cell["color"] for cell in row["cells"]))
+        for row in layout["rows"]
+    )
+
+
+def bag_view_changed(
+    before_layout: Optional[Dict[str, Any]],
+    before_image: Optional[np.ndarray],
+    after_layout: Optional[Dict[str, Any]],
+    after_image: Optional[np.ndarray],
+    threshold: float,
+) -> bool:
+    """True when the bag visibly changed (color grid first, then pixels)."""
+    if before_layout is None or after_layout is None:
+        return True
+    if bag_color_signature(before_layout) != bag_color_signature(after_layout):
+        return True
+    return bag_signature_distance(before_image, after_image) >= threshold
+
+
+def bag_cell_key(cell: Dict[str, Any]) -> Tuple[int, int]:
+    return int(cell["column"]), int(cell["y"]) // 8
+
+
+def bag_pick_target(
+    layout: Dict[str, Any],
+    target_colors: set,
+    failed_attempts: Dict[Tuple[int, int], int],
+    max_attempts: int,
+) -> Optional[Dict[str, Any]]:
+    """Return the top-most, left-most unidentified cell, skipping dead ones."""
+    for row in layout["rows"]:
+        for cell in row["cells"]:
+            if cell["color"] not in target_colors:
+                continue
+            if failed_attempts.get(bag_cell_key(cell), 0) >= max_attempts:
+                continue
+            return cell
+    return None
+
+
+def bag_swipe_device(
+    ctx: RunContext,
+    x: int,
+    y1: int,
+    y2: int,
+    duration_ms: int,
+    action: Dict[str, Any],
+    note: str,
+) -> None:
+    if ctx.dst_screen_w > 0:
+        x = max(0, min(ctx.dst_screen_w - 1, x))
+    if ctx.dst_screen_h > 0:
+        y1 = max(0, min(ctx.dst_screen_h - 1, y1))
+        y2 = max(0, min(ctx.dst_screen_h - 1, y2))
+    x = apply_jitter(x, ctx.jitter)
+    y1 = apply_jitter(y1, ctx.jitter)
+    y2 = apply_jitter(y2, ctx.jitter)
+    adb_shell(ctx, ["input", "swipe", str(x), str(y1), str(x), str(y2), str(duration_ms)])
+    log(with_action_remark(f"{note} ({x}, {y1}) -> ({x}, {y2}), {duration_ms}ms", action))
+
+
+def bag_scroll_once(
+    ctx: RunContext,
+    layout: Dict[str, Any],
+    action: Dict[str, Any],
+    *,
+    toward_top: bool,
+) -> bool:
+    rows = layout["rows"]
+    if len(rows) < 2:
+        return False
+    pitch = layout["pitch_y"]
+    card_height = layout["card_height"]
+    distance = int(round(pitch * max(1, int(action.get("scroll_rows", 4)))))
+    columns = layout["columns"]
+    x = int(round(columns[len(columns) // 2]))
+    if toward_top:
+        y1 = int(round(rows[0]["start"] + card_height * 0.45))
+        y2 = min(int(round(rows[-1]["start"] + card_height * 0.55)), y1 + distance)
+        note = "Swipe bag list to top"
+    else:
+        y1 = int(round(rows[-2]["start"] + card_height * 0.55))
+        y2 = max(int(round(rows[0]["start"] + card_height * 0.45)), y1 - distance)
+        note = "Swipe bag list down"
+    if abs(y2 - y1) < pitch * 0.5:
+        return False
+    bag_swipe_device(
+        ctx,
+        x,
+        y1,
+        y2,
+        max(100, int(action.get("scroll_duration_ms", 700))),
+        action,
+        note,
+    )
+    return True
+
+
+def execute_bag_appraise(ctx: RunContext, action: Dict[str, Any]) -> None:
+    raw_targets = action.get("target_colors", list(BAG_APPRAISE_DEFAULT_TARGETS))
+    if not isinstance(raw_targets, list) or not raw_targets:
+        raise BotError("bag_appraise 'target_colors' must be a non-empty array")
+    target_colors = {str(item).strip().lower() for item in raw_targets}
+    unknown_targets = target_colors - set(BAG_APPRAISE_COLOR_RULES)
+    if unknown_targets:
+        raise BotError(f"bag_appraise unknown target color(s): {', '.join(sorted(unknown_targets))}")
+
+    click_wait_sec = max(0.1, float(action.get("click_wait_sec", 2.5)))
+    scroll_wait_sec = max(0.1, float(action.get("scroll_wait_sec", 1.0)))
+    max_steps = max(0, int(action.get("max_steps", 5000)))
+    max_clicks = max(0, int(action.get("max_clicks", 0)))
+    scroll_to_top = bool_value(action.get("scroll_to_top"), default=False)
+    debug = bool_value(action.get("debug"), default=False)
+    max_patch_std = float(action.get("max_patch_std", 10.0))
+    stall_diff = max(0.1, float(action.get("stall_diff", BAG_APPRAISE_STALL_DIFF)))
+    recover_with_back = bool_value(action.get("recover_with_back"), default=True)
+
+    if ctx.dry_run:
+        log(with_action_remark(
+            f"[DRY-RUN] bag_appraise target_colors={sorted(target_colors)} click_wait={click_wait_sec:.1f}s",
+            action,
+        ))
+        return
+
+    screenshot = capture_device_screenshot(ctx)
+    layout = bag_analyze_screen(ctx, screenshot, action)
+    if layout is None:
+        raise BotError(
+            "bag_appraise could not locate the 5-column bag grid; open the equipment bag page first "
+            "(or set 'region' to the grid area)"
+        )
+    if layout["median_flatness"] > max_patch_std:
+        if debug:
+            bag_save_debug_image(ctx, screenshot, layout, action, "wrong_tab")
+        raise BotError(
+            "bag_appraise cell backgrounds are not uniform; this does not look like the equipment bag page "
+            f"(median_patch_std={layout['median_flatness']:.1f}, limit={max_patch_std:g})"
+        )
+    log(with_action_remark(
+        f"bag_appraise start: columns={len(layout['columns'])} rows={len(layout['rows'])} "
+        f"pitch={layout['pitch_y']:.0f}px patch_std={layout['median_flatness']:.1f} "
+        f"targets={sorted(target_colors)}",
+        action,
+    ))
+    if debug:
+        bag_save_debug_image(ctx, screenshot, layout, action, "start")
+
+    if scroll_to_top:
+        for _ in range(max(1, int(action.get("scroll_to_top_swipes", 8)))):
+            check_stop(ctx)
+            before_layout = layout
+            before_signature = bag_view_signature(screenshot, layout)
+            if not bag_scroll_once(ctx, layout, action, toward_top=True):
+                break
+            time.sleep(scroll_wait_sec)
+            new_screenshot = capture_device_screenshot(ctx)
+            new_layout = bag_analyze_screen(ctx, new_screenshot, action)
+            if new_layout is None:
+                break
+            after_signature = bag_view_signature(new_screenshot, new_layout)
+            screenshot, layout = new_screenshot, new_layout
+            if not bag_view_changed(before_layout, before_signature, new_layout, after_signature, stall_diff):
+                break
+
+    clicks = 0
+    scrolls = 0
+    steps = 0
+    misses = 0
+    scroll_stalls = 0
+    max_attempts = max(1, int(action.get("max_click_attempts", 2)))
+    failed_attempts: Dict[Tuple[int, int], int] = {}
+    while True:
+        check_stop(ctx)
+        steps += 1
+        if max_steps and steps > max_steps:
+            log(with_action_remark(f"bag_appraise reached max_steps={max_steps}, stopping", action))
+            break
+        if layout is None:
+            misses += 1
+            if misses >= 3:
+                raise BotError(
+                    "bag_appraise lost the bag grid (a detail dialog may be open); check the game screen"
+                )
+            log(f"bag_appraise: bag grid not found (attempt {misses}), retrying ...")
+            if misses >= 2 and recover_with_back:
+                log("bag_appraise: sending BACK to dismiss a possible dialog")
+                adb_shell(ctx, ["input", "keyevent", "4"])
+                time.sleep(0.6)
+            time.sleep(0.9)
+            screenshot = capture_device_screenshot(ctx)
+            layout = bag_analyze_screen(ctx, screenshot, action)
+            continue
+        misses = 0
+
+        cell = bag_pick_target(layout, target_colors, failed_attempts, max_attempts)
+        if cell is not None:
+            scroll_stalls = 0
+            before_signature = bag_view_signature(screenshot, layout)
+            x, y = tap_absolute(ctx, int(cell["x"]), int(cell["y"]))
+            clicks += 1
+            log(with_action_remark(
+                f"bag_appraise click {cell['color']} col={int(cell['column']) + 1} ({x}, {y}) "
+                f"[{clicks}]",
+                action,
+            ))
+            if max_clicks and clicks >= max_clicks:
+                log(with_action_remark(f"bag_appraise reached max_clicks={max_clicks}, stopping", action))
+                break
+            time.sleep(click_wait_sec)
+            check_stop(ctx)
+            screenshot = capture_device_screenshot(ctx)
+            new_layout = bag_analyze_screen(ctx, screenshot, action)
+            if new_layout is not None:
+                after_signature = bag_view_signature(screenshot, new_layout)
+                if not bag_view_changed(layout, before_signature, new_layout, after_signature, stall_diff):
+                    key = bag_cell_key(cell)
+                    failed_attempts[key] = failed_attempts.get(key, 0) + 1
+                    if failed_attempts[key] >= max_attempts:
+                        log(f"bag_appraise: click had no effect after {max_attempts} attempt(s); skipping this cell")
+                    else:
+                        log("bag_appraise: click had no effect yet; retrying this cell")
+                else:
+                    failed_attempts.clear()
+            layout = new_layout
+            continue
+
+        before_layout = layout
+        before_signature = bag_view_signature(screenshot, layout)
+        if not bag_scroll_once(ctx, layout, action, toward_top=False):
+            log(with_action_remark("bag_appraise: grid is too small to scroll, finish", action))
+            break
+        scrolls += 1
+        time.sleep(scroll_wait_sec)
+        check_stop(ctx)
+        screenshot = capture_device_screenshot(ctx)
+        new_layout = bag_analyze_screen(ctx, screenshot, action)
+        if new_layout is None:
+            layout = new_layout
+            continue
+        after_signature = bag_view_signature(screenshot, new_layout)
+        if not bag_view_changed(before_layout, before_signature, new_layout, after_signature, stall_diff):
+            scroll_stalls += 1
+            layout = new_layout
+            if scroll_stalls < 2:
+                log("bag_appraise: scroll had no visible effect; retrying once")
+                continue
+            log(with_action_remark(
+                "bag_appraise: reached the list bottom, no orange/purple/blue left",
+                action,
+            ))
+            break
+        scroll_stalls = 0
+        failed_attempts.clear()
+        layout = new_layout
+
+    counts: Dict[str, int] = {}
+    if layout is not None:
+        for row in layout["rows"]:
+            for cell in row["cells"]:
+                counts[cell["color"]] = counts.get(cell["color"], 0) + 1
+    log(with_action_remark(
+        f"bag_appraise finished: clicks={clicks} scrolls={scrolls} last_view={counts or 'n/a'}",
+        action,
+    ))
+
+
 def execute_action(ctx: RunContext, action: Dict[str, Any]) -> None:
     check_stop(ctx)
     action_type = action.get("type")
@@ -4736,6 +5482,8 @@ def execute_action(ctx: RunContext, action: Dict[str, Any]) -> None:
         execute_if_background_hit(ctx, action)
     elif action_type == "patrol":
         execute_patrol(ctx, action)
+    elif action_type == "bag_appraise":
+        execute_bag_appraise(ctx, action)
     else:
         raise BotError(f"Unknown action type: {action_type}")
 

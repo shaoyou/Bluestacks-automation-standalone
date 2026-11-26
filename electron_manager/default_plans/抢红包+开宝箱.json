@@ -3,21 +3,42 @@
     {
       "type": "loop",
       "count": -1,
-      "remark": "抢红包+开宝箱主循环：后台线程持续识别放大镜(抢红包全程不停)→命中后轮间中断抢红包→立即点击→0.5秒后验证弹框→开箱/战斗重试",
+      "remark": "抢红包+开宝箱主循环：后台线程持续识别放大镜→命中立即点击但抢红包继续(战斗期弹框打不开会反复重试)→直到领取/看视频按钮真正出现才在轮间中断→先停抢红包再点按钮、等2秒关弹框→恢复抢红包",
       "actions": [
         {
           "type": "background_check",
           "command": "start",
-          "remark": "启动后台识别线程：持续截图匹配放大镜(区域 x=0 起，每轮约1.5-2秒)，命中即置标志并退出；幂等。scales限0.95-1.05(真机误报均为0.75x缩放变体)+阈值0.94(真实0.962-0.990 vs 误报最高0.895)",
+          "remark": "启动后台识别线程：放大镜命中即点击并继续抢红包(战斗期弹框打不开按click_interval持续重试)；同时监控弹框里的领取/看视频按钮，只有按钮真正出现(弹框已打开)才置命中标志并退出。scales限0.95-1.05+阈值0.94防误报；until阈值0.8覆盖弹框按钮",
           "templates": [
             "../image_templates/bl_baoxiaoxing_1080x1920.png",
             "../image_templates/bl_baoxiaoxing_emulator.png"
           ],
           "threshold": 0.94,
           "interval_sec": 0.2,
+          "click": true,
+          "click_interval_sec": 1,
+          "until_templates": [
+            "../image_templates/baoxiang_claim.png",
+            "../image_templates/baoxiang_claim_emulator.png",
+            "../image_templates/baoxiang_video_confirm.png",
+            "../image_templates/baoxiang_video_confirm_compact.png"
+          ],
+          "until_threshold": 0.8,
+          "until_match_profile": "accurate",
+          "until_scales": [
+            0.95,
+            1,
+            1.05
+          ],
+          "until_region": {
+            "x": 311,
+            "y": 1090,
+            "width": 462,
+            "height": 280
+          },
           "scales": [
             0.95,
-            1.0,
+            1,
             1.05
           ],
           "region": {
@@ -31,7 +52,7 @@
           "type": "grab_loop",
           "count": 10,
           "watch_hit": true,
-          "remark": "抢红包爆发期(10轮约9秒)，全程不被识别打断；后台命中则在轮间立即中断(轮边界中断保证红包弹窗已完整关闭)。",
+          "remark": "抢红包爆发期(10轮约9秒)：识别并点击放大镜不再打断本循环，抢红包持续进行；只有后台确认领取/看视频按钮出现(弹框真正打开)后才在轮边界中断，保证停手时弹框已完整打开",
           "actions": [
             {
               "remark": "点击左下角红包",
@@ -81,42 +102,8 @@
         },
         {
           "type": "if_background_hit",
-          "remark": "后台命中→点击放大镜并验证弹框；未命中→回到顶部(后台线程继续识别)",
+          "remark": "后台已确认领取/看视频按钮出现→抢红包已在轮边界停下；点按钮后等2秒关弹框(看视频为两层弹框，各等2秒)，随后恢复抢红包；若按钮在中断后消失则返回继续抢红包",
           "then_actions": [
-            {
-              "type": "find_image_click",
-              "remark": "识别到放大镜立即点击（区域 x=0 起）(同时停止抢红包)；点击前重新截图二次确认(0.94+scales限0.95-1.05防误点)，若战斗已开始图标消失则不点",
-              "templates": [
-                "../image_templates/bl_baoxiaoxing_1080x1920.png",
-                "../image_templates/bl_baoxiaoxing.png",
-                "../image_templates/bl_baoxiaoxing_emulator.png",
-                "../image_templates/bl_baoxiaoxing_harmony_1260x2720.png"
-              ],
-              "threshold": 0.94,
-              "timeout_sec": 3,
-              "interval_sec": 0.3,
-              "save_debug": true,
-              "scales": [
-                0.95,
-                1.0,
-                1.05
-              ],
-              "region": {
-                "x": 0,
-                "y": 378,
-                "width": 965,
-                "height": 1191
-              }
-            },
-            {
-              "type": "wait",
-              "seconds": 1,
-              "remark": "放大镜已点击，等待确定弹框"
-            },
-            {
-              "type": "log",
-              "message": "开始识别确认按钮，优先绿色领取按钮，其次视频确认图标"
-            },
             {
               "type": "if_image",
               "templates": [
@@ -125,53 +112,38 @@
               ],
               "region": {
                 "x": 311,
-                "y": 1107,
+                "y": 1090,
                 "width": 462,
-                "height": 250
+                "height": 280
               },
               "threshold": 0.8,
-              "timeout_sec": 8,
-              "interval_sec": 0.6,
-              "remark": "识别确定按钮",
+              "scales": [
+                0.95,
+                1,
+                1.05
+              ],
+              "timeout_sec": 3,
+              "interval_sec": 0.4,
+              "remark": "识别确定按钮(弹框已由后台确认打开)",
               "then_actions": [
                 {
                   "type": "click_match",
-                  "remark": "点击识别到的确认按钮"
+                  "remark": "点击识别到的领取按钮"
                 },
                 {
                   "type": "wait",
-                  "seconds": 7,
-                  "remark": "确定已点击，等待物品列表弹框"
-                },
-                {
-                  "type": "log",
-                  "message": "确认按钮已点击，物品列表弹框预计已出现，开始保存截图"
-                },
-                {
-                  "type": "save_screenshot",
-                  "analyze_chest_items": true,
-                  "storage_format": "webp",
-                  "crop_chest_result": true,
-                  "dir": "../diagnostics/chest_results",
-                  "pair_key": "chest_result",
-                  "stage": "single",
-                  "label": "items",
-                  "remark": "保存开宝箱物品列表"
-                },
-                {
-                  "type": "log",
-                  "message": "物品列表截图已保存，准备关闭弹框"
+                  "seconds": 2,
+                  "remark": "领取已点击，等待2秒"
                 },
                 {
                   "type": "click",
                   "x": 530,
                   "y": 1450,
-                  "remark": "关闭物品列表弹框"
+                  "remark": "关闭奖励弹框"
                 },
                 {
-                  "type": "wait",
-                  "seconds": 3,
-                  "remark": "宝箱完成，恢复抢红包"
+                  "type": "log",
+                  "message": "奖励弹框已关闭，恢复抢红包"
                 }
               ],
               "else_actions": [
@@ -182,182 +154,56 @@
                     "../image_templates/baoxiang_video_confirm_compact.png"
                   ],
                   "region": {
-                    "x": 350,
-                    "y": 1100,
-                    "width": 400,
-                    "height": 220
+                    "x": 311,
+                    "y": 1090,
+                    "width": 462,
+                    "height": 280
                   },
                   "threshold": 0.8,
-                  "timeout_sec": 8,
-                  "interval_sec": 0.6,
+                  "scales": [
+                    0.95,
+                    1,
+                    1.05
+                  ],
+                  "timeout_sec": 3,
+                  "interval_sec": 0.4,
                   "remark": "识别完整视频确认按钮",
                   "then_actions": [
                     {
                       "type": "click_match",
-                      "remark": "点击视频确认按钮"
+                      "remark": "点击识别到的看视频按钮"
                     },
                     {
                       "type": "wait",
-                      "seconds": 7,
-                      "remark": "视频确认已点击，等待物品列表弹框"
-                    },
-                    {
-                      "type": "log",
-                      "message": "视频确认已点击，广告额外奖励弹框预计已出现，开始保存第一份物品截图"
-                    },
-                    {
-                      "type": "save_screenshot",
-                      "analyze_chest_items": true,
-                      "storage_format": "webp",
-                      "crop_chest_result": true,
-                      "dir": "../diagnostics/chest_results",
-                      "pair_key": "chest_video_extra",
-                      "stage": "single",
-                      "label": "video_bonus_items",
-                      "remark": "保存广告额外宝箱物品列表"
-                    },
-                    {
-                      "type": "log",
-                      "message": "广告额外奖励截图已保存，准备关闭第一层奖励弹框"
+                      "seconds": 2,
+                      "remark": "视频确认已点击，等待2秒"
                     },
                     {
                       "type": "click",
                       "x": 530,
                       "y": 1450,
-                      "remark": "关闭广告额外奖励弹框"
+                      "remark": "关闭第一层奖励弹框"
                     },
                     {
                       "type": "wait",
-                      "seconds": 7,
-                      "remark": "等待普通宝箱奖励弹框"
-                    },
-                    {
-                      "type": "log",
-                      "message": "普通宝箱奖励弹框预计已出现，开始保存第二份物品截图"
-                    },
-                    {
-                      "type": "save_screenshot",
-                      "analyze_chest_items": true,
-                      "storage_format": "webp",
-                      "crop_chest_result": true,
-                      "dir": "../diagnostics/chest_results",
-                      "pair_key": "chest_normal",
-                      "stage": "single",
-                      "label": "normal_items",
-                      "remark": "保存普通宝箱物品列表"
-                    },
-                    {
-                      "type": "log",
-                      "message": "普通宝箱奖励截图已保存，准备关闭第二层奖励弹框"
+                      "seconds": 2,
+                      "remark": "等待第二层奖励弹框"
                     },
                     {
                       "type": "click",
                       "x": 530,
                       "y": 1450,
-                      "remark": "关闭普通宝箱奖励弹框"
+                      "remark": "关闭第二层奖励弹框"
                     },
                     {
-                      "type": "wait",
-                      "seconds": 3,
-                      "remark": "宝箱完成，恢复抢红包"
+                      "type": "log",
+                      "message": "奖励弹框已关闭，恢复抢红包"
                     }
                   ],
                   "else_actions": [
                     {
-                      "type": "if_image",
-                      "templates": [
-                        "../image_templates/baoxiang_dialog_title.png",
-                        "../image_templates/baoxiang_dialog_title_emulator.png"
-                      ],
-                      "region": {
-                        "x": 137,
-                        "y": 378,
-                        "width": 828,
-                        "height": 1191
-                      },
-                      "threshold": 0.9,
-                      "scales": [
-                        0.95,
-                        1.0,
-                        1.05
-                      ],
-                      "timeout_sec": 1.5,
-                      "interval_sec": 0.3,
-                      "remark": "宝箱弹窗还开着吗？(领取/广告按钮可能在结算后才出现)",
-                      "then_actions": [
-                        {
-                          "type": "if_image",
-                          "templates": [
-                            "../image_templates/baoxiang_claim.png",
-                            "../image_templates/baoxiang_claim_emulator.png",
-                            "../image_templates/baoxiang_video_confirm.png",
-                            "../image_templates/baoxiang_video_confirm_compact.png"
-                          ],
-                          "region": {
-                            "x": 137,
-                            "y": 378,
-                            "width": 828,
-                            "height": 1191
-                          },
-                          "threshold": 0.8,
-                          "timeout_sec": 120,
-                          "interval_sec": 0.5,
-                          "remark": "持续等待领取/看广告按钮出现（最多120秒）",
-                          "then_actions": [
-                            {
-                              "type": "click_match",
-                              "remark": "点击识别到的领取/看广告按钮"
-                            },
-                            {
-                              "type": "wait",
-                              "seconds": 7,
-                              "remark": "等待奖励弹框"
-                            },
-                            {
-                              "type": "click",
-                              "x": 530,
-                              "y": 1450,
-                              "remark": "关闭奖励弹框"
-                            },
-                            {
-                              "type": "wait",
-                              "seconds": 7,
-                              "remark": "视频广告可能有第二层弹框"
-                            },
-                            {
-                              "type": "click",
-                              "x": 530,
-                              "y": 1450,
-                              "remark": "关闭第二层弹框"
-                            },
-                            {
-                              "type": "wait",
-                              "seconds": 3,
-                              "remark": "宝箱完成，恢复抢红包"
-                            }
-                          ],
-                          "else_actions": [
-                            {
-                              "type": "click",
-                              "x": 530,
-                              "y": 1450,
-                              "remark": "超时：点弹窗外关闭，避免挡住放大镜"
-                            },
-                            {
-                              "type": "wait",
-                              "seconds": 0.5,
-                              "remark": "关闭后短暂等待"
-                            }
-                          ]
-                        }
-                      ],
-                      "else_actions": [
-                        {
-                          "type": "log",
-                          "message": "未检测到宝箱弹窗（战斗中断），返回抢红包"
-                        }
-                      ],
-                      "confirm_attempts": 1
+                      "type": "log",
+                      "message": "弹框按钮在中断后未能再次识别，返回继续抢红包"
                     }
                   ],
                   "confirm_attempts": 1

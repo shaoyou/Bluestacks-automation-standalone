@@ -1887,7 +1887,7 @@ app.whenReady().then(() => {
 
   ipcMain.handle("plans:list", () =>
     readdirSync(path.join(runtimeRoot(), "plans"))
-      .filter((name) => name.endsWith(".json"))
+      .filter((name) => name.endsWith(".json") && !name.startsWith("__debug_"))
       .sort((a, b) => a.localeCompare(b, "zh-CN")),
   );
   ipcMain.handle("plans:read", (_, name: string) => readFileSync(safePlanPath(name), "utf8"));

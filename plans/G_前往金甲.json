@@ -80,28 +80,28 @@
           "type": "joystick",
           "x": 540,
           "y": 1720,
-          "angle": 0,
+          "angle": 90,
           "seconds": 6,
           "distance": 180,
-          "remark": "0度6秒"
+          "remark": "90度6秒"
         },        {
           "type": "joystick",
           "x": 540,
           "y": 1720,
-          "angle": 45,
-          "seconds": 7,
+          "angle": 0,
+          "seconds": 5,
           "distance": 180,
-          "remark": "45度7秒"
+          "remark": "0度5秒"
         },
         
              {
           "type": "joystick",
           "x": 540,
           "y": 1720,
-          "angle": 135,
-          "seconds": 4.5,
+          "angle": 45,
+          "seconds": 3,
           "distance": 180,
-          "remark": "135度4.5秒"
+          "remark": "45度3秒"
         }
         
         
