@@ -151,7 +151,8 @@ jobs:
                 if (entry.isDirectory()) visit(file);
                 else if (/\.(exe|yml|blockmap)$/i.test(entry.name)) {
                   const relative = path.relative(root, file).split(path.sep).join('/');
-                  files.push({ file, name: relative.startsWith('win7-legacy/') ? `win7-legacy-${entry.name}` : entry.name });
+                  const prefixed = relative.startsWith('win7-legacy/') && !entry.name.startsWith('win7-legacy-');
+                  files.push({ file, name: prefixed ? `win7-legacy-${entry.name}` : entry.name });
                 }
               }
             };
@@ -167,7 +168,7 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 tag_name: tag,
-                name: tag,
+                name: `熊熊小助手 ${tag}`,
                 generate_release_notes: true,
                 draft: false,
                 prerelease: false,

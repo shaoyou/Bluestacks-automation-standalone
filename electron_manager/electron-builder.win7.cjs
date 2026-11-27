@@ -11,7 +11,7 @@ module.exports = {
   appId: "local.playground.bsmanager.win7legacy",
   productName: "熊熊乐园小助手 Win7兼容版",
   electronVersion: "22.3.27",
-  artifactName: "${productName}-${version}-win7-x64.${ext}",
+  artifactName: "win7-legacy-XiongXiongXiaoZhuShou-v${version}-Win7-x64-Setup.${ext}",
   directories: {
     ...base.directories,
     output: "release/win7-legacy",

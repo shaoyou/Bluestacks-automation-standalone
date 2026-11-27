@@ -1,7 +1,7 @@
 {
   "name": "bs-manager-cross-platform",
   "private": true,
-  "version": "1.2.49",
+  "version": "1.2.50",
   "channel": "beta",
   "description": "Cross-platform BlueStacks automation manager",
   "author": "熊熊乐园小助手",
@@ -136,7 +136,8 @@
       "icon": "assets/icon/icon.ico",
       "target": [
         "nsis"
-      ]
+      ],
+      "artifactName": "XiongXiongXiaoZhuShou-v${version}-Setup.${ext}"
     },
     "nsis": {
       "oneClick": false,
