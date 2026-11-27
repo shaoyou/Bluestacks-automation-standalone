@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Phase0 自动化探针</string>
+    <string name="accessibility_service_label">Phase0 手势探针</string>
+    <string name="accessibility_desc">用于 Phase 0 可行性验证：向当前界面注入点击、长按、滑动与双指手势，并显示悬浮测试面板。不读取窗口内容。</string>
+</resources>

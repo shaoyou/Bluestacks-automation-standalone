@@ -253,6 +253,15 @@ h2 { font-size: 18px; }
 .cycle-prompt-item strong { color: #e8efee; font-size: 13px; }
 .cycle-prompt-item span { color: #9cafb1; font-size: 12px; }
 .cycle-prompt-modal footer { justify-content: flex-end; gap: 8px; }
+.segment-prompt-modal { width: min(560px, 100%); }
+.segment-prompt-modal footer { justify-content: flex-end; gap: 8px; }
+.segment-prompt-list { display: grid; align-content: start; gap: 6px; overflow: auto; padding: 12px; }
+.segment-prompt-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; border: 1px solid #334047; border-radius: 4px; color: #dbe7e6; background: #151b1e; text-align: left; cursor: pointer; }
+.segment-prompt-item:hover { border-color: #45605e; }
+.segment-prompt-item.selected { border-color: #69cda8; background: rgb(105 205 168 / .08); }
+.segment-prompt-order { flex: 0 0 22px; color: #8fa0a5; font-size: 12px; text-align: center; }
+.segment-prompt-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.segment-prompt-skip { color: #8fa0a5; font-size: 11px; white-space: nowrap; }
 .queue-card-title { display: grid; gap: 4px; min-width: 0; }
 .queue-card-title strong { color: #eef5f4; font-size: 15px; }
 .queue-card-title span { overflow: hidden; color: #8fa0a5; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }

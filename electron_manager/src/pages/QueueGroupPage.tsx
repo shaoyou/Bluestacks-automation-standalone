@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CircleStop, CopyPlus, Download, GripVertical, Layers, Pencil, PencilLine, Pin, Play, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
+import { CircleStop, CopyPlus, Download, GripVertical, Layers, ListStart, Pencil, PencilLine, Pin, Play, Plus, RefreshCw, Save, Trash2, X } from "lucide-react";
 import { PageHeading, PromptDialog, Toggle } from "../components/layout";
 import type { QueueGroup, QueueGroupItem, QueueItemResult, QueueItemStatus, QueueRunSnapshot } from "../types";
 import type { SharedProps } from "../app/shared";
@@ -125,7 +125,8 @@ export function QueueGroupPage(props: SharedProps) {
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropSlot, setDropSlot] = useState<number | null>(null);
   const [renameTarget, setRenameTarget] = useState<QueueGroup | null>(null);
-  const [cyclePrompt, setCyclePrompt] = useState<{ group: QueueGroup; device: string; notDue: QueueGroupItem[] } | null>(null);
+  const [cyclePrompt, setCyclePrompt] = useState<{ group: QueueGroup; device: string; notDue: QueueGroupItem[]; baseSkipPlans: string[] } | null>(null);
+  const [segmentPrompt, setSegmentPrompt] = useState<{ group: QueueGroup; plans: QueueGroupItem[]; selectedPlan: string } | null>(null);
 
   useEffect(() => {
     setGroupDevices((current) => {
@@ -301,22 +302,42 @@ export function QueueGroupPage(props: SharedProps) {
     try {
       await window.bsManager.queueStart(group.id, device, skipPlans);
       await refresh();
-      props.setNotice(`计划组「${group.name}」开始执行${skipPlans.length > 0 ? `（跳过 ${skipPlans.length} 个未到期计划）` : ""}`);
+      props.setNotice(`计划组「${group.name}」开始执行${skipPlans.length > 0 ? `（跳过 ${skipPlans.length} 项）` : ""}`);
     } catch (error) {
       props.setNotice(`启动失败: ${String(error)}`);
     }
   };
 
-  const startGroup = async (group: QueueGroup) => {
+  const startGroup = async (group: QueueGroup, startPlan?: string) => {
     if (!props.runtime) return props.setNotice("运行环境尚未加载完成");
     const device = (groupDevices[group.id] ?? "").trim();
     if (!device) return props.setNotice("请先在卡片中选择该计划组的执行设备");
-    const notDue = group.items.filter((item) => item.enabled !== false && cycleRemainingMs(item) > 0);
+    const enabled = group.items.filter((item) => item.enabled !== false);
+    const foundIndex = startPlan ? enabled.findIndex((item) => item.plan === startPlan) : 0;
+    const startIndex = foundIndex >= 0 ? foundIndex : 0;
+    // Segment start: plans before the chosen one are skipped for this run.
+    const baseSkipPlans = enabled.slice(0, startIndex).map((item) => item.plan);
+    const notDue = enabled.slice(startIndex).filter((item) => cycleRemainingMs(item) > 0);
     if (notDue.length > 0) {
-      setCyclePrompt({ group, device, notDue });
+      setCyclePrompt({ group, device, notDue, baseSkipPlans });
       return;
     }
-    await beginGroupStart(group, device, []);
+    await beginGroupStart(group, device, baseSkipPlans);
+  };
+
+  const openSegmentPrompt = (group: QueueGroup) => {
+    const device = (groupDevices[group.id] ?? "").trim();
+    if (!device) return props.setNotice("请先在卡片中选择该计划组的执行设备");
+    const plans = group.items.filter((item) => item.enabled !== false);
+    if (plans.length === 0) return props.setNotice("该计划组没有可执行的脚本");
+    setSegmentPrompt({ group, plans, selectedPlan: plans[0].plan });
+  };
+
+  const confirmSegmentStart = () => {
+    if (!segmentPrompt) return;
+    const { group, selectedPlan } = segmentPrompt;
+    setSegmentPrompt(null);
+    void startGroup(group, selectedPlan);
   };
 
   const stopGroup = async (group: QueueGroup) => {
@@ -537,6 +558,7 @@ export function QueueGroupPage(props: SharedProps) {
             {running
               ? <button className="button danger" onClick={() => void stopGroup(group)}><CircleStop size={15} />停止</button>
               : <button className="button primary" disabled={group.items.length === 0} onClick={() => void startGroup(group)}><Play size={15} />启动</button>}
+            {!running && <button className="button secondary" title="分段启动（选择起始计划）" aria-label={`分段启动 ${group.name}`} disabled={group.items.filter((item) => item.enabled !== false).length < 2} onClick={() => openSegmentPrompt(group)}><ListStart size={15} />分段启动</button>}
             <button className="button secondary" onClick={() => openEditor(group)}><Pencil size={15} />编辑</button>
             <button className={`icon-button ${group.pinned ? "queue-pin-active" : ""}`} title={group.pinned ? "取消置顶" : "置顶"} aria-label={`${group.pinned ? "取消置顶" : "置顶"} ${group.name}`} onClick={() => void togglePin(group)}><Pin size={15} fill={group.pinned ? "currentColor" : "none"} /></button>
             <button className="icon-button" title="复制计划组" aria-label={`复制 ${group.name}`} onClick={() => void duplicateGroup(group)}><CopyPlus size={15} /></button>
@@ -560,8 +582,26 @@ export function QueueGroupPage(props: SharedProps) {
         </div>
         <footer>
           <button className="button quiet" onClick={() => setCyclePrompt(null)}>取消</button>
-          <button className="button secondary" onClick={() => { const { group, device, notDue } = cyclePrompt; setCyclePrompt(null); void beginGroupStart(group, device, notDue.map((item) => item.plan)); }}>跳过未到期</button>
-          <button className="button primary" onClick={() => { const { group, device } = cyclePrompt; setCyclePrompt(null); void beginGroupStart(group, device, []); }}>全部执行</button>
+          <button className="button secondary" onClick={() => { const { group, device, notDue, baseSkipPlans } = cyclePrompt; setCyclePrompt(null); void beginGroupStart(group, device, [...baseSkipPlans, ...notDue.map((item) => item.plan)]); }}>跳过未到期</button>
+          <button className="button primary" onClick={() => { const { group, device, baseSkipPlans } = cyclePrompt; setCyclePrompt(null); void beginGroupStart(group, device, baseSkipPlans); }}>全部执行</button>
+        </footer>
+      </section>
+    </div>}
+    {segmentPrompt && <div className="chest-label-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSegmentPrompt(null); }}>
+      <section className="chest-label-modal segment-prompt-modal" role="dialog" aria-modal="true" aria-label="分段启动">
+        <header><div><strong>分段启动</strong><span>选择从哪个计划开始执行，前面的计划会跳过</span></div><button className="icon-button" title="关闭" onClick={() => setSegmentPrompt(null)}><X size={16} /></button></header>
+        <div className="segment-prompt-list">
+          {segmentPrompt.plans.map((item, index) => (
+            <button key={item.plan} type="button" className={`segment-prompt-item ${segmentPrompt.selectedPlan === item.plan ? "selected" : ""}`} onClick={() => setSegmentPrompt((current) => current ? { ...current, selectedPlan: item.plan } : current)}>
+              <span className="segment-prompt-order">{index + 1}</span>
+              <span className="segment-prompt-name">{planShortLabel(item.plan)}</span>
+              <span className="segment-prompt-skip">{index === 0 ? "从头开始" : `跳过前 ${index} 项`}</span>
+            </button>
+          ))}
+        </div>
+        <footer>
+          <button className="button secondary" onClick={() => setSegmentPrompt(null)}>取消</button>
+          <button className="button primary" onClick={confirmSegmentStart}>从「{planShortLabel(segmentPrompt.selectedPlan)}」开始</button>
         </footer>
       </section>
     </div>}
