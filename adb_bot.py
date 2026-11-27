@@ -3565,6 +3565,8 @@ def background_check_worker(
     index = int(action.get("index", 0))
     click_on_hit = bool_value(action.get("click"), default=False)
     click_interval_sec = max(0.0, float(action.get("click_interval_sec", interval_sec)))
+    save_debug = bool_value(action.get("save_debug"), default=False)
+    debug_dir = debug_output_dir(ctx, action, "background_check") if save_debug and not ctx.dry_run else None
     match_action = prepare_image_match_profile(dict(action), "background_check", threshold, interval_sec)
     search_action = image_search_action(match_action, template_paths)
     minimum_template_size = required_template_search_size(ctx, template_paths, search_action)
@@ -3582,6 +3584,8 @@ def background_check_worker(
     remark_suffix = f" | remark: {remark}" if remark else ""
     attempt = 0
     last_click_at = 0.0
+    previous_primary_found = False
+    last_debug_save_at = 0.0
     while not stop_event.is_set():
         if ctx.stop_at is not None and time.time() >= ctx.stop_at:
             return
@@ -3625,6 +3629,7 @@ def background_check_worker(
                 index,
             )
             if hit is not None:
+                previous_primary_found = True
                 if not click_on_hit and not until_paths:
                     ctx.runtime_values[BG_CHECK_HIT_KEY] = hit
                     log(
@@ -3644,6 +3649,26 @@ def background_check_worker(
                             f"similarity={hit['similarity']:.3f} -> tap ({tap_x}, {tap_y}) "
                             f"(attempt {attempt}){remark_suffix}"
                         )
+            else:
+                if (
+                    debug_dir is not None
+                    and previous_primary_found
+                    and time.time() - last_debug_save_at >= 5.0
+                ):
+                    try:
+                        debug_path = debug_dir / (
+                            f"{dt.datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
+                            "_magnifier_lost_until_miss.png"
+                        )
+                        screenshot.save(debug_path)
+                        last_debug_save_at = time.time()
+                        log(
+                            f"background_check magnifier lost and until missed; "
+                            f"debug screenshot saved to {debug_path}{remark_suffix}"
+                        )
+                    except Exception as exc:  # noqa: BLE001 - diagnostics must not kill the worker
+                        log(f"background_check debug screenshot failed: {exc}")
+                previous_primary_found = False
         except Exception as exc:  # noqa: BLE001 - matching/clicking must never kill the worker
             log(f"background_check cycle failed (attempt {attempt}): {exc}")
         if stop_event.wait(interval_sec):

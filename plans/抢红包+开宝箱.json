@@ -8,7 +8,7 @@
         {
           "type": "background_check",
           "command": "start",
-          "remark": "启动后台识别线程：放大镜命中即点击并继续抢红包(战斗期弹框打不开按click_interval持续重试)；同时监控弹框里的领取/看视频按钮，只有按钮真正出现(弹框已打开)才置命中标志并退出。scales限0.95-1.05+阈值0.94防误报；until阈值0.8覆盖弹框按钮",
+          "remark": "启动后台识别线程：放大镜命中即点击并继续抢红包(战斗期弹框打不开按click_interval持续重试)；同时监控弹框里的领取/看视频按钮，只有按钮真正出现(弹框已打开)才置命中标志并退出。放大镜scales限0.95-1.05+阈值0.94防误报；until阈值0.8、默认0.75-1.25缩放覆盖弹框按钮；放大镜消失但按钮未识别时保存诊断截图",
           "templates": [
             "../image_templates/bl_baoxiaoxing_1080x1920.png",
             "../image_templates/bl_baoxiaoxing_emulator.png"
@@ -25,11 +25,6 @@
           ],
           "until_threshold": 0.8,
           "until_match_profile": "accurate",
-          "until_scales": [
-            0.95,
-            1,
-            1.05
-          ],
           "until_region": {
             "x": 311,
             "y": 1090,
@@ -46,7 +41,8 @@
             "y": 378,
             "width": 965,
             "height": 1191
-          }
+          },
+          "save_debug": true
         },
         {
           "type": "grab_loop",
@@ -117,11 +113,6 @@
                 "height": 280
               },
               "threshold": 0.8,
-              "scales": [
-                0.95,
-                1,
-                1.05
-              ],
               "timeout_sec": 3,
               "interval_sec": 0.4,
               "remark": "识别确定按钮(弹框已由后台确认打开)",
@@ -160,11 +151,6 @@
                     "height": 280
                   },
                   "threshold": 0.8,
-                  "scales": [
-                    0.95,
-                    1,
-                    1.05
-                  ],
                   "timeout_sec": 3,
                   "interval_sec": 0.4,
                   "remark": "识别完整视频确认按钮",
