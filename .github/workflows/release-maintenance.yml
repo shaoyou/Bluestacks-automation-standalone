@@ -1,0 +1,46 @@
+name: Release Maintenance
+
+on:
+  push:
+    paths:
+      - ".github/workflows/release-maintenance.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  maintain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const oldTag = "v1.2.49";
+            try {
+              const oldRelease = (await github.rest.repos.getReleaseByTag({ owner, repo, tag: oldTag })).data;
+              await github.rest.repos.deleteRelease({ owner, repo, release_id: oldRelease.id });
+              core.info(`Deleted release ${oldTag}`);
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              core.info(`Release ${oldTag} not found`);
+            }
+            try {
+              await github.rest.git.deleteRef({ owner, repo, ref: `tags/${oldTag}` });
+              core.info(`Deleted tag ${oldTag}`);
+            } catch (error) {
+              if (error.status !== 404 && error.status !== 422) throw error;
+              core.info(`Tag ${oldTag} not found`);
+            }
+
+            const tag = "v1.2.50";
+            const release = (await github.rest.repos.getReleaseByTag({ owner, repo, tag })).data;
+            const base = `https://github.com/${owner}/${repo}/releases/download/${tag}`;
+            const body = `## 下载
+
+            - [熊熊小助手 ${tag} 安装包（Windows 10/11 x64）](${base}/XiongXiongXiaoZhuShou-v1.2.50-Setup.exe)
+            - [熊熊小助手 ${tag} Win7 兼容版（Windows 7 SP1 x64）](${base}/win7-legacy-XiongXiongXiaoZhuShou-v1.2.50-Setup.exe)
+
+            > GitHub 会移除附件名中的中文，附件使用拼音命名；以上中文链接指向对应安装包。`;
+            await github.rest.repos.updateRelease({ owner, repo, release_id: release.id, name: `熊熊小助手 ${tag}`, body });
+            core.info(`Updated ${tag} release body`);

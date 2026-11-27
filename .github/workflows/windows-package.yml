@@ -159,9 +159,26 @@ jobs:
             visit(root);
             if (!files.length) throw new Error('No Windows release files found');
 
+            const downloadBase = `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${tag}`;
+            const installerLinks = files
+              .filter((file) => /Setup\.exe$/i.test(file.name))
+              .map((file) => {
+                const label = file.name.startsWith('win7-legacy-') ? 'Win7 兼容版（Windows 7 SP1 x64）' : 'Windows 10/11 x64';
+                return `- [熊熊小助手 ${tag} 安装包（${label}）](${downloadBase}/${encodeURIComponent(file.name)})`;
+              })
+              .join('\n');
+            const releaseBody = `## 下载\n\n${installerLinks}\n\n> GitHub 会移除附件名中的中文，附件使用拼音命名；以上中文链接指向对应安装包。`;
+
             let release;
             try {
-              release = (await github.rest.repos.getReleaseByTag({ owner: context.repo.owner, repo: context.repo.repo, tag })).data;
+              const current = (await github.rest.repos.getReleaseByTag({ owner: context.repo.owner, repo: context.repo.repo, tag })).data;
+              release = (await github.rest.repos.updateRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: current.id,
+                name: `熊熊小助手 ${tag}`,
+                body: releaseBody,
+              })).data;
             } catch (error) {
               if (error.status !== 404) throw error;
               release = (await github.rest.repos.createRelease({
@@ -169,6 +186,7 @@ jobs:
                 repo: context.repo.repo,
                 tag_name: tag,
                 name: `熊熊小助手 ${tag}`,
+                body: releaseBody,
                 generate_release_notes: true,
                 draft: false,
                 prerelease: false,
